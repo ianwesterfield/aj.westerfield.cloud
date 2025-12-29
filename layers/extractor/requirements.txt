@@ -1,0 +1,16 @@
+
+# Extractor Service - Media to Text Conversion
+# Supports: Text, Markdown, Images (via Ollama), Audio (via Whisper ASR service), PDF
+
+# Core FastAPI
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+httpx                     # HTTP client for Ollama & Whisper APIs
+
+# Image/PDF processing
+Pillow>=10.0.0
+pymupdf>=1.23.0
+
+# File type detection
+python-magic>=0.4.27

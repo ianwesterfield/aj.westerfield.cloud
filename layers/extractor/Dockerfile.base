@@ -1,0 +1,25 @@
+# =============================================================================
+# AJ Extractor API - Base Image
+# =============================================================================
+# Contains: Python 3.11 + system deps + pip packages
+# Publish:  docker build -f Dockerfile.base -t <hub>/aj-extractor-base:latest .
+#           docker push <hub>/aj-extractor-base:latest
+#
+# This image rarely changes (only when requirements.txt is updated)
+# Now lightweight (~300MB) - Whisper moved to separate service
+# =============================================================================
+
+FROM python:3.11-slim
+
+# System dependencies (libmagic for file type detection)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  libmagic1 \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Python packages (lightweight - no torch!)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Base image stops here - no application code

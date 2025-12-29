@@ -1,0 +1,6 @@
+fastapi
+httpx                          # HTTP client for Ollama API
+pydantic
+python-dotenv
+qdrant-client
+uvicorn[standard]

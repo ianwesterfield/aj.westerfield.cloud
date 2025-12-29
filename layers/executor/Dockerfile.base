@@ -1,0 +1,27 @@
+# =============================================================================
+# AJ Executor API - Base Image
+# =============================================================================
+# Contains: Python 3.11 + system deps (Node.js for polyglot) + pip packages
+# Publish:  docker build -f Dockerfile.base -t <hub>/aj-executor-base:latest .
+#           docker push <hub>/aj-executor-base:latest
+#
+# This image rarely changes (only when requirements.txt is updated)
+# =============================================================================
+
+FROM python:3.11-slim
+
+# System dependencies for polyglot execution
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  curl \
+  nodejs \
+  npm \
+  git \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Python packages
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Base image stops here - no application code

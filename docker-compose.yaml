@@ -1,0 +1,235 @@
+networks:
+  webtools_network:
+    external: true
+
+services:
+  # -------------------------------------------------
+  # Ollama
+  # -------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    runtime: nvidia
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      # GPU optimization - force full GPU offload
+      - OLLAMA_NUM_GPU=999
+      # Keep only 1 model loaded at a time to save VRAM
+      - OLLAMA_MAX_LOADED_MODELS=2
+      # Reduce context window to save VRAM (default is 2048)
+      - OLLAMA_NUM_CTX=4096
+      # Keep model in memory for 5 minutes after last request
+      - OLLAMA_KEEP_ALIVE=5m
+      # Flash attention for better memory efficiency
+      - OLLAMA_FLASH_ATTENTION=1
+    ports:
+      - "11434:11434"
+    volumes:
+      - C:\\docker-data\\ollama\\.ollama:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    shm_size: 2g
+    restart: unless-stopped
+    networks:
+      - webtools_network
+
+  # -------------------------------------------------
+  # Qdrant
+  # -------------------------------------------------
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    environment:
+      - QDRANT__LOG_LEVEL=DEBUG
+      # Flush WAL more frequently to reduce corruption risk on shutdown
+      - QDRANT__STORAGE__OPTIMIZERS__FLUSH_INTERVAL_SEC=1
+    ports:
+      - "5100:5100" # Dashboard UI
+      - "6333:6333" # HTTP API
+    volumes:
+      - C:/docker-data/qdrant/storage:/qdrant/storage
+    restart: unless-stopped
+    # Give Qdrant time to flush WAL and close cleanly
+    stop_grace_period: 30s
+    networks:
+      - webtools_network
+
+  # -------------------------------------------------
+  # Memory API
+  # -------------------------------------------------
+  memory_api:
+    build:
+      context: ./layers/memory
+      dockerfile: Dockerfile
+      args:
+        BASE_REGISTRY: ${BASE_REGISTRY:-aj}
+    container_name: memory_api
+    environment:
+      - EMBEDDING_MODEL=nomic-embed-text
+      - FILTERS_PATH=/filters
+      - INDEX_NAME=user_memory_collection
+      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_MODEL=qwen2.5-gpu
+      - PRAGMATICS_HOST=pragmatics_api
+      - PRAGMATICS_PORT=8001
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+    volumes:
+      - ./filters:/filters:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      - qdrant
+      - pragmatics_api
+      - ollama
+    restart: unless-stopped
+    networks:
+      - webtools_network
+
+  # -------------------------------------------------
+  # Pragmatics API (Intent Classification)
+  # -------------------------------------------------
+  pragmatics_api:
+    build:
+      context: ./layers/pragmatics
+      dockerfile: Dockerfile
+      args:
+        BASE_REGISTRY: ${BASE_REGISTRY:-aj}
+    container_name: pragmatics_api
+    ports:
+      - "8001:8001"
+    environment:
+      - CLASSIFIER_MODEL=distilbert_intent
+      - INTENT_CONFIDENCE_THRESHOLD=0.50
+    restart: unless-stopped
+    networks:
+      - webtools_network
+
+  # -------------------------------------------------
+  # Extractor API (Media -> Text)
+  # -------------------------------------------------
+  extractor_api:
+    build:
+      context: ./layers/extractor
+      dockerfile: Dockerfile
+      args:
+        BASE_REGISTRY: ${BASE_REGISTRY:-aj}
+    container_name: extractor_api
+    ports:
+      - "8002:8002"
+    environment:
+      - IMAGE_MODEL=llava
+      - OLLAMA_HOST=http://ollama:11434
+      - WHISPER_HOST=http://whisper-asr:9000
+    depends_on:
+      - ollama
+      - whisper-asr
+    restart: unless-stopped
+    networks:
+      - webtools_network
+
+  # -------------------------------------------------
+  # Whisper ASR (Audio Transcription)
+  # -------------------------------------------------
+  whisper-asr:
+    image: onerahmet/openai-whisper-asr-webservice:latest
+    container_name: whisper-asr
+    ports:
+      - "9000:9000"
+    environment:
+      - ASR_MODEL=large-v3
+      - ASR_ENGINE=openai_whisper
+    volumes:
+      - C:/docker-data/whisper-cache:/root/.cache # Persist model downloads
+    restart: unless-stopped
+    networks:
+      - webtools_network
+
+  # -------------------------------------------------
+  # Orchestrator API (Agentic Reasoning Engine)
+  # -------------------------------------------------
+  orchestrator_api:
+    build:
+      context: ./layers/orchestrator
+      dockerfile: Dockerfile
+      args:
+        BASE_REGISTRY: ${BASE_REGISTRY:-aj}
+    container_name: orchestrator_api
+    ports:
+      - "8004:8004"
+    environment:
+      - EXECUTOR_API_URL=http://executor_api:8005
+      - HOST_WORKSPACE_PATH=${HOST_WORKSPACE_PATH:-C:/Code}
+      - MAX_PARALLEL_TASKS=5
+      - MEMORY_API_URL=http://memory_api:8000
+      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_MODEL=qwen2.5-gpu
+      - WORKSPACE_ROOT=/workspace
+    volumes:
+      - ${HOST_WORKSPACE_PATH:-C:/Code}:/workspace:rw
+    depends_on:
+      - ollama
+      - memory_api
+    restart: unless-stopped
+    networks:
+      - webtools_network
+
+  # -------------------------------------------------
+  # Executor API (Polyglot Code Execution)
+  # -------------------------------------------------
+  executor_api:
+    build:
+      context: ./layers/executor
+      dockerfile: Dockerfile
+      args:
+        BASE_REGISTRY: ${BASE_REGISTRY:-aj}
+    container_name: executor_api
+    ports:
+      - "8005:8005"
+    environment:
+      - DEFAULT_TIMEOUT=30
+      - MAX_TIMEOUT=120
+      - WORKSPACE_ROOT=/workspace
+    volumes:
+      - ${HOST_WORKSPACE_PATH:-C:/Code}:/workspace:rw # Same mount as orchestrator
+    restart: unless-stopped
+    networks:
+      - webtools_network
+
+  # -------------------------------------------------
+  # Open-WebUI
+  # -------------------------------------------------
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:latest
+    container_name: open-webui
+    depends_on:
+      - ollama
+    environment:
+      - EMBEDDING_MODEL=BAAI/bge-large-en-v1.5
+      - GLOBAL_LOG_LEVEL=DEBUG
+      - MEMORY_API_URL=http://memory_api:8000
+      - MEMORY_ENABLED=true
+      - MEMORY_SHORT_TERM_MEMORY_DEPTH=15
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - RAG_EMBEDDING_ENGINE=ollama
+      - TOOLS_DISCOVERY_URL=http://memory_api:8000/api/tools
+      - TOOLS_FUNCTION_CALLING_ENABLED=true
+      - TOOLS_FUNCTION_CALLING_LLMS=ollama
+      - USER_AGENT=WesterfieldCloud-OpenWebUI/1.0
+    ports:
+      - "8180:8080" # Host 8180 -> Container 8080 (8080 often reserved by Windows/Hyper-V)
+    volumes:
+      - c:/docker-data/open-webui/data:/app/backend/data
+    deploy:
+      resources:
+        limits:
+          cpus: "4"
+          memory: 8g
+    restart: unless-stopped
+    networks:
+      - webtools_network
