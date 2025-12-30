@@ -1,0 +1,57 @@
+```mermaid
+flowchart TB
+    subgraph User["Open-WebUI (8180)"]
+        UserInput["User sends message"]
+        UserReads["User reads response"]
+    end
+
+    subgraph Filter["AJ Filter (aj.filter.py)"]
+        F1["1. Classify intent via Pragmatics"]
+        F2["2. Route by intent"]
+        F3["3. Inject context + results"]
+    end
+
+    subgraph Services["Service Layer"]
+        direction TB
+        Pragmatics["Pragmatics (8001)<br/>4-class DistilBERT<br/>casual/save/recall/task"]
+        Memory["Memory API (8000)<br/>/save, /search"]
+        Orchestrator["Orchestrator (8004)<br/>Multi-step reasoning<br/>LLM: Devstral/Qwen"]
+        Executor["Executor (8005)<br/>File ops + Shell<br/>Sandbox enforced"]
+    end
+
+    subgraph Storage["Data Layer"]
+        Qdrant["Qdrant (6333)<br/>768-dim COSINE<br/>all-mpnet-base-v2"]
+        Ollama["Ollama (11434)<br/>LLM inference"]
+    end
+
+    LLM["LLM Response"]
+
+    %% User to Filter
+    UserInput --> Filter
+
+    %% Filter routes to services
+    F1 --> Pragmatics
+    Pragmatics -->|"intent"| F2
+
+    %% Intent routing
+    F2 -->|"casual"| LLM
+    F2 -->|"save"| Memory
+    F2 -->|"recall"| Memory
+    F2 -->|"task"| Orchestrator
+
+    %% Orchestrator flow (bidirectional with Executor and Memory)
+    Orchestrator -->|"tool calls"| Executor
+    Executor -->|"results"| Orchestrator
+    Orchestrator -->|"search patterns"| Memory
+    Memory -->|"context"| Orchestrator
+    Orchestrator --> Ollama
+
+    %% Memory to Qdrant
+    Memory -->|"embed/search"| Qdrant
+
+    %% Results back to filter
+    Memory -->|"context"| F3
+    Orchestrator -->|"thinking + results"| F3
+    F3 --> LLM
+    LLM --> UserReads
+```

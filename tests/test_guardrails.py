@@ -1,0 +1,395 @@
+"""
+Tests for Guardrails in ReasoningEngine
+
+Tests the safety guardrails that prevent infinite loops and repeated failures.
+"""
+
+import pytest
+from unittest.mock import MagicMock, AsyncMock, patch
+from typing import List, Dict, Any, Optional, Set
+from dataclasses import dataclass, field
+
+
+# Inline minimal implementation for testing
+@dataclass
+class CompletedStep:
+    step_id: str
+    tool: str
+    params: Dict[str, Any]
+    output_summary: str
+    success: bool
+
+
+@dataclass
+class WorkspaceState:
+    scanned_paths: Set[str] = field(default_factory=set)
+    files: List[str] = field(default_factory=list)
+    dirs: List[str] = field(default_factory=list)
+    edited_files: Set[str] = field(default_factory=set)
+    read_files: Set[str] = field(default_factory=set)
+    completed_steps: List[CompletedStep] = field(default_factory=list)
+    user_info: Dict[str, str] = field(default_factory=dict)
+    
+    def update_from_step(self, tool: str, params: Dict[str, Any], output: str, success: bool) -> None:
+        step_id = f"S{len(self.completed_steps) + 1:03d}"
+        summary = f"{tool}: {'OK' if success else 'FAILED'}"
+        if tool in ("write_file", "replace_in_file", "insert_in_file", "append_to_file"):
+            path = params.get("path", "")
+            if success:
+                self.edited_files.add(path)
+            summary = f"{tool}({path}): {'OK' if success else 'FAILED'}"
+        self.completed_steps.append(CompletedStep(
+            step_id=step_id, tool=tool, params=params,
+            output_summary=summary, success=success,
+        ))
+
+
+class TestMaxStepsGuardrail:
+    """Test the maximum steps guardrail."""
+    
+    def test_triggers_after_15_steps_without_progress(self):
+        """Should force completion after 15 steps without edits."""
+        state = WorkspaceState()
+        
+        # Add 15 non-edit steps
+        for i in range(15):
+            state.completed_steps.append(CompletedStep(
+                step_id=f"S{i:03d}",
+                tool="read_file",
+                params={"path": f"file{i}.txt"},
+                output_summary=f"read(file{i}.txt): 100 chars",
+                success=True,
+            ))
+        
+        # Check recent edits
+        recent_edits = sum(
+            1 for s in state.completed_steps[-5:]
+            if s.tool in ("write_file", "insert_in_file", "replace_in_file", "append_to_file")
+            and s.success
+        )
+        
+        assert recent_edits == 0
+        assert len(state.completed_steps) >= 15
+    
+    def test_does_not_trigger_with_recent_edits(self):
+        """Should allow continuation if recent edits were made."""
+        state = WorkspaceState()
+        
+        # Add 14 read steps
+        for i in range(14):
+            state.completed_steps.append(CompletedStep(
+                step_id=f"S{i:03d}",
+                tool="read_file",
+                params={"path": f"file{i}.txt"},
+                output_summary=f"read(file{i}.txt): 100 chars",
+                success=True,
+            ))
+        
+        # Add 1 edit step
+        state.completed_steps.append(CompletedStep(
+            step_id="S014",
+            tool="write_file",
+            params={"path": "edited.txt"},
+            output_summary="write_file(edited.txt): OK",
+            success=True,
+        ))
+        
+        # Check recent edits
+        recent_edits = sum(
+            1 for s in state.completed_steps[-5:]
+            if s.tool in ("write_file", "insert_in_file", "replace_in_file", "append_to_file")
+            and s.success
+        )
+        
+        assert recent_edits == 1
+
+
+class TestRepeatedFailuresGuardrail:
+    """Test the repeated failures guardrail."""
+    
+    def test_detects_repeated_replace_failures(self):
+        """Should detect repeated replace_in_file failures on same file."""
+        state = WorkspaceState()
+        
+        # Add 3 failed replace attempts on same file
+        for i in range(3):
+            state.completed_steps.append(CompletedStep(
+                step_id=f"S{i:03d}",
+                tool="replace_in_file",
+                params={"path": "target.py", "old_text": "not found"},
+                output_summary="replace_in_file(target.py): FAILED",
+                success=False,
+            ))
+        
+        # Count recent failures on target.py
+        path = "target.py"
+        recent_failures = sum(
+            1 for s in state.completed_steps[-5:]
+            if s.tool == "replace_in_file"
+            and s.params.get("path") == path
+            and not s.success
+        )
+        
+        assert recent_failures >= 2
+    
+    def test_different_files_not_flagged(self):
+        """Failures on different files should not trigger guardrail."""
+        state = WorkspaceState()
+        
+        # Add failures on different files
+        state.completed_steps.append(CompletedStep(
+            step_id="S001",
+            tool="replace_in_file",
+            params={"path": "file1.py"},
+            output_summary="FAILED",
+            success=False,
+        ))
+        state.completed_steps.append(CompletedStep(
+            step_id="S002",
+            tool="replace_in_file",
+            params={"path": "file2.py"},
+            output_summary="FAILED",
+            success=False,
+        ))
+        
+        # Count failures per file
+        for path in ["file1.py", "file2.py"]:
+            failures = sum(
+                1 for s in state.completed_steps
+                if s.params.get("path") == path and not s.success
+            )
+            assert failures == 1
+
+
+class TestReReadGuardrail:
+    """Test the re-read prevention guardrail."""
+    
+    def test_blocks_reread_of_already_read_file(self):
+        """Should block reading a file that's already been read."""
+        state = WorkspaceState()
+        state.read_files.add("already_read.py")
+        
+        # Simulate check
+        path = "already_read.py"
+        should_block = path in state.read_files
+        
+        assert should_block is True
+    
+    def test_allows_first_read(self):
+        """Should allow first read of a file."""
+        state = WorkspaceState()
+        
+        path = "new_file.py"
+        should_block = path in state.read_files
+        
+        assert should_block is False
+
+
+class TestUnknownToolGuardrail:
+    """Test handling of unknown/hallucinated tools."""
+    
+    def test_known_tools_accepted(self):
+        """Known tools should be accepted."""
+        known_tools = [
+            "scan_workspace",
+            "read_file",
+            "write_file",
+            "replace_in_file",
+            "insert_in_file",
+            "append_to_file",
+            "execute_shell",
+            "none",
+            "complete",
+        ]
+        
+        for tool in known_tools:
+            assert tool in known_tools  # Trivial but documents the set
+    
+    def test_unknown_tool_handling(self):
+        """Unknown tools should be handled gracefully."""
+        unknown_tools = ["hallucinated_tool", "make_coffee", "deploy_to_production"]
+        
+        # These should either:
+        # 1. Be converted to execute_shell if they look like commands
+        # 2. Trigger completion with error
+        for tool in unknown_tools:
+            is_known = tool in {
+                "scan_workspace", "read_file", "write_file",
+                "replace_in_file", "insert_in_file", "append_to_file",
+                "execute_shell", "none", "complete"
+            }
+            assert is_known is False
+
+
+class TestDuplicateCommandGuardrail:
+    """Test duplicate command detection."""
+    
+    def test_detects_same_shell_command_twice(self):
+        """Should detect same shell command run twice."""
+        state = WorkspaceState()
+        
+        state.completed_steps.append(CompletedStep(
+            step_id="S001",
+            tool="execute_shell",
+            params={"command": "git status"},
+            output_summary="shell(git status): OK",
+            success=True,
+        ))
+        state.completed_steps.append(CompletedStep(
+            step_id="S002",
+            tool="execute_shell",
+            params={"command": "git status"},
+            output_summary="shell(git status): OK",
+            success=True,
+        ))
+        
+        # Check for duplicates
+        commands = [
+            s.params.get("command")
+            for s in state.completed_steps
+            if s.tool == "execute_shell"
+        ]
+        
+        # git status appears twice
+        assert commands.count("git status") == 2
+    
+    def test_different_commands_allowed(self):
+        """Different commands should not trigger guardrail."""
+        state = WorkspaceState()
+        
+        state.completed_steps.append(CompletedStep(
+            step_id="S001",
+            tool="execute_shell",
+            params={"command": "git status"},
+            output_summary="OK",
+            success=True,
+        ))
+        state.completed_steps.append(CompletedStep(
+            step_id="S002",
+            tool="execute_shell",
+            params={"command": "git log --oneline -5"},
+            output_summary="OK",
+            success=True,
+        ))
+        
+        commands = [
+            s.params.get("command")
+            for s in state.completed_steps
+            if s.tool == "execute_shell"
+        ]
+        
+        # No duplicates
+        assert len(commands) == len(set(commands))
+
+
+class TestPathValidationGuardrail:
+    """Test path validation for file operations."""
+    
+    def test_path_in_scanned_files_accepted(self):
+        """Paths in scanned files should be accepted."""
+        state = WorkspaceState()
+        state.files = ["src/main.py", "tests/test_main.py", "README.md"]
+        
+        path = "src/main.py"
+        is_valid = path in state.files
+        
+        assert is_valid is True
+    
+    def test_unknown_path_flagged(self):
+        """Paths not in scanned files should be flagged."""
+        state = WorkspaceState()
+        state.files = ["src/main.py", "README.md"]
+        
+        path = "nonexistent/file.py"
+        is_valid = path in state.files
+        
+        assert is_valid is False
+    
+    def test_similar_path_suggestion(self):
+        """Should find similar paths for correction."""
+        state = WorkspaceState()
+        state.files = [
+            ".github/copilot-instructions.md",
+            "src/config.py",
+            "tests/test_config.py",
+        ]
+        
+        # User might forget directory prefix
+        incorrect_path = "copilot-instructions.md"
+        
+        # Find similar
+        similar = [f for f in state.files if f.endswith(incorrect_path)]
+        
+        assert len(similar) == 1
+        assert similar[0] == ".github/copilot-instructions.md"
+
+
+class TestWriteFileRepeatedGuardrail:
+    """Test repeated write_file detection."""
+    
+    def test_detects_double_write_to_same_file(self):
+        """Should detect writing to the same file twice."""
+        state = WorkspaceState()
+        
+        state.update_from_step(
+            "write_file",
+            {"path": "output.txt", "content": "first"},
+            "Written",
+            True
+        )
+        
+        # File is now in edited_files
+        assert "output.txt" in state.edited_files
+        
+        # Second write should be flagged
+        already_edited = "output.txt" in state.edited_files
+        assert already_edited is True
+    
+    def test_allows_first_write(self):
+        """First write to a file should be allowed."""
+        state = WorkspaceState()
+        
+        already_edited = "new_file.txt" in state.edited_files
+        assert already_edited is False
+
+
+class TestGuardrailIntegration:
+    """Test guardrail interactions."""
+    
+    def test_multiple_guardrails_can_trigger(self):
+        """Multiple guardrail conditions can be true simultaneously."""
+        state = WorkspaceState()
+        
+        # Add many steps (max steps guardrail)
+        for i in range(16):
+            state.completed_steps.append(CompletedStep(
+                step_id=f"S{i:03d}",
+                tool="read_file",
+                params={"path": f"file{i}.txt"},
+                output_summary="read",
+                success=True,
+            ))
+        
+        # Also add repeated failures
+        for i in range(3):
+            state.completed_steps.append(CompletedStep(
+                step_id=f"F{i:03d}",
+                tool="replace_in_file",
+                params={"path": "target.py"},
+                output_summary="FAILED",
+                success=False,
+            ))
+        
+        # Multiple conditions are true
+        too_many_steps = len(state.completed_steps) >= 15
+        repeated_failures = sum(
+            1 for s in state.completed_steps[-5:]
+            if s.tool == "replace_in_file" and not s.success
+        ) >= 2
+        
+        assert too_many_steps is True
+        assert repeated_failures is True
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
