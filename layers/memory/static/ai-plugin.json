@@ -10,7 +10,7 @@
   },
   "api": {
     "type": "openapi",
-    "url": "http://aj:8000/.well-known/openapi.yaml",
+    "url": "http://memory_api:8000/.well-known/openapi.yaml",
     "has_user_authentication": false
   },
   "contact_email": "aj@westerfield.cloud"

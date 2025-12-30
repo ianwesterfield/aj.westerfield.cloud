@@ -420,8 +420,8 @@ async def get_state() -> StateResponse:
 
 class SetUserInfoRequest(BaseModel):
     """Request to set user info in workspace state."""
-    name: str = Field(None, description="User's name")
-    email: str = Field(None, description="User's email")
+    name: str = Field(None, description="User's name").__str__()
+    email: str = Field(None, description="User's email").__str__()
 
 
 @router.post("/set-user-info")
@@ -457,9 +457,31 @@ async def _execute_tool(workspace_root: str, tool: str, params: dict) -> dict:
                 path = resolved_params["path"]
                 project_name = workspace_root.rstrip("/").split("/")[-1].lower()
                 
-                if path == "." or path == "" or path.lower() == project_name:
-                    resolved_params["path"] = workspace_root
-                elif not path.startswith("/"):
+                # Normalize path: strip leading/trailing slashes for comparison
+                path_normalized = path.strip("/").lower()
+                
+                # Check if path is current dir, empty, project name, or variations
+                if path == "." or path == "" or path_normalized == project_name or path_normalized.startswith(project_name):
+                    
+                    # Either exact match or subpath within workspace
+                    if path_normalized == project_name or path == "." or path == "":
+                        resolved_params["path"] = workspace_root
+                    else:
+                        # Subpath like "aj.westerfield.cloud/filters" -> strip project prefix
+                        subpath = path_normalized[len(project_name):].lstrip("/")
+                    
+                        if subpath:
+                            resolved_params["path"] = f"{workspace_root}/{subpath}"
+                        else:
+                            resolved_params["path"] = workspace_root
+                elif path.startswith("/"):
+                    # Absolute path - validate it's within workspace
+                    if not path.startswith(workspace_root.rstrip("/")):
+                        logger.warning(f"Path {path} outside workspace, using workspace root")
+                        resolved_params["path"] = workspace_root
+                    # else: keep absolute path as-is
+                else:
+                    # Relative path - prepend workspace
                     resolved_params["path"] = f"{workspace_root}/{path}"
             
             resp = await client.post(
@@ -560,13 +582,16 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
     user_text = request.task
     if request.memory_context:
         user_info = []
+        
         for item in request.memory_context[:3]:
             facts = item.get('facts')
+        
             if facts and isinstance(facts, dict):
                 for fact_type, fact_value in facts.items():
                     user_info.append(f"{fact_type}: {fact_value}")
             else:
                 text = item.get('user_text', '')
+        
                 if text:
                     user_info.append(text)
         
@@ -582,23 +607,59 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
         yield f"data: {json.dumps({'event_type': 'error', 'status': f'Failed to set workspace: {e}', 'done': True})}\n\n"
         return
     
-    # Emit initial status
-    yield f"data: {json.dumps({'event_type': 'status', 'status': '✨ Thinking...', 'done': False})}\n\n"
+    # Emit thinking blockquote prefix (status already emitted by caller)
+    yield f"data: {json.dumps({'event_type': 'thinking', 'content': '> 💭 '})}\n\n"
     
     step_history = []
     all_results = []
     edit_tools = ("write_file", "replace_in_file", "insert_in_file", "append_to_file")
     
+    # Queue for status updates from background model checker
+    status_queue: asyncio.Queue = asyncio.Queue()
+    
+    def on_model_status(status_msg: str):
+        """Callback to queue status updates from model checker."""
+        try:
+            status_queue.put_nowait(status_msg)
+        except asyncio.QueueFull:
+            pass  # Drop if queue is full
+    
     for step_num in range(1, request.max_steps + 1):
         try:
-            # Get next step from reasoning engine
-            step = await reasoning_engine.generate_next_step(
+            # Get next step from reasoning engine with streaming
+            step = None
+            llm_tokens = ""
+            
+            async for token, parsed_step in reasoning_engine.generate_next_step_streaming(
                 task=user_text,
                 history=[],  # History is now in workspace_state
                 memory_context=[],
                 workspace_context=None,
                 workspace_state=workspace_state,
-            )
+                status_callback=on_model_status,
+            ):
+                # Drain any pending status updates
+                while not status_queue.empty():
+                    try:
+                        status_msg = status_queue.get_nowait()
+                        yield f"data: {json.dumps({'event_type': 'status', 'status': status_msg, 'done': False})}\n\n"
+                    except asyncio.QueueEmpty:
+                        break
+                
+                if token:
+                    # Stream each token as it arrives
+                    llm_tokens += token
+                    yield f"data: {json.dumps({'event_type': 'thinking', 'content': token})}\n\n"
+                if parsed_step is not None:
+                    step = parsed_step
+            
+            # End the thinking stream with newline
+            newline_event = json.dumps({'event_type': 'thinking', 'content': '\n'})
+            yield f"data: {newline_event}\n\n"
+            
+            if step is None:
+                logger.error("No step returned from reasoning engine")
+                break
             
             tool = step.tool
             params = step.params
@@ -613,25 +674,49 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
 """)
                 break
             
-            # Build status message
+            # Build status message - show LLM's note/reasoning more prominently
             tool_path = params.get("path", "")
             short_path = tool_path.split("/")[-1].split("\\")[-1] if tool_path else ""
-            reasoning_snippet = reasoning[:40] + "..." if len(reasoning) > 40 else reasoning
             
-            status_map = {
-                "scan_workspace": f"✨ {reasoning_snippet}, scanning 🔍 {short_path or 'the workspace'}",
-                "read_file": f"✨ {reasoning_snippet}, reading 📖 {short_path}",
-                "execute_shell": f"✨ {reasoning_snippet}, running 🖥️ {params.get('command', '')[:30]}...",
+            # Use the full note from LLM (up to 80 chars) - it's meant to be user-facing
+            note = reasoning[:80] if reasoning else ""
+            
+            # Icon-first format: [icon] [action] [target] — [LLM note]
+            tool_icons = {
+                "scan_workspace": "🔍",
+                "read_file": "📖",
+                "write_file": "✏️",
+                "replace_in_file": "✏️",
+                "insert_in_file": "✏️",
+                "append_to_file": "✏️",
+                "execute_shell": "🖥️",
             }
+            icon = tool_icons.get(tool, "⚡")
             
+            # Build action description
+            if tool == "scan_workspace":
+                action = f"Scanning {short_path or 'workspace'}"
+            elif tool == "read_file":
+                action = f"Reading {short_path}"
+            elif tool in edit_tools:
+                action = f"Editing {short_path}"
+            elif tool == "execute_shell":
+                cmd = params.get("command", "")[:25]
+                action = f"Running `{cmd}`..."
+            else:
+                action = tool
+            
+            # Combine: "🔍 Scanning workspace — Looking for project files"
+            if note:
+                status = f"{icon} {action} — {note}"
+            else:
+                status = f"{icon} {action}"
+            
+            # Silence batch edits after the first
             if tool in edit_tools:
                 edit_count = sum(1 for h in step_history if h["tool"] in edit_tools and h.get("success"))
-                if edit_count == 0:
-                    status = f"✨ {reasoning_snippet}, editing ✏️ {short_path}"
-                else:
+                if edit_count > 0:
                     status = None  # Silent for batch edits
-            else:
-                status = status_map.get(tool, f"✨ {reasoning_snippet}")
             
             if status:
                 yield f"data: {json.dumps({'event_type': 'status', 'step_num': step_num, 'tool': tool, 'status': status, 'done': False})}\n\n"
@@ -662,14 +747,28 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
             
             # Format result for context
             if success:
-                result_block = _format_result_block(tool, params, output, reasoning)
+                result_block = _format_result_block(tool, params, output.__str__(), reasoning)
                 all_results.append(result_block)
                 
-                # Yield result event
-                yield f"data: {json.dumps({'event_type': 'result', 'step_num': step_num, 'tool': tool, 'result': {'success': True, 'output_preview': (output[:500] if output else None)}, 'done': False})}\n\n"
+                # Yield result event with appropriate output length
+                # scan_workspace and execute_shell need more output; read_file can be longer
+                output_limit = 5000 if tool in ("scan_workspace", "execute_shell") else 2000
+                yield f"data: {json.dumps({'event_type': 'result', 'step_num': step_num, 'tool': tool, 'result': {'success': True, 'output_preview': (output[:output_limit] if output else None)}, 'done': False})}\n\n"
+                
+                # Stream observation
+                output_lines = len(output.split('\n')) if output else 0
+                if output_lines > 0:
+                    obs_content = f'\n> ↳ _Got {output_lines} lines_\n'
+                    obs_event = json.dumps({'event_type': 'thinking', 'content': obs_content})
+                    yield f"data: {obs_event}\n\n"
             else:
                 error_snippet = (error[:40] + "...") if error and len(error) > 40 else (error or "unknown")
                 yield f"data: {json.dumps({'event_type': 'status', 'step_num': step_num, 'tool': tool, 'status': f'⚠️ Failed: {error_snippet}', 'done': False})}\n\n"
+                
+                # Stream error observation
+                err_content = f'\n> ↳ ❌ _{error_snippet}_\n'
+                err_event = json.dumps({'event_type': 'thinking', 'content': err_content})
+                yield f"data: {err_event}\n\n"
                 
                 all_results.append(f"""### Step {step_num} Error ###
 **Tool:** {tool}
@@ -711,8 +810,27 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
     else:
         final_context = None
     
+    # Build contextual completion status
+    if step_history:
+        # Determine primary action from tools used
+        tools_used = [h["tool"] for h in step_history if h.get("success")]
+        edit_tools = {"write_file", "replace_in_file", "insert_in_file", "append_to_file"}
+        
+        if any(t in edit_tools for t in tools_used):
+            complete_status = f"✅ Done — edited {sum(1 for t in tools_used if t in edit_tools)} file(s)"
+        elif "execute_shell" in tools_used:
+            complete_status = f"✅ Done — ran {sum(1 for t in tools_used if t == 'execute_shell')} command(s)"
+        elif "scan_workspace" in tools_used:
+            complete_status = f"✅ Done — scanned {sum(1 for t in tools_used if t == 'scan_workspace')} location(s)"
+        elif "read_file" in tools_used:
+            complete_status = f"✅ Done — read {sum(1 for t in tools_used if t == 'read_file')} file(s)"
+        else:
+            complete_status = f"✅ Done — {len(step_history)} step(s)"
+    else:
+        complete_status = "✅ Done"
+    
     # Emit completion with final context
-    yield f"data: {json.dumps({'event_type': 'complete', 'status': '✅ Ready', 'result': {'context': final_context, 'steps_executed': len(step_history)}, 'done': True})}\n\n"
+    yield f"data: {json.dumps({'event_type': 'complete', 'status': complete_status, 'result': {'context': final_context, 'steps_executed': len(step_history)}, 'done': True})}\n\n"
 
 
 @router.post("/run-task")

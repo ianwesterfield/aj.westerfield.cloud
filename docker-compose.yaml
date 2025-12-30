@@ -12,6 +12,8 @@ services:
     runtime: nvidia
     environment:
       - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_KEEP_ALIVE=-1 # Keep models loaded forever (no auto-unload)
+      - OLLAMA_NUM_PARALLEL=2 # Allow 2 concurrent requests
     ports:
       - "11434:11434"
     volumes:
@@ -50,20 +52,22 @@ services:
       - webtools_network
 
   # -------------------------------------------------
-  # AJ (Memory + Agent Core)
+  # Memory API (Memory + Agent Core)
   # -------------------------------------------------
-  aj:
+  memory_api:
     build:
       context: ./layers
       dockerfile: memory/Dockerfile
       args:
-        BASE_REGISTRY: ${BASE_REGISTRY:-aj}
-    container_name: aj
+        BASE_REGISTRY: ${BASE_REGISTRY:-ianwesterfield}
+    container_name: memory_api
     environment:
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - INDEX_NAME=user_memory_collection
-      - EMBEDDING_PROVIDER=sentence_transformers
+      - EMBEDDING_PROVIDER=sentence_transformers # Keep ST for embeddings (768-dim, fast)
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_MODEL=qwen2.5:32b # Use same model as orchestrator
       - SUMMARY_MODEL=sshleifer/distilbart-cnn-12-6
       - SUMMARY_DEVICE=0 # Use cpu for summarizer (or 0 for GPU)
       - HF_HOME=/models
@@ -87,7 +91,7 @@ services:
       context: ./layers/pragmatics
       dockerfile: Dockerfile
       args:
-        BASE_REGISTRY: ${BASE_REGISTRY:-aj}
+        BASE_REGISTRY: ${BASE_REGISTRY:-ianwesterfield}
     container_name: pragmatics_api
     ports:
       - "8001:8001"
@@ -97,7 +101,7 @@ services:
       - CLASSIFIER_MODEL=distilbert_intent
       - INTENT_CONFIDENCE_THRESHOLD=0.50
     depends_on:
-      - aj
+      - memory_api
     restart: unless-stopped
     networks:
       - webtools_network
@@ -110,7 +114,7 @@ services:
       context: ./layers/extractor
       dockerfile: Dockerfile
       args:
-        BASE_REGISTRY: ${BASE_REGISTRY:-aj}
+        BASE_REGISTRY: ${BASE_REGISTRY:-ianwesterfield}
     container_name: extractor_api
     ports:
       - "8002:8002"
@@ -143,8 +147,8 @@ services:
       - "8004:8004"
     environment:
       - OLLAMA_HOST=http://ollama:11434
-      - OLLAMA_MODEL=qwen2.5:14b
-      - MEMORY_API_URL=http://aj:8000
+      - OLLAMA_MODEL=qwen2.5:32b
+      - MEMORY_API_URL=http://memory_api:8000
       - EXECUTOR_API_URL=http://executor_api:8005
       - MAX_PARALLEL_TASKS=5
       - WORKSPACE_ROOT=/workspace
@@ -153,7 +157,7 @@ services:
       - ${HOST_WORKSPACE_PATH:-C:/Code}:/workspace:rw # Mount host code directory
     depends_on:
       - ollama
-      - aj
+      - memory_api
     restart: unless-stopped
     networks:
       - webtools_network
@@ -190,6 +194,7 @@ services:
       - USER_AGENT=WesterfieldCloud-OpenWebUI/1.0
       - GLOBAL_LOG_LEVEL=DEBUG
       - OLLAMA_BASE_URL=http://ollama:11434
+      - ENABLE_API_KEY=true # Allow API key authentication
 
       # Note: Set these manually or use docker secrets in production
       # - WEBUI_ADMIN_USERNAME=admin
@@ -201,8 +206,8 @@ services:
       - MEMORY_SHORT_TERM_MEMORY_DEPTH=15
       - TOOLS_FUNCTION_CALLING_ENABLED=true
       - TOOLS_FUNCTION_CALLING_LLMS=ollama
-      - MEMORY_API_URL=http://aj:8000
-      - TOOLS_DISCOVERY_URL=http://aj:8000/api/tools
+      - MEMORY_API_URL=http://memory_api:8000
+      - TOOLS_DISCOVERY_URL=http://memory_api:8000/api/tools
     ports:
       - "8180:8080" # Host 8180 -> Container 8080 (8080 often reserved by Windows/Hyper-V)
     volumes:

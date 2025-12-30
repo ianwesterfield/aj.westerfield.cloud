@@ -9,10 +9,9 @@ import asyncio
 import logging
 import shlex
 import shutil
+
 from typing import Any, Dict, Optional, Set
-
 from schemas.models import WorkspaceContext
-
 
 logger = logging.getLogger("executor.shell")
 
@@ -82,7 +81,7 @@ class ShellHandler:
                 "error": f"Invalid command syntax: {e}",
                 "exit_code": -1,
             }
-        
+
         if not tokens:
             return {
                 "success": False,
@@ -90,30 +89,71 @@ class ShellHandler:
                 "error": "Empty command",
                 "exit_code": -1,
             }
-        
-        # Check for blocked commands
-        base_command = tokens[0].lower()
-        if base_command in self.blocked_commands:
-            return {
-                "success": False,
-                "output": None,
-                "error": f"Command '{base_command}' is blocked for security reasons",
-                "exit_code": -1,
-            }
+
+        # Detect simple pipelines/redirections that require a real shell (e.g., pipes)
+        PIPE_TOKENS = {"|", "||", "&&", ";", ">", ">>", "2>", "2>>", "<"}
+        uses_pipeline = any(tok in PIPE_TOKENS for tok in tokens)
+
+        # Validate top-level commands against blocklist (first token of each segment)
+        def _segments(first_tokens: list[str]) -> bool:
+            return any(cmd in self.blocked_commands for cmd in first_tokens)
+
+        if uses_pipeline:
+            # Split on pipeline/control tokens to find segment entrypoints
+            segment_starts = []
+            current = []
+            for tok in tokens:
+                if tok in PIPE_TOKENS:
+                    if current:
+                        segment_starts.append(current[0].lower())
+                        current = []
+                else:
+                    current.append(tok)
+            if current:
+                segment_starts.append(current[0].lower())
+
+            if _segments(segment_starts):
+                blocked = [c for c in segment_starts if c in self.blocked_commands][0]
+                return {
+                    "success": False,
+                    "output": None,
+                    "error": f"Command '{blocked}' is blocked for security reasons",
+                    "exit_code": -1,
+                }
+        else:
+            base_command = tokens[0].lower()
+            if base_command in self.blocked_commands:
+                return {
+                    "success": False,
+                    "output": None,
+                    "error": f"Command '{base_command}' is blocked for security reasons",
+                    "exit_code": -1,
+                }
         
         # Get working directory
         cwd = None
+        
         if workspace_context:
             cwd = workspace_context.cwd
         
-        # Execute (shell=False for safety)
+        # Execute: use exec for simple commands, shell for pipelines/redirection
+        process = None
+        
         try:
-            process = await asyncio.create_subprocess_exec(
-                *tokens,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=cwd,
-            )
+            if uses_pipeline:
+                process = await asyncio.create_subprocess_shell(
+                    command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=cwd,
+                )
+            else:
+                process = await asyncio.create_subprocess_exec(
+                    *tokens,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=cwd,
+                )
             
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(),
@@ -128,7 +168,9 @@ class ShellHandler:
             }
             
         except asyncio.TimeoutError:
-            process.kill()
+            if process is not None:
+                process.kill()
+                
             return {
                 "success": False,
                 "output": None,

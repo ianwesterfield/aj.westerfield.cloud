@@ -55,7 +55,7 @@ flowchart TD
 
 | Service            | Port  | What it does                           |
 | ------------------ | ----- | -------------------------------------- |
-| `aj`               | 8000  | Agent core + semantic memory           |
+| `memory_api`       | 8000  | Agent core + semantic memory           |
 | `pragmatics_api`   | 8001  | 4-class intent classifier (DistilBERT) |
 | `extractor_api`    | 8002  | Image/audio/PDF extraction (GPU)       |
 | `orchestrator_api` | 8004  | Multi-step reasoning engine            |
@@ -205,19 +205,29 @@ All task intents go through the Orchestrator:
 
 ### 3. Status Messages
 
-Live feedback while processing:
+Live step-by-step feedback while processing:
 
-| Icon | What's happening   |
-| ---- | ------------------ |
-| ✨   | Thinking           |
-| 🔍   | Scanning workspace |
-| 📖   | Reading files      |
-| ✏️   | Editing files      |
-| ⚙️   | Running code       |
-| 💾   | Saving to memory   |
-| 📚   | Found memories     |
-| ✅   | Done               |
-| ❌   | Something broke    |
+| Icon | What's happening                       |
+| ---- | -------------------------------------- |
+| 💭   | Thinking/reasoning (initial)           |
+| ✨   | Processing started                     |
+| 📂   | list_files                             |
+| 📄   | read_file                              |
+| ✏️   | write_file                             |
+| 📝   | create_file                            |
+| 🔍   | search_files                           |
+| 🔎   | grep_files                             |
+| 🖥️   | shell                                  |
+| 💾   | memory_store                           |
+| 🔮   | memory_query                           |
+| ✂️   | file_edit                              |
+| ⚡   | other tools                            |
+| ✓    | step succeeded (in progress indicator) |
+| ✗    | step failed (in progress indicator)    |
+| ✅   | all steps complete                     |
+| ❌   | fatal error                            |
+
+**Progress format:** `📄 3. Reading config... [📂✓1 → 📄2 → 📄3]`
 
 ### 4. Memory Integration
 

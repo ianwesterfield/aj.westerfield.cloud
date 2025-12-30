@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 # Configuration
 # ============================================================================
 
-MEMORY_API_URL = os.getenv("MEMORY_API_URL", "http://aj:8000")
+MEMORY_API_URL = os.getenv("MEMORY_API_URL", "http://memory_api:8000")
 EXTRACTOR_API_URL = os.getenv("EXTRACTOR_API_URL", "http://extractor_api:8002")
 ORCHESTRATOR_API_URL = os.getenv("ORCHESTRATOR_API_URL", "http://orchestrator_api:8004")
 EXECUTOR_API_URL = os.getenv("EXECUTOR_API_URL", "http://executor_api:8005")
@@ -275,28 +275,30 @@ async def _orchestrate_task(
     workspace_root: Optional[str],
     __event_emitter__,
     memory_context: Optional[List[dict]] = None,
-) -> Optional[str]:
+) -> Tuple[Optional[str], str]:
     """
     Handle task intents via orchestrator streaming endpoint.
     
     Flow:
       1. POST /run-task to orchestrator (starts SSE stream)
       2. Forward status events to __event_emitter__
-      3. Return final context when complete
+      3. Return (final_context, streamed_content) when complete
     
     The agentic loop now runs in the orchestrator, not here.
+    Returns both the context for LLM and the accumulated streamed content
+    to preserve thinking/results in the final response.
     """
     if not workspace_root:
-        return None
+        return None, ""
     
     # Build complete task description (handles continuations)
     user_text = _build_task_description(messages)
     
+    # Accumulate all streamed content so it persists after LLM responds
+    streamed_content = ""
+    
     try:
-        await __event_emitter__({
-            "type": "status",
-            "data": {"description": "✨ Thinking...", "done": False, "hidden": False}
-        })
+        # Note: Don't emit "Thinking" here - orchestrator will emit it and we forward
         
         # Stream task execution from orchestrator
         import httpx
@@ -328,12 +330,45 @@ async def _orchestrate_task(
                     status = event.get("status", "")
                     done = event.get("done", False)
                     
-                    # Forward status events to UI
+                    # Forward status events to UI (these don't accumulate in message)
                     if event_type == "status" and status:
                         await __event_emitter__({
                             "type": "status",
                             "data": {"description": status, "done": done, "hidden": False}
                         })
+                    
+                    elif event_type == "thinking":
+                        # Stream thinking content to the message AND accumulate
+                        content = event.get("content", "")
+                        if content:
+                            streamed_content += content
+                            await __event_emitter__({
+                                "type": "message",
+                                "data": {"content": content}
+                            })
+                    
+                    elif event_type == "result":
+                        # Stream tool output in a code block
+                        tool = event.get("tool", "")
+                        result = event.get("result", {})
+                        output = result.get("output_preview", "")
+                        
+                        if output:
+                            # Format output as a fenced code block with tool context
+                            tool_labels = {
+                                "scan_workspace": "Directory listing",
+                                "read_file": "File content",
+                                "execute_shell": "Command output",
+                            }
+                            label = tool_labels.get(tool, f"{tool} output")
+                            
+                            # Stream the code block AND accumulate
+                            code_block = f"\n\n**{label}:**\n```\n{output}\n```\n"
+                            streamed_content += code_block
+                            await __event_emitter__({
+                                "type": "message",
+                                "data": {"content": code_block}
+                            })
                     
                     elif event_type == "error":
                         await __event_emitter__({
@@ -344,12 +379,14 @@ async def _orchestrate_task(
                     elif event_type == "complete":
                         result = event.get("result", {})
                         final_context = result.get("context")
+                        # Emit final completion status
+                        complete_status = event.get("status", "✅ Done")
                         await __event_emitter__({
                             "type": "status",
-                            "data": {"description": "✅ Ready", "done": True, "hidden": False}
+                            "data": {"description": complete_status, "done": True, "hidden": False}
                         })
                 
-                return final_context
+                return final_context, streamed_content
                 
     except Exception as e:
         print(f"[aj] Orchestrator streaming error: {e}")
@@ -357,7 +394,7 @@ async def _orchestrate_task(
             "type": "status",
             "data": {"description": f"❌ Error: {str(e)[:30]}", "done": True, "hidden": False}
         })
-        return None
+        return None, ""
 
 
 # ============================================================================
@@ -718,7 +755,7 @@ class Filter:
             description="Maximum memory items to inject as context"
         )
         workspace_root: str = Field(
-            default="/workspace/aj",
+            default="/workspace/aj.westerfield.cloud",
             description="Workspace root inside container (e.g., /workspace/myproject). "
                         "Maps to HOST_WORKSPACE_PATH on host machine."
         )
@@ -732,6 +769,8 @@ class Filter:
         """Initialize AJ filter."""
         self.user_valves = self.UserValves()
         self.toggle = True
+        # Track streamed content from orchestrator to preserve in final response
+        self._streamed_content = ""
         # Butler icon - person with bow tie silhouette
         self.icon = (
             "data:image/svg+xml;base64,"
@@ -904,17 +943,19 @@ class Filter:
                 if intent == "casual":
                     should_upgrade = _detect_task_continuation(user_text, messages, confidence)
                     if should_upgrade:
-                    print(f"[aj] Upgrading intent from casual to task (continuation detected)")
+                        print(f"[aj] Upgrading intent from casual to task (continuation detected)")
                 
                 # For task intents, engage orchestrator (pass memory context for user info)
                 if intent == "task" and self.user_valves.enable_orchestrator:
-                    orchestrator_context = await _orchestrate_task(
+                    orchestrator_context, streamed = await _orchestrate_task(
                         user_id,
                         messages,
                         self.user_valves.workspace_root if self.user_valves.workspace_root else None,
                         __event_emitter__,
                         memory_context=context,  # Pass user context (name, preferences)
                     )
+                    # Store streamed content to prepend to LLM response in outlet
+                    self._streamed_content = streamed
             
             # Merge immediate image context (memory already searched above)
             if immediate_image_context:
@@ -928,6 +969,7 @@ class Filter:
             has_context = bool(context) or bool(orchestrator_context)
             
             # Emit status and inject
+            # Note: orchestrator already emitted "Ready" via complete event, so skip for tasks
             if has_context:
                 memory_count = len(context) if context else 0
                 
@@ -941,10 +983,12 @@ class Filter:
                         }
                     })
                 
-                await __event_emitter__({
-                    "type": "status",
-                    "data": {"description": "✅ Ready", "done": True, "hidden": False}
-                })
+                # Only emit Ready if we didn't go through orchestrator
+                if not orchestrator_context:
+                    await __event_emitter__({
+                        "type": "status",
+                        "data": {"description": "✅ Ready", "done": True, "hidden": False}
+                    })
                 
                 body = self._inject_context(body, context or [], orchestrator_context)
             
@@ -984,6 +1028,7 @@ class Filter:
         Post-response hook. Formats assistant responses for consistency.
         
         Ensures:
+        - Streamed thinking/results are preserved before LLM response
         - File/folder names are in `backticks`
         - Code references are in `backticks`
         - Lists and code blocks use fenced markdown
@@ -992,11 +1037,17 @@ class Filter:
         if not messages:
             return body
         
-        # Find last assistant message
+        # Find last assistant message and prepend streamed content
         for i in range(len(messages) - 1, -1, -1):
             if messages[i].get("role") == "assistant":
                 content = messages[i].get("content", "")
                 if isinstance(content, str):
+                    # Prepend any streamed thinking/results from orchestrator
+                    if self._streamed_content:
+                        # Add separator between streamed content and LLM response
+                        content = self._streamed_content + "\n\n---\n\n" + content
+                        # Clear for next request
+                        self._streamed_content = ""
                     messages[i]["content"] = self._format_response(content)
                 break
         

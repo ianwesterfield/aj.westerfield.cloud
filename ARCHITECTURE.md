@@ -83,18 +83,38 @@ The filter tracks execution results and feeds them back to the orchestrator:
 - Can adjust strategy based on errors
 - Can gather information across multiple steps before acting
 
-**Status Icons:**
+**Status Display (what the UI shows):**
 
-| Icon | Meaning             |
-| ---- | ------------------- |
-| ✨   | Thinking/Processing |
-| 🔍   | Scanning workspace  |
-| 📖   | Reading files       |
-| ✏️   | Editing files       |
-| ⚙️   | Running code        |
-| 💾   | Saving to memory    |
-| 📚   | Memories found      |
-| ✅   | Ready/Complete      |
+The status bar shows real-time step progress with tool icons and step numbers:
+
+| Icon | Tool/State                       |
+| ---- | -------------------------------- |
+| 💭   | Thinking/reasoning (initial)     |
+| ✨   | Processing started               |
+| 📂   | list_files                       |
+| 📄   | read_file                        |
+| ✏️   | write_file                       |
+| 📝   | create_file                      |
+| 🔍   | search_files                     |
+| 🔎   | grep_files                       |
+| 🖥️   | shell                            |
+| 💾   | memory_store                     |
+| 🔮   | memory_query                     |
+| ✂️   | file_edit                        |
+| ⚡   | other tools                      |
+| ✓    | step succeeded (in progress bar) |
+| ✗    | step failed (in progress bar)    |
+| ✅   | all steps complete               |
+| ❌   | fatal error                      |
+
+**Progress Display Format:**
+
+```
+📄 3. Reading config... [📂✓1 → 📄2 → 📄3]
+```
+
+Shows: current action, step number, and trail of completed steps (last 5)
+| ↳ | Observation/result indicator (in blockquote) |
 
 ---
 
@@ -374,7 +394,7 @@ User: "What's my name?"
 
 ```yaml
 services:
-  aj: 8000 # Memory + Filter serving
+  memory_api: 8000 # Memory + Filter serving
   pragmatics_api: 8001 # Intent classification
   extractor_api: 8002 # Media extraction (GPU)
   orchestrator_api: 8004 # Task planning

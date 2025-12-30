@@ -35,17 +35,17 @@ $ErrorActionPreference = "Stop"
 
 $ServiceConfig = @{
   "memory"     = @{
-    Context    = "tools-api"
-    Dockerfile = "memory/Dockerfile.base"
+    Context    = "layers/memory"
+    Dockerfile = "Dockerfile.base"
     ImageName  = "aj-memory-base"
   }
   "extractor"  = @{
-    Context    = "tools-api/extractor"
+    Context    = "layers/extractor"
     Dockerfile = "Dockerfile.base"
     ImageName  = "aj-extractor-base"
   }
   "pragmatics" = @{
-    Context    = "tools-api/pragmatics"
+    Context    = "layers/pragmatics"
     Dockerfile = "Dockerfile.base"
     ImageName  = "aj-pragmatics-base"
   }

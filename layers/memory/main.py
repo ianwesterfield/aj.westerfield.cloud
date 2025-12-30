@@ -122,7 +122,7 @@ def get_memory_filter() -> str:
     """
     Legacy endpoint - redirects to /api/agent.
     
-    Deprecated: Use http://aj:8000/api/agent instead.
+    Deprecated: Use http://memory_api:8000/api/agent instead.
     """
     logger.debug("[filter] Legacy /api/memory/filter requested - use /api/agent")
     return get_agent_filter()
@@ -133,7 +133,7 @@ def get_agent_filter() -> str:
     """
     Serve the AJ agentic filter plugin source code.
     
-    Primary endpoint: http://aj:8000/api/agent
+    Primary endpoint: http://memory_api:8000/api/agent
     
     Open-WebUI periodically calls this endpoint to fetch the filter plugin
     source, parses it to find the Filter class, and instantiates it to
@@ -156,7 +156,7 @@ def get_aj_filter() -> str:
     """
     Legacy endpoint - redirects to /api/agent.
     
-    Deprecated: Use http://aj:8000/api/agent instead.
+    Deprecated: Use http://memory_api:8000/api/agent instead.
     """
     logger.debug("[filter] Legacy /api/aj/filter requested - use /api/agent")
     return get_agent_filter()
