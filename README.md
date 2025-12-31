@@ -80,9 +80,9 @@ Pragmatics uses a fine-tuned DistilBERT (98% accuracy) to classify what you want
 
 ## File Operations
 
-All task requests go to the Orchestrator, which reasons about what you want and picks the right tool. The Executor then does the actual work.
+All task requests go to the Orchestrator, which **reasons** about what you want, **plans** the steps, and **executes** them. The Orchestrator has these capabilities:
 
-### Executor Tools
+### Available Actions
 
 | Tool              | What it does                                         |
 | ----------------- | ---------------------------------------------------- |
@@ -162,13 +162,14 @@ jeeves/
 │   │       └── entity_extractor.py # spaCy NER
 │   ├── extractor/            # Media extraction (port 8002)
 │   │   └── services/         # LLaVA, Whisper, PDF
-│   ├── orchestrator/         # Reasoning engine (port 8004)
+│   ├── orchestrator/         # Reasoning + execution engine (port 8004)
 │   │   └── services/
-│   │       ├── reasoning_engine.py # LLM step generation
-│   │       ├── task_planner.py     # Batch expansion & parallelization
-│   │       ├── memory_connector.py # Pattern retrieval from memory
-│   │       └── workspace_state.py  # External state tracking
-│   └── executor/             # Code/file execution (port 8005)
+│   │       ├── reasoning_engine.py # LLM-powered step generation
+│   │       ├── file_handler.py     # File ops (read, write, edit)
+│   │       ├── shell_handler.py    # Shell command execution
+│   │       ├── workspace_state.py  # State tracking across messages
+│   │       └── memory_connector.py # Pattern retrieval from memory
+│   └── executor/             # Legacy (now merged into orchestrator)
 │       └── services/
 │           ├── file_handler.py      # read, write, replace, insert, append
 │           ├── polyglot_handler.py  # Python, Node, PowerShell
@@ -185,25 +186,46 @@ jeeves/
 # You say: "list the files in this workspace"
 #
 # 1. Intent classified as "task" (99% confidence)
-# 2. Task goes to Orchestrator for reasoning
-# 3. Orchestrator picks: scan_workspace tool
-# 4. Executor runs scan with gitignore support
-# 5. Pretty-formatted table injected into context
-# 6. LLM presents the results
+# 2. Task sent to Orchestrator with workspace context
+# 3. Orchestrator REASONS about the task:
+#    - "User wants to see files → I should explore the directory"
+#    - Decides on action: scan the workspace root
+# 4. Orchestrator EXECUTES the action (executor is merged in)
+# 5. Results cached in workspace state for follow-up questions
+# 6. Pretty-formatted output injected into LLM context
+# 7. LLM presents a natural summary to the user
 ```
 
-### 2. Always Delegate (No Shortcuts)
+### 2. Agentic Reasoning Loop
 
-All task intents go through the Orchestrator:
+The Orchestrator doesn't just "pick tools" — it **reasons** about your task and **plans** what to do:
 
 ```python
-# Flow in _orchestrate_task():
-1. Set workspace context on Orchestrator
-2. Get next step (tool + params) from Orchestrator
-3. Execute tool via Executor API
-4. Return formatted results for context injection
+# Internal reasoning flow:
+1. LLM receives: task description + current workspace state
+2. LLM thinks: "What does the user need? What do I already know?"
+3. LLM decides: Next action to take (or complete if done)
+4. Action executes → results added to state
+5. Loop continues until task is complete
 
-# No hardcoded patterns—Orchestrator decides everything
+# Example multi-step reasoning:
+User: "Add my name to the credits in README"
+  → Step 1: "I need to read README.md first to see the current content"
+  → Step 2: "Found credits section, I'll insert the name there"
+  → Step 3: "Done, file updated"
+```
+
+### 3. State Persistence
+
+Workspace state persists across messages in a session:
+
+```python
+# First message: "scan my files"
+→ Orchestrator scans, caches file metadata (names, sizes, dates)
+
+# Second message: "which are largest?"
+→ Orchestrator sees cached state, answers immediately from memory
+→ No re-scanning needed — uses LARGEST FILES from prior scan
 ```
 
 ### 3. Status Messages
