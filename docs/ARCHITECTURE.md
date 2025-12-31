@@ -1,13 +1,27 @@
-# AJ Architecture Documentation
+# Mesosync Architecture Documentation
+
+> **AJ** is the user-facing persona • **Mesosync** is the coordination backbone • **FunnelCloud** agents extend reach
 
 ## Overview
 
-AJ is an agentic-capable AI-based assistant for Open-WebUI that provides:
+Mesosync is a **Knowledge-centric AI platform**. The system accumulates knowledge about workspaces, systems, and patterns — then recalls that knowledge when relevant.
+
+### Current Capabilities (Mesosync Core)
 
 - **Semantic Memory** — Stores and retrieves conversation context from Qdrant using intent classification (4-class: casual/save/recall/task)
 - **Workspace Operations** — Read, list, scan, and edit files in mounted workspace
 - **Surgical File Editing** — Replace, insert, append operations with sandbox enforcement
 - **Code Execution** — Python, Node.js, and PowerShell execution in sandboxed environment
+- **Knowledge Persistence** — Save workspace knowledge to Qdrant for later recall
+
+### Planned Capabilities (FunnelCloud Agents)
+
+- **Distributed Execution** — .NET 8 agents on any machine the user controls
+- **Agent Discovery** — UDP broadcast per-conversation, lazy re-discovery on failure
+- **Trust Model** — mTLS with build-time CA fingerprint pinning
+- **Credential Elevation** — Try-then-elevate with session+agent scoped credentials
+
+See [docs/FunnelCloud-Design.md](docs/FunnelCloud-Design.md) for the FunnelCloud roadmap.
 
 ---
 
@@ -479,6 +493,17 @@ class WorkspaceContext:
     allow_code_execution: bool # Enable code runners
     allowed_languages: List[str] # Permitted languages
 ```
+
+---
+
+## Documentation
+
+| Document                                                           | Purpose                                 |
+| ------------------------------------------------------------------ | --------------------------------------- |
+| [ARCHITECTURE.md](ARCHITECTURE.md)                                 | This file — current system architecture |
+| [docs/FunnelCloud-Design.md](docs/FunnelCloud-Design.md)           | FunnelCloud distributed agents design   |
+| [.github/copilot-instructions.md](.github/copilot-instructions.md) | AI coding assistant guidance            |
+| [README.md](README.md)                                             | Project overview and quickstart         |
 
 ---
 
