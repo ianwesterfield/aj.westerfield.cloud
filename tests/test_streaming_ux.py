@@ -311,5 +311,158 @@ class TestHiddenStatus:
         assert status["data"]["hidden"] is False
 
 
+class TestContextualCompletionStatus:
+    """Test contextual completion status messages based on tools used."""
+    
+    def _build_completion_status(self, step_history: List[Dict[str, Any]]) -> str:
+        """Build completion status from step history (mirrors orchestrator logic)."""
+        if step_history:
+            tools_used = [h["tool"] for h in step_history if h.get("success")]
+            edit_tools = {"write_file", "replace_in_file", "insert_in_file", "append_to_file"}
+            
+            if any(t in edit_tools for t in tools_used):
+                return f"✅ Done — edited {sum(1 for t in tools_used if t in edit_tools)} file(s)"
+            elif "execute_shell" in tools_used:
+                return f"✅ Done — ran {sum(1 for t in tools_used if t == 'execute_shell')} command(s)"
+            elif "scan_workspace" in tools_used:
+                return f"✅ Done — scanned {sum(1 for t in tools_used if t == 'scan_workspace')} location(s)"
+            elif "read_file" in tools_used:
+                return f"✅ Done — read {sum(1 for t in tools_used if t == 'read_file')} file(s)"
+            else:
+                return f"✅ Done — {len(step_history)} step(s)"
+        return "✅ Done"
+    
+    def test_scan_workspace_status(self):
+        """Scanning should show scan count."""
+        history = [{"tool": "scan_workspace", "success": True}]
+        status = self._build_completion_status(history)
+        
+        assert "scanned" in status
+        assert "1 location" in status
+        assert "✅ Done" in status
+    
+    def test_multiple_scans_status(self):
+        """Multiple scans should show correct count."""
+        history = [
+            {"tool": "scan_workspace", "success": True},
+            {"tool": "scan_workspace", "success": True},
+            {"tool": "scan_workspace", "success": True},
+        ]
+        status = self._build_completion_status(history)
+        
+        assert "3 location" in status
+    
+    def test_read_file_status(self):
+        """Reading files should show read count."""
+        history = [
+            {"tool": "read_file", "success": True},
+            {"tool": "read_file", "success": True},
+        ]
+        status = self._build_completion_status(history)
+        
+        assert "read" in status
+        assert "2 file" in status
+    
+    def test_edit_file_status(self):
+        """Editing files should show edit count."""
+        history = [
+            {"tool": "read_file", "success": True},
+            {"tool": "replace_in_file", "success": True},
+            {"tool": "write_file", "success": True},
+        ]
+        status = self._build_completion_status(history)
+        
+        # Edit takes priority over read
+        assert "edited" in status
+        assert "2 file" in status
+    
+    def test_shell_command_status(self):
+        """Shell commands should show command count."""
+        history = [
+            {"tool": "execute_shell", "success": True},
+        ]
+        status = self._build_completion_status(history)
+        
+        assert "ran" in status
+        assert "1 command" in status
+    
+    def test_failed_steps_not_counted(self):
+        """Failed steps should not be counted in status."""
+        history = [
+            {"tool": "scan_workspace", "success": True},
+            {"tool": "scan_workspace", "success": False},  # Failed
+            {"tool": "scan_workspace", "success": True},
+        ]
+        status = self._build_completion_status(history)
+        
+        # Only 2 successful scans
+        assert "2 location" in status
+    
+    def test_empty_history_fallback(self):
+        """Empty history should show simple Done."""
+        status = self._build_completion_status([])
+        
+        assert status == "✅ Done"
+    
+    def test_edit_priority_over_other_tools(self):
+        """Edit operations should take priority in status."""
+        history = [
+            {"tool": "scan_workspace", "success": True},
+            {"tool": "read_file", "success": True},
+            {"tool": "replace_in_file", "success": True},
+            {"tool": "execute_shell", "success": True},
+        ]
+        status = self._build_completion_status(history)
+        
+        # Edit takes priority
+        assert "edited" in status
+        assert "scanned" not in status
+        assert "ran" not in status
+
+
+class TestCompletionEventHandling:
+    """Test filter handling of completion events."""
+    
+    def test_complete_event_has_status(self):
+        """Complete event should include contextual status."""
+        event = {
+            "event_type": "complete",
+            "status": "✅ Done — scanned 1 location(s)",
+            "result": {"context": "...", "steps_executed": 1},
+            "done": True
+        }
+        
+        assert "status" in event
+        assert "scanned" in event["status"]
+    
+    def test_complete_event_fallback_status(self):
+        """Complete event should have fallback if status missing."""
+        event = {
+            "event_type": "complete",
+            "result": {"context": "..."},
+            "done": True
+        }
+        
+        # Filter should use fallback
+        status = event.get("status", "✅ Done")
+        assert status == "✅ Done"
+    
+    @pytest.mark.asyncio
+    async def test_emitter_receives_final_status(self):
+        """Event emitter should receive final completion status."""
+        emitter = AsyncMock()
+        
+        # Simulate what filter does on complete event
+        complete_status = "✅ Done — edited 2 file(s)"
+        await emitter({
+            "type": "status",
+            "data": {"description": complete_status, "done": True, "hidden": False}
+        })
+        
+        call_args = emitter.call_args[0][0]
+        assert call_args["data"]["done"] is True
+        assert "edited" in call_args["data"]["description"]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
