@@ -860,6 +860,8 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
   then list only TOP-LEVEL items (not full paths). Example: "filters/, layers/, README.md, etc."
 - Do NOT list every single file path - that's what the raw output is for
 - Keep your summary to 2-3 sentences max for simple queries
+- NEVER mention internal terms like "workspace state", "scan_workspace", "LARGEST FILES section", etc.
+- Speak naturally: "I found..." or "The largest files are..." NOT "The state shows..."
 """
         elif file_ops > 0:
             # User made edits - confirm what was done
@@ -870,6 +872,7 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
 - Use past tense: "I added...", "I created...", "I updated..."
 - Keep it concise - 1-2 sentences per file operation
 - Do NOT dump the entire file content in your response
+- NEVER mention internal terms like "workspace state", tool names, or section headers
 """
         else:
             # Generic - read operations, shell commands, etc.
@@ -880,6 +883,8 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
 - If they asked for specific info, provide just that info
 - Do NOT dump raw command output - summarize the key findings
 - Keep your response brief and helpful
+- NEVER mention internal terms like "workspace state", tool names, or section headers
+- Speak naturally as if you personally explored the files
 """
         
         final_context = header + "\n".join(all_results) + footer
