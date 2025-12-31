@@ -871,7 +871,7 @@ class Filter:
             
             await __event_emitter__({
                 "type": "status",
-                "data": {"description": "✨ Thinking...", "done": False, "hidden": False}
+                "data": {"description": "⏳ Thinking...", "done": False, "hidden": False}
             })
             
             # Extract user text for classification
@@ -899,7 +899,7 @@ class Filter:
                 await __event_emitter__({
                     "type": "status",
                     "data": {
-                        "description": f"💾 Saving {len(chunks)} chunk(s)...",
+                        "description": f"✏️ Saving {len(chunks)} chunk(s)...",
                         "done": False,
                         "hidden": False,
                     }
@@ -977,7 +977,7 @@ class Filter:
                     await __event_emitter__({
                         "type": "status",
                         "data": {
-                            "description": f"📚 {memory_count} relevant memories",
+                            "description": f"� Found {memory_count} memories",
                             "done": False,
                             "hidden": False,
                         }
@@ -995,7 +995,7 @@ class Filter:
             elif status == "saved":
                 await __event_emitter__({
                     "type": "status",
-                    "data": {"description": "💾 Saved to memory", "done": True, "hidden": False}
+                    "data": {"description": "✅ Saved", "done": True, "hidden": False}
                 })
             
             elif status == "skipped":

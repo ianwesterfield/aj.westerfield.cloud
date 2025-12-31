@@ -319,20 +319,20 @@ class ReasoningEngine:
                 if status["loaded"]:
                     if not model_was_loaded:
                         model_was_loaded = True
-                        new_status = f"🧠 Model loaded, generating..."
+                        new_status = f"⏳ Thinking..."
                     else:
                         # Model loaded, waiting for generation - update every 5s
-                        new_status = f"🧠 Generating... ({int(elapsed)}s)"
+                        new_status = f"⏳ Thinking... ({int(elapsed)}s)"
                 else:
                     # Model loading - show progress with time estimate
                     remaining = max(1, estimated_total - elapsed)
                     percent = min(95, int((elapsed / estimated_total) * 100))
                     
                     if elapsed < estimated_total:
-                        new_status = f"⏳ Loading model... {percent}% (~{remaining:.0f}s)"
+                        new_status = f"⏳ Loading... {percent}%"
                     else:
                         # Taking longer than expected
-                        new_status = f"⏳ Loading model... ({elapsed:.0f}s)"
+                        new_status = f"⏳ Loading... ({elapsed:.0f}s)"
                 
                 # Only emit if status changed (reduces spam)
                 if new_status != last_status:

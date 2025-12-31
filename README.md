@@ -207,27 +207,14 @@ All task intents go through the Orchestrator:
 
 Live step-by-step feedback while processing:
 
-| Icon | What's happening                       |
-| ---- | -------------------------------------- |
-| 💭   | Thinking/reasoning (initial)           |
-| ✨   | Processing started                     |
-| 📂   | list_files                             |
-| 📄   | read_file                              |
-| ✏️   | write_file                             |
-| 📝   | create_file                            |
-| 🔍   | search_files                           |
-| 🔎   | grep_files                             |
-| 🖥️   | shell                                  |
-| 💾   | memory_store                           |
-| 🔮   | memory_query                           |
-| ✂️   | file_edit                              |
-| ⚡   | other tools                            |
-| ✓    | step succeeded (in progress indicator) |
-| ✗    | step failed (in progress indicator)    |
-| ✅   | all steps complete                     |
-| ❌   | fatal error                            |
+| Icon | What's happening           |
+| ---- | -------------------------- |
+| ⏳   | Thinking/loading/working   |
+| 🔍   | Reading/searching/scanning |
+| ✏️   | Writing/editing/saving     |
+| ✅   | Done                       |
 
-**Progress format:** `📄 3. Reading config... [📂✓1 → 📄2 → 📄3]`
+**Progress format:** `🔍 Reading config.json — Checking settings`
 
 ### 4. Memory Integration
 
@@ -259,7 +246,6 @@ Invoke-RestMethod -Uri 'http://localhost:8001/api/pragmatics/classify' -Method P
 ```
 
 ```
-
 ## License
 
 MIT
@@ -267,4 +253,5 @@ MIT
 ## Credits
 
 - **Ian Westerfield** - Creator and maintainer
+- **GitHub CoPilot** - Instructor and punching bag
 ```

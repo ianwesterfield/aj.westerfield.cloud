@@ -681,17 +681,17 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
             # Use the full note from LLM (up to 80 chars) - it's meant to be user-facing
             note = reasoning[:80] if reasoning else ""
             
-            # Icon-first format: [icon] [action] [target] — [LLM note]
+            # Simplified icons: ⏳ working, 🔍 reading, ✏️ writing, ✅ done
             tool_icons = {
                 "scan_workspace": "🔍",
-                "read_file": "📖",
+                "read_file": "🔍",
                 "write_file": "✏️",
                 "replace_in_file": "✏️",
                 "insert_in_file": "✏️",
                 "append_to_file": "✏️",
-                "execute_shell": "🖥️",
+                "execute_shell": "⏳",
             }
-            icon = tool_icons.get(tool, "⚡")
+            icon = tool_icons.get(tool, "⏳")
             
             # Build action description
             if tool == "scan_workspace":
@@ -810,22 +810,10 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
     else:
         final_context = None
     
-    # Build contextual completion status
+    # Build completion status
     if step_history:
-        # Determine primary action from tools used
-        tools_used = [h["tool"] for h in step_history if h.get("success")]
-        edit_tools = {"write_file", "replace_in_file", "insert_in_file", "append_to_file"}
-        
-        if any(t in edit_tools for t in tools_used):
-            complete_status = f"✅ Done — edited {sum(1 for t in tools_used if t in edit_tools)} file(s)"
-        elif "execute_shell" in tools_used:
-            complete_status = f"✅ Done — ran {sum(1 for t in tools_used if t == 'execute_shell')} command(s)"
-        elif "scan_workspace" in tools_used:
-            complete_status = f"✅ Done — scanned {sum(1 for t in tools_used if t == 'scan_workspace')} location(s)"
-        elif "read_file" in tools_used:
-            complete_status = f"✅ Done — read {sum(1 for t in tools_used if t == 'read_file')} file(s)"
-        else:
-            complete_status = f"✅ Done — {len(step_history)} step(s)"
+        step_count = len(step_history)
+        complete_status = f"✅ Done" if step_count == 1 else f"✅ Done ({step_count} steps)"
     else:
         complete_status = "✅ Done"
     
