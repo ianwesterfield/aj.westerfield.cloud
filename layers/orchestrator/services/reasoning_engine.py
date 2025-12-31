@@ -159,8 +159,11 @@ NEVER guess or fabricate user information.
 - insert_in_file: ADD NEW text at start or end. Params: {"path": "string", "position": "start"|"end", "text": "string"}
 - append_to_file: Append to end. Params: {"path": "string", "content": "string"}
 - execute_shell: Run shell command. Params: {"command": "string"}
+- dump_state: Output full workspace state as JSON. Params: {} — Use when user asks to see state/metadata
 - none: Skip (change already present). Params: {"reason": "string"}
-- complete: Done. Params: {} OR {"error": "reason"}
+- complete: Done. Params: {"answer": "your response to user"} OR {"error": "reason why you can't complete"}
+
+⚠️ ALWAYS include "answer" when completing! If you can answer from workspace state, put your response in the answer param.
 
 ⚠️ CRITICAL - INSERT vs REPLACE:
 - To ADD NEW text (comment, header, etc.) → use insert_in_file with position="start" or "end"
@@ -198,9 +201,76 @@ Git: {"tool": "execute_shell", "params": {"command": "git status"}}
 === LOOP DETECTION ===
 
 If you see a step you just completed in "Completed steps", DO NOT repeat it.
-If task is "list/scan files" and you already did scan_workspace → {"tool": "complete", "params": {}, "note": "Done"}
-If task is "read file X" and X is in "Already read" → {"tool": "complete", "params": {}, "note": "Already read"}
+If task is "list/scan files" and you already did scan_workspace → complete with your answer
+If task is "read file X" and X is in "Already read" → complete with your answer
+If you can answer from existing state → {"tool": "complete", "params": {"answer": "Your response here"}, "note": "Answered from state"}
 If you can't make progress → {"tool": "complete", "params": {"error": "Cannot complete task"}, "note": "Stuck"}
+
+=== USING EXISTING STATE ===
+
+The WORKSPACE STATE section shows files already scanned. If it shows:
+- "Scanned paths: ." → workspace is already indexed, don't scan again
+- "Already read: file.py" → don't read that file again  
+- Use the indexed files to answer questions directly
+
+⚠️ CRITICAL - When you CAN answer from cached state:
+1. DO NOT run unnecessary commands or read files already cached
+2. Call complete with your answer: {"tool": "complete", "params": {"answer": "The workspace contains..."}, "note": "From cache"}
+3. Your answer MUST be in the "answer" param or the user won't see it!
+
+=== ENVIRONMENT FACTS ===
+
+The state includes ENVIRONMENT FACTS learned from previous command outputs:
+- File counts, directory counts, total sizes
+- Project types detected (python, docker, node, etc.)
+- Frameworks detected (fastapi, pytest, etc.)
+- Git branch, Python version, Node version if known
+- Observations from shell commands
+
+LARGEST FILES section shows files sorted by size with a TOTAL at the bottom.
+Use this to answer questions about disk space, storage, or what to clean up.
+
+⚠️ CRITICAL - When asked about workspace size, file counts, or space usage:
+1. FIRST check WORKSPACE STATE for "LARGEST FILES" section with TOTAL
+2. If TOTAL is shown, report it directly - DO NOT run any commands
+3. Only use shell commands (du, ls) if no cached size data exists
+4. Example: If state shows "156.2 KiB TOTAL (indexed files)" → report that!
+
+=== CONVERSATION LEDGER ===
+
+The QUICK REFERENCE section contains important values extracted from previous commands:
+- IP addresses, URLs, ports discovered
+- Container IDs, Git commits  
+- Files that were modified
+- Errors that were seen
+
+USER REQUESTS THIS SESSION shows what the user has asked for - use this to:
+- Understand the overall session context
+- Avoid repeating work that was already done
+- Reference prior context when the user says "the file I mentioned" or "that IP"
+
+RECENT ACTIONS shows a timeline of what was done - use this to:
+- Avoid duplicating work
+- Understand what commands produced what results
+- Reference outputs from prior steps
+
+=== DEBUGGING STATE ===
+
+If user asks to "show state", "dump state", "what do you know", or similar:
+<think>User wants to see the current workspace state.</think>
+{"tool": "dump_state", "params": {}, "note": "Showing state"}
+
+=== PROJECT ANALYSIS ===
+
+When asked to analyze a project or suggest cleanup:
+1. Look at key files: package.json, requirements.txt, pyproject.toml, Cargo.toml, etc.
+2. Identify project type (Python, Node, Rust, etc.) and framework
+3. Common safe-to-remove patterns:
+   - __pycache__/, *.pyc, .pytest_cache/ (Python)
+   - node_modules/, dist/, build/ (Node)
+   - target/ (Rust), bin/, obj/ (C#)
+   - .git/ (usually keep), .env (careful - may have secrets)
+4. Read config files to understand what's actually used before suggesting removal
 
 === COMPLETION ===
 
@@ -652,6 +722,33 @@ class ReasoningEngine:
     
     def _apply_guardrails(self, step: Step, workspace_state: WorkspaceState) -> Step:
         """Apply guardrails to a parsed step. Returns corrected step if needed."""
+        
+        # GUARDRAIL: Detect tool repetition loops (same tool called 3+ times recently)
+        recent_tools = [s.tool for s in workspace_state.completed_steps[-5:]]
+        if step.tool in recent_tools:
+            repeat_count = recent_tools.count(step.tool)
+            if repeat_count >= 2:
+                # This tool was called 2+ times in last 5 steps and LLM is about to call it again
+                logger.warning(f"GUARDRAIL: Loop detected - {step.tool} called {repeat_count}x in last 5 steps")
+                return Step(
+                    step_id="guardrail_loop_break",
+                    tool="complete",
+                    params={"error": f"Loop detected: {step.tool} was already called {repeat_count} times"},
+                    reasoning=f"Forced completion to break {step.tool} loop",
+                )
+        
+        # GUARDRAIL: Prevent calling dump_state more than once
+        if step.tool == "dump_state":
+            dump_count = sum(1 for s in workspace_state.completed_steps if s.tool == "dump_state")
+            if dump_count >= 1:
+                logger.warning(f"GUARDRAIL: dump_state already called {dump_count}x")
+                return Step(
+                    step_id="guardrail_no_dump_repeat",
+                    tool="complete",
+                    params={},
+                    reasoning="dump_state already executed - completing task",
+                )
+        
         # GUARDRAIL: Detect repeated replace_in_file failures
         if step.tool == "replace_in_file":
             path = step.params.get("path", "")

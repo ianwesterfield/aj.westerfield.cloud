@@ -481,5 +481,245 @@ class TestSingletonState:
         assert "test" not in state2.scanned_paths
 
 
+class TestMetadataCaching:
+    """Tests for metadata caching from command outputs."""
+    
+    def test_file_metadata_extracted_from_scan(self):
+        """File sizes should be cached when scanning workspace."""
+        # Import actual implementation
+        import sys
+        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
+        from services.workspace_state import WorkspaceState as ActualState, FileMetadata, EnvironmentFacts
+        
+        state = ActualState()
+        
+        scan_output = """PATH: .
+TOTAL: 5 items (2 dirs, 3 files)
+
+NAME                  TYPE      SIZE      MODIFIED
+-------------------------------------------------
+src/                  dir       -         2025-01-01
+tests/                dir       -         2025-01-01
+README.md             file      1.2 KiB   2025-01-01
+setup.py              file      500 B     2025-01-01
+requirements.txt      file      128 B     2025-01-01
+"""
+        state.update_from_step("scan_workspace", {"path": "."}, scan_output, True)
+        
+        # Check file metadata was extracted
+        assert "README.md" in state.file_metadata
+        assert state.file_metadata["README.md"].size_human == "1.2"
+        
+        assert "setup.py" in state.file_metadata
+        
+        # Check environment facts updated
+        assert state.environment_facts.total_file_count == 3
+        assert state.environment_facts.total_dir_count == 2
+        assert "python" in state.environment_facts.project_types  # .py file detected
+        assert "pip" in state.environment_facts.package_managers  # requirements.txt detected
+    
+    def test_shell_facts_extraction(self):
+        """Environment facts should be extracted from shell command outputs."""
+        import sys
+        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
+        from services.workspace_state import WorkspaceState as ActualState
+        
+        state = ActualState()
+        
+        # Git status output
+        git_output = """On branch feature/metadata-cache
+Your branch is up to date with 'origin/feature/metadata-cache'.
+
+nothing to commit, working tree clean"""
+        
+        state.update_from_step("execute_shell", {"command": "git status"}, git_output, True)
+        
+        assert state.environment_facts.git_branch == "feature/metadata-cache"
+    
+    def test_python_version_extraction(self):
+        """Python version should be extracted from python --version."""
+        import sys
+        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
+        from services.workspace_state import WorkspaceState as ActualState
+        
+        state = ActualState()
+        state.update_from_step("execute_shell", {"command": "python --version"}, "Python 3.11.5", True)
+        
+        assert state.environment_facts.python_version == "3.11.5"
+    
+    def test_size_parsing(self):
+        """Human-readable sizes should be converted to bytes."""
+        import sys
+        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
+        from services.workspace_state import WorkspaceState as ActualState
+        
+        state = ActualState()
+        
+        # Test various size formats
+        assert state._parse_size_to_bytes("100 B") == 100
+        assert state._parse_size_to_bytes("1 KiB") == 1024
+        assert state._parse_size_to_bytes("1.5 MiB") == int(1.5 * 1024 * 1024)
+        assert state._parse_size_to_bytes("-") is None
+        assert state._parse_size_to_bytes("") is None
+    
+    def test_read_file_adds_line_count(self):
+        """Reading files should cache line count metadata."""
+        import sys
+        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
+        from services.workspace_state import WorkspaceState as ActualState
+        
+        state = ActualState()
+        
+        file_content = """line 1
+line 2
+line 3
+line 4
+line 5"""
+        
+        state.update_from_step("read_file", {"path": "test.py"}, file_content, True)
+        
+        assert "test.py" in state.file_metadata
+        assert state.file_metadata["test.py"].line_count == 5
+    
+    def test_format_for_prompt_includes_metadata(self):
+        """format_for_prompt should include environment facts and largest files."""
+        import sys
+        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
+        from services.workspace_state import WorkspaceState as ActualState, FileMetadata
+        
+        state = ActualState()
+        state.files = ["README.md", "large_file.bin"]
+        state.dirs = ["src"]
+        state.scanned_paths.add(".")
+        
+        # Add file metadata
+        state.file_metadata["README.md"] = FileMetadata(
+            path="README.md", size_bytes=1024, size_human="1.0 KiB"
+        )
+        state.file_metadata["large_file.bin"] = FileMetadata(
+            path="large_file.bin", size_bytes=10*1024*1024, size_human="10.0 MiB"
+        )
+        
+        # Add environment facts
+        state.environment_facts.project_types.add("python")
+        state.environment_facts.git_branch = "main"
+        state.environment_facts.add_observation("Found 42 Python packages")
+        
+        output = state.format_for_prompt()
+        
+        # Check sections present
+        assert "ENVIRONMENT FACTS" in output
+        assert "python" in output.lower()
+        assert "Git branch: main" in output
+        assert "OBSERVATIONS" in output
+        assert "42 Python packages" in output
+        assert "LARGEST FILES" in output
+        assert "large_file.bin" in output
+
+
+class TestConversationLedger:
+    """Tests for the conversation ledger feature."""
+    
+    def test_user_requests_tracked(self):
+        """User requests should be logged to the ledger."""
+        import sys
+        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
+        from services.workspace_state import WorkspaceState as ActualState
+        
+        state = ActualState()
+        state.add_user_request("List all files in the workspace")
+        state.add_user_request("How much space does it consume?")
+        
+        assert len(state.ledger.user_requests) == 2
+        assert "List all files" in state.ledger.user_requests[0]
+        assert "space" in state.ledger.user_requests[1]
+    
+    def test_ip_addresses_extracted(self):
+        """IP addresses should be extracted from command outputs."""
+        import sys
+        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
+        from services.workspace_state import WorkspaceState as ActualState
+        
+        state = ActualState()
+        output = "Server started at 192.168.1.100:8080"
+        state.update_from_step("execute_shell", {"command": "start server"}, output, True)
+        
+        assert "IP address" in state.ledger.extracted_values
+        assert "192.168.1.100" in state.ledger.extracted_values["IP address"]
+    
+    def test_urls_extracted(self):
+        """URLs should be extracted from command outputs."""
+        import sys
+        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
+        from services.workspace_state import WorkspaceState as ActualState
+        
+        state = ActualState()
+        output = "API docs available at https://api.example.com/docs"
+        state.update_from_step("execute_shell", {"command": "curl"}, output, True)
+        
+        assert "URL" in state.ledger.extracted_values
+        assert "https://api.example.com/docs" in state.ledger.extracted_values["URL"]
+    
+    def test_ports_extracted(self):
+        """Port numbers should be extracted from command outputs."""
+        import sys
+        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
+        from services.workspace_state import WorkspaceState as ActualState
+        
+        state = ActualState()
+        output = "Server listening on port 8443"
+        state.update_from_step("execute_shell", {"command": "start"}, output, True)
+        
+        assert "Port" in state.ledger.extracted_values
+        assert "8443" in state.ledger.extracted_values["Port"]
+    
+    def test_ledger_in_prompt_output(self):
+        """Ledger should appear in format_for_prompt output."""
+        import sys
+        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
+        from services.workspace_state import WorkspaceState as ActualState
+        
+        state = ActualState()
+        state.add_user_request("Deploy to production")
+        state.ledger.extract_value("Server IP", "10.0.0.5", "deploy")
+        
+        output = state.format_for_prompt()
+        
+        assert "QUICK REFERENCE" in output
+        assert "10.0.0.5" in output
+        assert "USER REQUESTS" in output
+        assert "Deploy" in output
+    
+    def test_ledger_preserved_across_reset(self):
+        """Ledger should be preserved when reset() is called."""
+        import sys
+        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
+        from services.workspace_state import WorkspaceState as ActualState
+        
+        state = ActualState()
+        state.add_user_request("First request")
+        state.files = ["test.py"]
+        
+        state.reset()
+        
+        # Files cleared, but ledger preserved
+        assert len(state.files) == 0
+        assert len(state.ledger.user_requests) == 1
+        assert "First request" in state.ledger.user_requests[0]
+    
+    def test_actions_logged(self):
+        """Tool actions should be logged to the ledger."""
+        import sys
+        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
+        from services.workspace_state import WorkspaceState as ActualState
+        
+        state = ActualState()
+        state.update_from_step("read_file", {"path": "config.yaml"}, "content here", True)
+        
+        action_entries = [e for e in state.ledger.entries if e.entry_type == "action"]
+        assert len(action_entries) == 1
+        assert "read_file" in action_entries[0].summary
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

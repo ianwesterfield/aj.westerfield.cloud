@@ -506,47 +506,70 @@ async def _execute_tool(workspace_root: str, tool: str, params: dict) -> dict:
 def _format_result_block(tool: str, params: dict, output: str, reasoning: str) -> str:
     """Format tool result as context block for LLM."""
     if tool == "scan_workspace":
-        return f"""### Workspace Files ###
-⚠️ THIS IS THE COMPLETE FILE LIST. Do not invent files not shown below.
+        # Count lines to decide on collapsing
+        line_count = output.count('\n') if output else 0
+        # Unique marker for continuation detection
+        marker = "<!-- aj:workspace-scan -->"
+        if line_count > 30:
+            # Collapse long listings
+            return f"""{marker}
+**Directory listing:**
+<details>
+<summary>📂 Click to expand ({line_count} lines)</summary>
 
 ```
 {output or "(no files found)"}
 ```
-
-### End Workspace Files ###
+</details>
+"""
+        else:
+            return f"""{marker}
+**Directory listing:**
+```
+{output or "(no files found)"}
+```
 """
     
     elif tool == "read_file":
         path = params.get("path", "file")
-        return f"""### File Content: {path} ###
-**ACTUAL CONTENT (do not invent or paraphrase):**
+        line_count = output.count('\n') if output else 0
+        marker = "<!-- aj:file-read -->"
+        if line_count > 50:
+            # Collapse long file contents
+            return f"""{marker}
+**File: {path}**
+<details>
+<summary>📄 Click to expand ({line_count} lines)</summary>
 
 ```
 {output or "(empty)"}
 ```
-⚠️ The above is the COMPLETE file content. Do not add anything not shown above.
-### End File Content ###
+</details>
+"""
+        else:
+            return f"""{marker}
+**File: {path}**
+```
+{output or "(empty)"}
+```
 """
     
     elif tool in ("write_file", "append_to_file", "replace_in_file", "insert_in_file"):
         path = params.get("path", "file")
         content = params.get("content") or params.get("text") or params.get("new_text") or ""
         content_snippet = content[:200] + "..." if len(content) > 200 else content
-        return f"""### File Operation Result ###
-**Operation:** {tool} on {path}
-**Status:** ✅ Success
-**EXACT content written:** `{content_snippet}`
-⚠️ Report ONLY this exact content. Do not embellish or reformat.
-### End File Operation ###
+        return f"""<!-- aj:file-edit -->
+**Edited: {path}**
+✅ {tool}: `{content_snippet}`
 """
     
     elif tool == "execute_shell":
         cmd = params.get("command", "")
-        return f"""### Shell Command Result ###
+        return f"""<!-- aj:shell-exec -->
 **Command:** `{cmd}`
-**Status:** ✅ Success
-**Output:** {output or "(no output)"}
-### End Shell Command ###
+```
+{output or "(no output)"}
+```
 """
     
     else:
@@ -569,9 +592,25 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
     reasoning_engine = _get_reasoning_engine()
     workspace_state = get_workspace_state()
     
-    # Reset state for new task
-    reset_workspace_state()
-    workspace_state = get_workspace_state()
+    # Determine if we should preserve state from previous task
+    # Preserve if: explicit flag OR workspace already has files indexed
+    # (we've already scanned something in a recent request)
+    should_preserve = request.preserve_state or (
+        len(workspace_state.files) > 0 or len(workspace_state.dirs) > 0
+    )
+    
+    if not should_preserve:
+        # Reset state for new task
+        logger.info("Resetting workspace state (no prior scan)")
+        reset_workspace_state()
+        workspace_state = get_workspace_state()
+    else:
+        # Preserve scan results but clear completed steps for new task
+        workspace_state.completed_steps.clear()
+        logger.info(f"Preserving workspace state: {len(workspace_state.files)} files, {len(workspace_state.dirs)} dirs indexed")
+    
+    # Log user request to the conversation ledger
+    workspace_state.add_user_request(request.task)
     
     # Build task with memory context
     user_text = request.task
@@ -663,9 +702,13 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
             # Handle completion
             if tool == "complete":
                 if params.get("error"):
-                    all_results.append(f"""### Orchestrator Error ###
-{params.get('error')}
-### End Error ###
+                    all_results.append(f"""<!-- aj:error -->
+⚠️ {params.get('error')}
+""")
+                elif params.get("answer"):
+                    # LLM provided an answer directly from cached state
+                    all_results.append(f"""<!-- aj:direct-answer -->
+{params.get('answer')}
 """)
                 break
             
@@ -741,7 +784,7 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
             workspace_state.update_from_step(
                 tool=tool,
                 params={k: v for k, v in params.items() if k not in ("content", "text", "new_text")},
-                output=output[:50000] if output else "",
+                output=output[:500000] if output else "",  # DEV MODE: 500KB limit
                 success=success,
             )
             
@@ -751,7 +794,7 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
                 "tool": tool,
                 "params": {k: v for k, v in params.items() if k != "content"},
                 "success": success,
-                "output": output[:10000] if output else None,
+                "output": output[:100000] if output else None,  # DEV MODE: 100KB
                 "error": error,
             })
             
@@ -761,8 +804,8 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
                 all_results.append(result_block)
                 
                 # Yield result event with appropriate output length
-                # scan_workspace and execute_shell need more output; read_file can be longer
-                output_limit = 5000 if tool in ("scan_workspace", "execute_shell") else 2000
+                # DEV MODE: Max everything out - local hardware
+                output_limit = 100000  # No practical limit
                 yield f"data: {json.dumps({'event_type': 'result', 'step_num': step_num, 'tool': tool, 'result': {'success': True, 'output_preview': (output[:output_limit] if output else None)}, 'done': False})}\n\n"
                 
                 # Stream observation

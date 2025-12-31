@@ -91,6 +91,59 @@ async def dispatch_tool(
             "error": params.get("error"),
         }
     
+    # Dump workspace state for debugging/inspection
+    if tool == "dump_state":
+        from services.workspace_state import get_workspace_state
+        import json
+        state = get_workspace_state()
+        
+        # Build comprehensive state dump
+        state_dump = {
+            "scanned_paths": list(state.scanned_paths),
+            "file_count": len(state.files),
+            "dir_count": len(state.dirs),
+            "files": state.files[:50],  # Limit for readability
+            "dirs": state.dirs[:30],
+            "edited_files": list(state.edited_files),
+            "read_files": list(state.read_files),
+            "file_metadata": {
+                path: {
+                    "size_bytes": meta.size_bytes,
+                    "size_human": meta.size_human,
+                    "line_count": meta.line_count,
+                    "file_type": meta.file_type,
+                }
+                for path, meta in list(state.file_metadata.items())[:30]
+            },
+            "environment_facts": {
+                "total_file_count": state.environment_facts.total_file_count,
+                "total_dir_count": state.environment_facts.total_dir_count,
+                "project_types": list(state.environment_facts.project_types),
+                "frameworks": list(state.environment_facts.frameworks_detected),
+                "package_managers": list(state.environment_facts.package_managers),
+                "git_branch": state.environment_facts.git_branch,
+                "python_version": state.environment_facts.python_version,
+                "observations": state.environment_facts.observations[-10:],
+            },
+            "ledger": {
+                "user_requests": state.ledger.user_requests[-10:],
+                "extracted_values": dict(list(state.ledger.extracted_values.items())[-15:]),
+            },
+            "user_info": state.user_info,
+        }
+        
+        # Calculate total size from metadata
+        total_bytes = sum(m.size_bytes or 0 for m in state.file_metadata.values())
+        if total_bytes > 0:
+            state_dump["total_size_bytes"] = total_bytes
+            state_dump["total_size_human"] = state._format_bytes(total_bytes)
+        
+        return {
+            "success": True,
+            "output": json.dumps(state_dump, indent=2),
+            "error": None,
+        }
+    
     # Code execution
     if tool == "execute_code":
         result = await get_polyglot_handler().execute(

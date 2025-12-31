@@ -241,6 +241,48 @@ TASK_EXAMPLES = [
     "Yes, apply that",
     
     # =======================================================================
+    # WORKSPACE FOLLOW-UP QUESTIONS
+    # =======================================================================
+    # Questions about previously scanned/listed workspace data
+    
+    "How much space does it take up?",
+    "How much disk space does it use?",
+    "How big is it?",
+    "What's the total size?",
+    "Which files are largest?",
+    "Which files take up the most space?",
+    "What are the biggest files?",
+    "Show me the largest files",
+    "How many files are there?",
+    "How many directories?",
+    "What's in the layers folder?",
+    "Tell me more about it",
+    "Tell me more about those files",
+    "Can you explain what those are?",
+    "What do those files do?",
+    "What is that file for?",
+    "Why is it so big?",
+    "Can I delete it?",
+    "Can any of those be removed?",
+    "Is it safe to delete?",
+    "Which ones can I remove?",
+    "What takes up the most space?",
+    "Break down the space usage",
+    "Show me a summary of the files",
+    "Summarize what you found",
+    "What did you find?",
+    "What's interesting about it?",
+    "Anything unusual?",
+    "Are there any duplicates?",
+    "Find duplicate files",
+    "What about the other folders?",
+    "And the tests folder?",
+    "What's in there?",
+    "How old are these files?",
+    "When were they last modified?",
+    "Show me recent changes",
+    
+    # =======================================================================
     # FOLLOW-UP ACTION REQUESTS
     # =======================================================================
     # Action requests that reference previous context

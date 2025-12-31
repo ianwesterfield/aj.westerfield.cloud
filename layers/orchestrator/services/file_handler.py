@@ -92,7 +92,7 @@ def pretty_ls(
     pattern: str = "*",
     recursive: bool = False,
     show_hidden: bool = False,
-    limit: int = 500,
+    limit: int = 2000,  # DEV MODE: Show many more files
     name_width: int = 60,
     human: bool = True,
     ignore_spec: Optional[pathspec.PathSpec] = None,
@@ -670,7 +670,7 @@ class FileHandler:
         path: str,
         pattern: str = "*",
         workspace_context: Optional[WorkspaceContext] = None,
-        respect_gitignore: bool = True,
+        respect_gitignore: bool = False,
         pretty: bool = True,
     ) -> Dict[str, Any]:
         """
@@ -708,7 +708,7 @@ class FileHandler:
                     pattern=pattern,
                     recursive=True,
                     show_hidden=False,
-                    limit=500,
+                    limit=2000,  # DEV MODE: Show all files
                     name_width=60,
                     human=True,
                     ignore_spec=ignore_spec,
