@@ -401,12 +401,141 @@ async def _orchestrate_task(
 # Content Extraction Layer
 # ============================================================================
 
+def _extract_all_content_batch(
+    body: dict,
+    messages: List[dict],
+    user_prompt: Optional[str] = None
+) -> Tuple[str, List[str], List[dict]]:
+    """
+    Extract and chunk all files + images in a SINGLE batch request.
+    
+    Consolidates what was previously multiple HTTP calls into one.
+    
+    Returns:
+        Tuple of (file_content_text, filenames, all_chunks)
+    """
+    batch_items = []
+    filenames = []
+    
+    # Collect files from body
+    files = body.get("files") or []
+    if not files:
+        files = body.get("metadata", {}).get("files") or []
+    
+    for file_info in files:
+        try:
+            if not isinstance(file_info, dict):
+                continue
+            
+            file_data = file_info.get("file", file_info)
+            file_path = file_data.get("path")
+            filename = file_data.get("filename", file_data.get("name", "unknown"))
+            
+            if not file_path or not os.path.exists(file_path):
+                continue
+            
+            with open(file_path, "rb") as f:
+                content = f.read()
+            
+            ext = os.path.splitext(filename)[1].lower()
+            content_type = CONTENT_TYPE_MAP.get(ext, "text/plain")
+            
+            if content_type.startswith("text/") or content_type == "application/json":
+                content_str = content.decode("utf-8", errors="ignore")
+            else:
+                content_str = base64.b64encode(content).decode("utf-8")
+            
+            batch_items.append({
+                "content": content_str,
+                "content_type": content_type,
+                "source_name": filename,
+                "source_type": "file",
+            })
+            filenames.append(filename)
+            
+        except Exception as e:
+            print(f"[aj] Error preparing file for batch: {e}")
+            continue
+    
+    # Collect images from messages
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        
+        for idx, item in enumerate(content):
+            if not isinstance(item, dict) or item.get("type") != "image_url":
+                continue
+            
+            image_url = item.get("image_url", {})
+            url = image_url.get("url", "") if isinstance(image_url, dict) else image_url
+            
+            if not url:
+                continue
+            
+            content_type, image_data = _load_image_url(url)
+            if content_type and image_data:
+                batch_items.append({
+                    "content": image_data,
+                    "content_type": content_type,
+                    "source_name": f"image_{idx}",
+                    "source_type": "image",
+                })
+    
+    # No content to extract
+    if not batch_items:
+        return "", [], []
+    
+    # Single batch call to extractor
+    try:
+        resp = requests.post(
+            f"{EXTRACTOR_API_URL}/api/extract/batch",
+            json={
+                "items": batch_items,
+                "chunk_size": 500,
+                "chunk_overlap": 50,
+                "prompt": user_prompt,
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        
+        all_chunks = []
+        file_contents = []
+        
+        for i, extract_result in enumerate(result.get("results", [])):
+            source_name = batch_items[i].get("source_name", "unknown")
+            source_type = batch_items[i].get("source_type", "file")
+            
+            chunks = extract_result.get("chunks", [])
+            for chunk in chunks:
+                chunk["source_name"] = source_name
+                chunk["source_type"] = source_type
+                all_chunks.append(chunk)
+            
+            # Build text summary for files (first 3 chunks)
+            if source_type == "file" and chunks:
+                chunk_texts = [c.get("content", "") for c in chunks[:3]]
+                file_contents.append(
+                    f"[Document: {source_name}]\n" + "\n\n".join(chunk_texts)
+                )
+        
+        return "\n\n".join(file_contents), filenames, all_chunks
+        
+    except Exception as e:
+        print(f"[aj] Batch extraction error: {e}")
+        return "", filenames, []
+
+
 def _extract_images_from_messages(
     messages: List[dict],
     user_prompt: Optional[str] = None
 ) -> List[dict]:
     """
     Extract image URLs from message content and generate descriptions.
+    DEPRECATED: Use _extract_all_content_batch instead.
+    Kept for backwards compatibility.
     """
     image_chunks = []
     
@@ -877,21 +1006,21 @@ class Filter:
             # Extract user text for classification
             user_text = _extract_user_text_prompt(messages)
             
-            # Extract files and images
-            file_content, filenames, chunks = _extract_file_contents(body)
-            image_chunks = _extract_images_from_messages(messages, user_prompt=user_text)
+            # Extract files and images in a SINGLE batch call
+            file_content, filenames, chunks = _extract_all_content_batch(
+                body, messages, user_prompt=user_text
+            )
             
+            # Build immediate image context for injection
             immediate_image_context = [
                 {
-                    "user_text": f"[Image]: {img.get('content', '')}",
+                    "user_text": f"[Image]: {chunk.get('content', '')}",
                     "source_type": "image",
-                    "source_name": img.get("source_name", "image"),
+                    "source_name": chunk.get("source_name", "image"),
                 }
-                for img in image_chunks
-                if img.get("content")
+                for chunk in chunks
+                if chunk.get("source_type") == "image" and chunk.get("content")
             ]
-            
-            chunks.extend(image_chunks)
             
             # Save document chunks
             chunks_saved = 0

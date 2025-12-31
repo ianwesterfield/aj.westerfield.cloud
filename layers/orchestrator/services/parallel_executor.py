@@ -3,15 +3,15 @@ Parallel Executor - Batch Execution with Partial Failure Handling
 
 Executes multiple steps concurrently using asyncio.gather.
 Individual failures do not cascade - sibling tasks continue.
+
+Uses the shared tool_dispatcher module for consistent tool execution
+across both the orchestrator API and batch operations.
 """
 
 import asyncio
 import logging
-import os
 import time
-from typing import List, Optional
-
-import httpx
+from typing import Any, Dict, List, Optional
 
 from schemas.models import (
     Step,
@@ -23,11 +23,10 @@ from schemas.models import (
     WorkspaceContext,
 )
 
+from services.tool_dispatcher import dispatch_tool
+
 
 logger = logging.getLogger("orchestrator.executor")
-
-# Executor service URL
-EXECUTOR_BASE_URL = os.getenv("EXECUTOR_BASE_URL", "http://executor_api:8005")
 
 
 class ParallelExecutor:
@@ -36,11 +35,13 @@ class ParallelExecutor:
     
     Uses asyncio.gather to execute steps concurrently.
     Failures are captured but don't stop sibling executions.
+    
+    Delegates tool execution to the shared tool_dispatcher module.
     """
     
     def __init__(self):
-        self.client = httpx.AsyncClient(timeout=60.0)
-        self.executor_url = EXECUTOR_BASE_URL
+        # No local handlers needed - uses shared tool_dispatcher
+        pass
     
     async def execute_batch(
         self,
@@ -126,7 +127,9 @@ class ParallelExecutor:
         workspace_context: Optional[WorkspaceContext] = None,
     ) -> StepResult:
         """
-        Execute a single step via the Executor service.
+        Execute a single step DIRECTLY via local handlers.
+        
+        No HTTP overhead - handlers are instantiated locally.
         
         Args:
             step: Step to execute
@@ -136,57 +139,46 @@ class ParallelExecutor:
             StepResult with status and output
         """
         start_time = time.time()
-        
-        # Build request for executor
-        request_body = {
-            "tool": step.tool,
-            "params": step.params,
-        }
-        
-        if workspace_context:
-            request_body["workspace_context"] = workspace_context.model_dump()
+        tool = step.tool
+        params = step.params
         
         try:
-            # Call executor service
-            response = await self.client.post(
-                f"{self.executor_url}/api/execute/tool",
-                json=request_body,
-                timeout=workspace_context.max_execution_time if workspace_context else 30,
-            )
-            response.raise_for_status()
-            
-            data = response.json()
+            # Route to appropriate handler based on tool name
+            result = await self._dispatch_tool(tool, params, workspace_context)
             execution_time = time.time() - start_time
             
             return StepResult(
                 step_id=step.step_id,
-                status=StepStatus.SUCCESS if data.get("success") else StepStatus.FAILED,
-                output=data.get("output"),
-                error=data.get("error"),
+                status=StepStatus.SUCCESS if result.get("success") else StepStatus.FAILED,
+                output=result.get("output") or result.get("stdout") or result.get("data"),
+                error=result.get("error") or result.get("stderr"),
                 execution_time=execution_time,
             )
             
-        except httpx.TimeoutException:
+        except asyncio.TimeoutError:
             return StepResult(
                 step_id=step.step_id,
                 status=StepStatus.FAILED,
                 error="Execution timeout",
                 execution_time=time.time() - start_time,
             )
-        except httpx.HTTPStatusError as e:
-            return StepResult(
-                step_id=step.step_id,
-                status=StepStatus.FAILED,
-                error=f"HTTP error: {e.response.status_code}",
-                execution_time=time.time() - start_time,
-            )
         except Exception as e:
+            logger.error(f"Step execution error: {e}")
             return StepResult(
                 step_id=step.step_id,
                 status=StepStatus.FAILED,
                 error=str(e),
                 execution_time=time.time() - start_time,
             )
+    
+    async def _dispatch_tool(
+        self,
+        tool: str,
+        params: Dict[str, Any],
+        workspace_context: Optional[WorkspaceContext] = None,
+    ) -> Dict[str, Any]:
+        """Delegate to shared tool dispatcher."""
+        return await dispatch_tool(tool, params, workspace_context)
     
     def _classify_error(self, step: Step, error: Exception) -> ErrorMetadata:
         """Classify an exception into an ErrorMetadata object."""
@@ -217,5 +209,5 @@ class ParallelExecutor:
         )
     
     async def close(self):
-        """Close the HTTP client."""
-        await self.client.aclose()
+        """Cleanup (no-op, no HTTP client to close)."""
+        pass

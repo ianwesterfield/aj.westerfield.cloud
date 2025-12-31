@@ -5,45 +5,88 @@
 AJ is an agentic-capable AI-based assistant for Open-WebUI that provides:
 
 - **Semantic Memory** — Stores and retrieves conversation context from Qdrant using intent classification (4-class: casual/save/recall/task)
-- **(WIP!!) Workspace Operations** — Read, list, and edit files in mounted workspace
-- **(WIP!!) Surgical File Editing** — Replace, insert, append operations
+- **Workspace Operations** — Read, list, scan, and edit files in mounted workspace
+- **Surgical File Editing** — Replace, insert, append operations with sandbox enforcement
+- **Code Execution** — Python, Node.js, and PowerShell execution in sandboxed environment
 
 ---
 
 ## System Architecture
 
+```mermaid
+flowchart TB
+    subgraph User["Open-WebUI (8180)"]
+        UserInput["User sends message"]
+        UserReads["User reads response"]
+    end
+
+    subgraph Filter["AJ Filter (aj.filter.py)"]
+        F1["1. Classify intent via Pragmatics"]
+        F2["2. Route by intent"]
+        F3["3. Inject context + results"]
+    end
+
+    subgraph Services["Service Layer"]
+        direction TB
+        Pragmatics["Pragmatics (8001)<br/>4-class DistilBERT<br/>casual/save/recall/task"]
+        Memory["Memory API (8000)<br/>/save, /search"]
+
+        subgraph OrchestratorBox["Orchestrator (8004)"]
+            direction TB
+            Reasoning["ReasoningEngine<br/>Devstral/Qwen"]
+            ToolDispatcher["ToolDispatcher<br/>(unified dispatch)"]
+            Handlers["Local Handlers<br/>FileHandler<br/>ShellHandler<br/>PolyglotHandler"]
+
+            Reasoning --> ToolDispatcher
+            ToolDispatcher --> Handlers
+        end
+
+        Extractor["Extractor (8002)<br/>LLaVA + Whisper<br/>Images/Audio/PDF"]
+    end
+
+    subgraph Storage["Data Layer"]
+        Qdrant["Qdrant (6333)<br/>768-dim COSINE<br/>all-mpnet-base-v2"]
+        Ollama["Ollama (11434)<br/>LLM inference"]
+        Workspace["Workspace Volume<br/>/workspace mount"]
+    end
+
+    LLM["LLM Response"]
+
+    %% User to Filter
+    UserInput --> Filter
+
+    %% Filter routes to services
+    F1 --> Pragmatics
+    Pragmatics -->|"intent"| F2
+
+    %% Intent routing
+    F2 -->|"casual"| LLM
+    F2 -->|"save"| Memory
+    F2 -->|"recall"| Memory
+    F2 -->|"task"| OrchestratorBox
+
+    %% Orchestrator flow
+    Reasoning --> Ollama
+    Handlers -->|"file ops"| Workspace
+    OrchestratorBox -->|"search patterns"| Memory
+
+    %% Memory to Qdrant
+    Memory -->|"embed/search"| Qdrant
+
+    %% Results back to filter
+    Memory -->|"context"| F3
+    OrchestratorBox -->|"SSE stream<br/>thinking + results"| F3
+    Extractor -->|"extracted text"| OrchestratorBox
+    F3 --> LLM
+    LLM --> UserReads
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                           Open-WebUI (8180)                             │
-│                                 │                                       │
-│                    ┌────────────┴──────────────┐                        │
-│                    │           AJ              │                        │
-│                    │        aj.filter.py       │                        │
-│                    │    (inlet/outlet hooks)   │                        │
-│                    └────────────┬──────────────┘                        │
-└─────────────────────────────────┬───────────────────────────────────────┘
-                                  │
-           ┌──────────────────────┼──────────────────────┐
-           │                      │                      │
-           ▼                      ▼                      ▼
-    ┌─────────────┐       ┌─────────────┐       ┌─────────────┐
-    │ Pragmatics  │       │    Memory   │       │  Executor   │
-    │    8001     │       │    8000     │       │    8005     │
-    │             │       │             │       │             │
-    │   Intent    │       │ Memory API  │       │ File Ops    │
-    │  Classifier │       │ /save       │       │ /tool       │
-    │             │       │ /search     │       │ /file       │
-    └─────────────┘       └──────┬──────┘       └─────────────┘
-                                 │
-                                 ▼
-                          ┌─────────────┐
-                          │   Qdrant    │
-                          │    6333     │
-                          │             │
-                          │ Vector DB   │
-                          │ 768-dim     │
-                          └─────────────┘
-```
+
+**Key Architectural Decisions:**
+
+- **Executor merged into Orchestrator** — No HTTP hop for tool execution (direct local calls via `tool_dispatcher.py`)
+- **Singleton handlers** — `FileHandler`, `ShellHandler`, `PolyglotHandler` created once, reused
+- **Unified tool dispatch** — Both `orchestrator.py` and `parallel_executor.py` use shared `tool_dispatcher.py`
+- **Extractor batch endpoint** — Single HTTP call for all files + images (was N calls)
 
 ---
 
@@ -57,64 +100,39 @@ The main entry point running inside Open-WebUI.
 
 - Classify user intent via Pragmatics API
 - Delegate all task intents to Orchestrator for reasoning
-- Execute tool calls via Executor API
-- **Feed results back to Orchestrator** for multi-step reasoning
+- Stream SSE events from Orchestrator during task execution
 - Search memory for relevant context
 - Inject context and results into LLM conversation
 
-**Flow (Multi-Step with Feedback Loop):**
+**Status Icons (displayed to user):**
 
-```python
-1. Classify intent via Pragmatics API
-2. If task → Delegate to Orchestrator
-3. LOOP (max 10 steps):
-   a. Orchestrator reasons with history → returns tool + params
-   b. Execute tool via Executor API
-   c. Record result in step_history
-   d. If tool == "complete" → break
-4. Inject all accumulated results into context
-```
-
-**Key Feature: Feedback Loop**
-
-The filter tracks execution results and feeds them back to the orchestrator:
-
-- Orchestrator sees success/failure of each step
-- Can adjust strategy based on errors
-- Can gather information across multiple steps before acting
-
-**Status Display (what the UI shows):**
-
-The status bar shows real-time step progress with tool icons and step numbers:
-
-| Icon | Tool/State                       |
-| ---- | -------------------------------- |
-| 💭   | Thinking/reasoning (initial)     |
-| ✨   | Processing started               |
-| 📂   | list_files                       |
-| 📄   | read_file                        |
-| ✏️   | write_file                       |
-| 📝   | create_file                      |
-| 🔍   | search_files                     |
-| 🔎   | grep_files                       |
-| 🖥️   | shell                            |
-| 💾   | memory_store                     |
-| 🔮   | memory_query                     |
-| ✂️   | file_edit                        |
-| ⚡   | other tools                      |
-| ✓    | step succeeded (in progress bar) |
-| ✗    | step failed (in progress bar)    |
-| ✅   | all steps complete               |
-| ❌   | fatal error                      |
+| Icon | Meaning   | Used For                            |
+| ---- | --------- | ----------------------------------- |
+| 🧠   | Reasoning | Model thinking/generating           |
+| ⏳   | Loading   | Model cold start, progress          |
+| 📂   | Scanning  | `scan_workspace`                    |
+| 📁   | Listing   | `list_dir`                          |
+| 📖   | Reading   | `read_file`                         |
+| 📝   | Writing   | `write_file`                        |
+| ✏️   | Editing   | `replace_in_file`, `insert_in_file` |
+| ➕   | Appending | `append_to_file`                    |
+| 🗑️   | Deleting  | `delete_file`                       |
+| 🔧   | Running   | `execute_shell`                     |
+| ▶️   | Executing | `execute_code`                      |
+| 🔎   | Searching | `search_files`, `grep`              |
+| ⚙️   | Working   | Fallback for other tools            |
+| ⚠️   | Failed    | Error in tool execution             |
+| ✅   | Done      | Task completed                      |
 
 **Progress Display Format:**
 
 ```
-📄 3. Reading config... [📂✓1 → 📄2 → 📄3]
+🧠 Reasoning...
+📂 Scanning workspace — Looking for project files
+📖 Reading config.py — Checking current settings
+✏️ Editing README.md — Adding documentation
+✅ Done (5 steps)
 ```
-
-Shows: current action, step number, and trail of completed steps (last 5)
-| ↳ | Observation/result indicator (in blockquote) |
 
 ---
 
@@ -139,21 +157,58 @@ Input:  { "text": "insert a credit in the readme" }
 Output: { "intent": "task", "confidence": 0.99, "label": 3 }
 ```
 
-### 3. Executor API (Port 8005)
+### 3. Orchestrator API (Port 8004) — With Integrated Executor
 
-Polyglot code execution and file operations with sandbox enforcement.
+Agentic reasoning engine with **integrated tool execution** for direct tool calls.
 
-**File Operations:**
+**Architecture:**
 
-| Tool              | Method                    | Description           |
-| ----------------- | ------------------------- | --------------------- |
-| `read_file`       | `read(path)`              | Read file contents    |
-| `write_file`      | `write(path, content)`    | Overwrite entire file |
-| `replace_in_file` | `replace(path, old, new)` | Surgical find/replace |
-| `insert_in_file`  | `insert(path, pos, text)` | Insert at position    |
-| `append_to_file`  | `append(path, content)`   | Add to end of file    |
-| `list_files`      | `list_dir(path)`          | Directory listing     |
-| `scan_workspace`  | `scan(path, pattern)`     | Recursive glob search |
+```
+orchestrator/
+├── api/
+│   └── orchestrator.py        # FastAPI endpoints, SSE streaming
+├── services/
+│   ├── reasoning_engine.py    # LLM interaction, step generation
+│   ├── task_planner.py        # Batch planning
+│   ├── parallel_executor.py   # Concurrent step execution
+│   ├── tool_dispatcher.py     # ⭐ Unified tool routing (DRY)
+│   ├── workspace_state.py     # External state tracking
+│   ├── memory_connector.py    # Pattern retrieval
+│   ├── file_handler.py        # File operations
+│   ├── shell_handler.py       # Shell commands
+│   └── polyglot_handler.py    # Code execution
+└── schemas/
+    └── models.py              # Pydantic models
+```
+
+**Tool Dispatcher (`tool_dispatcher.py`):**
+
+Central module that routes tool calls to appropriate handlers:
+
+```python
+async def dispatch_tool(tool: str, params: dict, workspace_context) -> dict:
+    """
+    Unified tool dispatch - used by orchestrator.py and parallel_executor.py.
+    Returns: {"success": bool, "output": str, "error": str|None}
+    """
+```
+
+**Supported Tools:**
+
+| Tool              | Handler         | Description            |
+| ----------------- | --------------- | ---------------------- |
+| `read_file`       | FileHandler     | Read file contents     |
+| `write_file`      | FileHandler     | Overwrite entire file  |
+| `replace_in_file` | FileHandler     | Surgical find/replace  |
+| `insert_in_file`  | FileHandler     | Insert at position     |
+| `append_to_file`  | FileHandler     | Add to end of file     |
+| `delete_file`     | FileHandler     | Remove file            |
+| `list_dir`        | FileHandler     | Directory listing      |
+| `scan_workspace`  | FileHandler     | Recursive glob search  |
+| `execute_code`    | PolyglotHandler | Python/Node/PowerShell |
+| `execute_shell`   | ShellHandler    | Shell commands         |
+| `none`            | (no-op)         | Skip with reason       |
+| `complete`        | (signal)        | Task completion        |
 
 **scan_workspace Features:**
 
@@ -162,31 +217,16 @@ Polyglot code execution and file operations with sandbox enforcement.
 - **Hidden files**: Skips dotfiles and `.git` by default
 - **Human-readable sizes**: Shows KiB, MiB, etc.
 
-**Positions for insert_in_file:**
-
-- `start` — Beginning of file
-- `end` — End of file
-- `before` — Before anchor text
-- `after` — After anchor text
-
-**Endpoint:**
+**SSE Streaming Endpoint:**
 
 ```
-POST /api/execute/tool
-Input: {
-  "tool": "replace_in_file",
-  "params": {
-    "path": "/workspace/README.md",
-    "old_text": "TODO",
-    "new_text": "DONE"
-  },
-  "workspace_context": {
-    "workspace_root": "/workspace",
-    "cwd": "/workspace",
-    "allow_file_write": true
-  }
-}
-Output: { "success": true, "output": "Replaced 3 occurrence(s)" }
+POST /api/orchestrator/run-task (SSE stream)
+Events:
+  - status: Current step info with icon (📂 Scanning workspace...)
+  - thinking: Reasoning output tokens
+  - result: Tool execution result
+  - error: Error information
+  - complete: Final summary
 ```
 
 **Permission Checks:**
@@ -288,90 +328,56 @@ This allows the model to:
 
 ## Data Flow
 
-### Task Request Flow (Always Delegate)
+### Task Request Flow (SSE Streaming)
 
-```
-User: "list the files in this workspace"
-                    │
-                    ▼
-┌─────────────────────────────────────────┐
-│        aj.filter.py inlet()         │
-│                                         │
-│  1. Classify intent → "task" (99%)      │
-│  2. Delegate to Orchestrator            │
-│     (no hardcoded patterns)             │
-└─────────────────────────────────────────┘
-                    │
-                    ▼
-┌─────────────────────────────────────────┐
-│       Orchestrator API (8004)           │
-│                                         │
-│  POST /api/orchestrate/next-step        │
-│  Reasoning: "User wants workspace tree" │
-│  Returns: tool=scan_workspace, path="." │
-└─────────────────────────────────────────┘
-                    │
-                    ▼
-┌─────────────────────────────────────────┐
-│         Executor API (8005)             │
-│                                         │
-│  POST /api/execute/tool                 │
-│  - Loads .gitignore patterns            │
-│  - Scans recursively                    │
-│  - Returns pretty table:                │
-│    PATH: /workspace/aj              │
-│    TOTAL: 105 items (27 dirs, 78 files) │
-│    NAME         TYPE  SIZE     MODIFIED │
-│    filters      dir            2025-... │
-│    README.md    file  8.3 KiB  2025-... │
-└─────────────────────────────────────────┘
-                    │
-                    ▼
-┌─────────────────────────────────────────┐
-│        Filter injects result            │
-│                                         │
-│  "### Workspace Files ###               │
-│   <pretty table>                        │
-│   ### End Workspace Files ###"          │
-└─────────────────────────────────────────┘
-                    │
-                    ▼
-         LLM presents the results
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant F as AJ Filter
+    participant P as Pragmatics (8001)
+    participant O as Orchestrator (8004)
+    participant L as Ollama (11434)
+    participant W as Workspace
+
+    U->>F: "list files in workspace"
+    F->>P: POST /classify
+    P-->>F: {intent: "task"}
+
+    F->>O: POST /run-task (SSE)
+
+    loop Agentic Loop
+        O->>L: Generate next step
+        L-->>O: {tool: "scan_workspace", path: "."}
+        O-->>F: SSE: {status: "📂 Scanning workspace"}
+        O->>W: FileHandler.scan_workspace()
+        W-->>O: file listing
+        O-->>F: SSE: {result: "...files..."}
+    end
+
+    O-->>F: SSE: {complete: "✅ Done (1 step)"}
+    F->>U: Display results
 ```
 
 ### Memory Search Flow
 
-```
-User: "What's my name?"
-         │
-         ▼
-┌─────────────────────────────────────────┐
-│  1. Classify intent → "recall"          │
-│  2. Search memory API                   │
-│     query: "what's my name"             │
-│     top_k: 5                            │
-└─────────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────┐
-│         Qdrant Search                   │
-│                                         │
-│  Embed query → 768-dim vector           │
-│  Cosine similarity > 0.35               │
-│  Filter by user_id                      │
-│  Return: "My name is Ian" (score: 0.82) │
-└─────────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────┐
-│  Context injected:                      │
-│  "### Memories ###                      │
-│   - My name is Ian                      │
-│   ### End Memories ###"                 │
-└─────────────────────────────────────────┘
-         │
-         ▼
-    LLM: "Your name is Ian"
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant F as AJ Filter
+    participant P as Pragmatics (8001)
+    participant M as Memory (8000)
+    participant Q as Qdrant (6333)
+
+    U->>F: "What's my name?"
+    F->>P: POST /classify
+    P-->>F: {intent: "recall"}
+
+    F->>M: POST /search {query: "my name"}
+    M->>Q: Vector search (768-dim)
+    Q-->>M: {text: "My name is Ian", score: 0.82}
+    M-->>F: memories array
+
+    F->>U: Context injected → "Your name is Ian"
 ```
 
 ---
@@ -397,12 +403,13 @@ services:
   memory_api: 8000 # Memory + Filter serving
   pragmatics_api: 8001 # Intent classification
   extractor_api: 8002 # Media extraction (GPU)
-  orchestrator_api: 8004 # Task planning
-  executor_api: 8005 # File ops + code execution
+  orchestrator_api: 8004 # Task planning + Execution (merged)
   qdrant: 6333 # Vector database
   ollama: 11434 # LLM inference
   open-webui: 8180 # Chat UI
 ```
+
+**Note:** `executor_api` (8005) has been **removed** — functionality merged into `orchestrator_api`.
 
 ---
 
@@ -411,6 +418,7 @@ services:
 ```
 aj/
 ├── docker-compose.yaml
+├── ARCHITECTURE.md           # This file
 ├── filters/
 │   └── aj.filter.py          # Main Open-WebUI filter
 ├── layers/
@@ -430,21 +438,22 @@ aj/
 │   │   └── services/
 │   │       ├── image_extractor.py  # LLaVA/Florence
 │   │       └── audio_extractor.py  # Whisper
-│   ├── orchestrator/
-│   │   ├── main.py
-│   │   └── services/
-│   │       ├── reasoning_engine.py  # LLM step generation
-│   │       ├── task_planner.py      # Batch expansion
-│   │       ├── memory_connector.py  # Pattern retrieval
-│   │       ├── parallel_executor.py # Parallel step execution
-│   │       └── workspace_state.py   # External state tracking
-│   └── executor/
+│   └── orchestrator/             # ⭐ Includes executor functionality
 │       ├── main.py
-│       ├── api/executor.py       # /tool endpoint
-│       └── services/
-│           ├── file_handler.py   # read/write/replace/insert/append
-│           ├── polyglot_handler.py # Python/Node/PowerShell
-│           └── shell_handler.py
+│       ├── api/
+│       │   └── orchestrator.py      # SSE streaming, endpoints
+│       ├── services/
+│       │   ├── reasoning_engine.py  # LLM step generation
+│       │   ├── task_planner.py      # Batch expansion
+│       │   ├── memory_connector.py  # Pattern retrieval
+│       │   ├── parallel_executor.py # Parallel step execution
+│       │   ├── workspace_state.py   # External state tracking
+│       │   ├── tool_dispatcher.py   # ⭐ Unified tool routing (DRY)
+│       │   ├── file_handler.py      # read/write/replace/insert/append
+│       │   ├── polyglot_handler.py  # Python/Node/PowerShell
+│       │   └── shell_handler.py     # Shell commands
+│       └── schemas/
+│           └── models.py            # Pydantic models
 └── .github/
     └── copilot-instructions.md
 ```
@@ -488,9 +497,9 @@ python -c "import requests; f=open('filters/aj.filter.py',encoding='utf-8-sig').
 ### Rebuild Services
 
 ```powershell
-# Rebuild executor after code changes
-docker compose build --no-cache executor_api
-docker compose up -d executor_api
+# Rebuild orchestrator after code changes
+docker compose build --no-cache orchestrator_api
+docker compose up -d orchestrator_api
 
 # Rebuild all
 docker compose up -d --build
@@ -504,14 +513,8 @@ Invoke-RestMethod -Uri 'http://localhost:8001/api/pragmatics/classify' `
   -Method Post -ContentType 'application/json' `
   -Body '{"text":"add credits to readme"}'
 
-# File append
-Invoke-RestMethod -Uri 'http://localhost:8005/api/execute/tool' `
-  -Method Post -ContentType 'application/json' `
-  -Body (@{
-    tool='append_to_file'
-    params=@{path='/workspace/test.txt';content='Hello'}
-    workspace_context=@{workspace_root='/workspace';cwd='/workspace';allow_file_write=$true}
-  } | ConvertTo-Json -Depth 5)
+# Orchestrator health
+Invoke-RestMethod -Uri 'http://localhost:8004/health'
 
 # Memory search
 Invoke-RestMethod -Uri 'http://localhost:8000/api/memory/search' `

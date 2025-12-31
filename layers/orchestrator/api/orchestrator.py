@@ -41,14 +41,12 @@ from services.task_planner import TaskPlanner
 from services.parallel_executor import ParallelExecutor
 from services.memory_connector import MemoryConnector
 from services.workspace_state import WorkspaceState, get_workspace_state, reset_workspace_state
+from services.tool_dispatcher import dispatch_tool
 from utils.workspace_context import WorkspaceContextManager
 
 
 logger = logging.getLogger("orchestrator.api")
 router = APIRouter(tags=["orchestrator"])
-
-# Configuration
-EXECUTOR_API_URL = os.getenv("EXECUTOR_API_URL", "http://executor_api:8005")
 
 # Service instances (singleton pattern)
 _workspace_manager: Optional[WorkspaceContextManager] = None
@@ -448,64 +446,61 @@ async def set_user_info(request: SetUserInfoRequest) -> Dict[str, str]:
 # ============================================================================
 
 async def _execute_tool(workspace_root: str, tool: str, params: dict) -> dict:
-    """Execute a tool via the executor API."""
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        try:
-            # Resolve relative paths in params
-            resolved_params = params.copy()
-            if "path" in resolved_params:
-                path = resolved_params["path"]
-                project_name = workspace_root.rstrip("/").split("/")[-1].lower()
+    """
+    Execute a tool via LOCAL handlers (no HTTP).
+    
+    Executor functionality is merged into orchestrator for reduced latency.
+    """
+    try:
+        # Resolve relative paths in params
+        resolved_params = params.copy()
+        if "path" in resolved_params:
+            path = resolved_params["path"]
+            project_name = workspace_root.rstrip("/").split("/")[-1].lower()
+            
+            # Normalize path: strip leading/trailing slashes for comparison
+            path_normalized = path.strip("/").lower()
+            
+            # Check if path is current dir, empty, project name, or variations
+            if path == "." or path == "" or path_normalized == project_name or path_normalized.startswith(project_name):
                 
-                # Normalize path: strip leading/trailing slashes for comparison
-                path_normalized = path.strip("/").lower()
-                
-                # Check if path is current dir, empty, project name, or variations
-                if path == "." or path == "" or path_normalized == project_name or path_normalized.startswith(project_name):
-                    
-                    # Either exact match or subpath within workspace
-                    if path_normalized == project_name or path == "." or path == "":
-                        resolved_params["path"] = workspace_root
-                    else:
-                        # Subpath like "aj.westerfield.cloud/filters" -> strip project prefix
-                        subpath = path_normalized[len(project_name):].lstrip("/")
-                    
-                        if subpath:
-                            resolved_params["path"] = f"{workspace_root}/{subpath}"
-                        else:
-                            resolved_params["path"] = workspace_root
-                elif path.startswith("/"):
-                    # Absolute path - validate it's within workspace
-                    if not path.startswith(workspace_root.rstrip("/")):
-                        logger.warning(f"Path {path} outside workspace, using workspace root")
-                        resolved_params["path"] = workspace_root
-                    # else: keep absolute path as-is
+                # Either exact match or subpath within workspace
+                if path_normalized == project_name or path == "." or path == "":
+                    resolved_params["path"] = workspace_root
                 else:
-                    # Relative path - prepend workspace
-                    resolved_params["path"] = f"{workspace_root}/{path}"
-            
-            resp = await client.post(
-                f"{EXECUTOR_API_URL}/api/execute/tool",
-                json={
-                    "tool": tool,
-                    "params": resolved_params,
-                    "workspace_context": {
-                        "workspace_root": "/workspace",
-                        "cwd": workspace_root,
-                        "allow_file_write": True,
-                        "allow_shell_commands": True,
-                        "allowed_languages": ["python"],
-                    },
-                },
-            )
-            
-            if resp.status_code == 200:
-                return resp.json()
-            else:
-                return {"success": False, "output": None, "error": f"HTTP {resp.status_code}"}
+                    # Subpath like "aj.westerfield.cloud/filters" -> strip project prefix
+                    subpath = path_normalized[len(project_name):].lstrip("/")
                 
-        except Exception as e:
-            return {"success": False, "output": None, "error": str(e)}
+                    if subpath:
+                        resolved_params["path"] = f"{workspace_root}/{subpath}"
+                    else:
+                        resolved_params["path"] = workspace_root
+            elif path.startswith("/"):
+                # Absolute path - validate it's within workspace
+                if not path.startswith(workspace_root.rstrip("/")):
+                    logger.warning(f"Path {path} outside workspace, using workspace root")
+                    resolved_params["path"] = workspace_root
+                # else: keep absolute path as-is
+            else:
+                # Relative path - prepend workspace
+                resolved_params["path"] = f"{workspace_root}/{path}"
+        
+        # Build workspace context for handlers
+        workspace_context = WorkspaceContext(
+            workspace_root="/workspace",
+            cwd=workspace_root,
+            allow_file_write=True,
+            allow_shell_commands=True,
+            allow_code_execution=True,
+            allowed_languages=["python", "powershell", "node"],
+        )
+        
+        # Dispatch to shared tool dispatcher
+        return await dispatch_tool(tool, resolved_params, workspace_context)
+            
+    except Exception as e:
+        logger.error(f"Tool execution error: {e}")
+        return {"success": False, "output": None, "error": str(e)}
 
 
 def _format_result_block(tool: str, params: dict, output: str, reasoning: str) -> str:
@@ -681,28 +676,43 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
             # Use the full note from LLM (up to 80 chars) - it's meant to be user-facing
             note = reasoning[:80] if reasoning else ""
             
-            # Simplified icons: ⏳ working, 🔍 reading, ✏️ writing, ✅ done
+            # Descriptive icons for each tool type
             tool_icons = {
-                "scan_workspace": "🔍",
-                "read_file": "🔍",
-                "write_file": "✏️",
+                "scan_workspace": "📂",
+                "list_dir": "📁",
+                "read_file": "📖",
+                "write_file": "📝",
                 "replace_in_file": "✏️",
                 "insert_in_file": "✏️",
-                "append_to_file": "✏️",
-                "execute_shell": "⏳",
+                "append_to_file": "➕",
+                "delete_file": "🗑️",
+                "execute_shell": "🔧",
+                "execute_code": "▶️",
+                "search_files": "🔎",
+                "grep": "🔎",
             }
-            icon = tool_icons.get(tool, "⏳")
+            icon = tool_icons.get(tool, "⚙️")
             
             # Build action description
             if tool == "scan_workspace":
                 action = f"Scanning {short_path or 'workspace'}"
+            elif tool == "list_dir":
+                action = f"Listing {short_path or 'directory'}"
             elif tool == "read_file":
                 action = f"Reading {short_path}"
             elif tool in edit_tools:
                 action = f"Editing {short_path}"
+            elif tool == "delete_file":
+                action = f"Deleting {short_path}"
             elif tool == "execute_shell":
                 cmd = params.get("command", "")[:25]
-                action = f"Running `{cmd}`..."
+                action = f"Running `{cmd}`"
+            elif tool == "execute_code":
+                lang = params.get("language", "code")
+                action = f"Executing {lang}"
+            elif tool in ("search_files", "grep"):
+                query = params.get("query", params.get("pattern", ""))[:20]
+                action = f"Searching for `{query}`"
             else:
                 action = tool
             
@@ -787,25 +797,48 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
     # Build final context
     if all_results:
         file_ops = sum(1 for r in all_results if "File Operation Result" in r)
+        scan_ops = sum(1 for r in all_results if "Workspace Files" in r)
+        read_ops = sum(1 for r in all_results if "File Content:" in r)
         
-        header = """### TASK ALREADY COMPLETED ###
-**CRITICAL:** The actions below have ALREADY been executed. Do NOT hallucinate details.
-- Speak in PAST TENSE: "I added...", "I updated..."
-- Report EXACTLY what the logs show - do NOT invent content or formats
-- The "Content added" field shows the EXACT text that was written
+        header = """### TASK COMPLETED ###
+**CRITICAL:** Actions below have ALREADY been executed. Report in PAST TENSE.
 """
         if file_ops > 0:
             header += f"**Files modified:** {file_ops}\n"
         header += "### Action Log ###\n"
         
-        footer = """### End Action Log ###
+        # Context-appropriate summarization instructions
+        if scan_ops > 0 and file_ops == 0 and read_ops == 0:
+            # User just asked to list files - give a brief summary
+            footer = """### End Action Log ###
 
-⚠️ FINAL INSTRUCTION: Summarize ONLY what is shown in the logs above.
-- Do NOT invent file names, paths, or content
-- Do NOT add files that aren't listed
-- Do NOT make up file contents
-- If you don't see data above, say "I couldn't complete that"
+⚠️ SUMMARIZATION: Give a BRIEF answer appropriate to the question.
+- For "list files" / "what's in workspace": Just say "The workspace contains X directories and Y files" 
+  then list only TOP-LEVEL items (not full paths). Example: "filters/, layers/, README.md, etc."
+- Do NOT list every single file path - that's what the raw output is for
+- Keep your summary to 2-3 sentences max for simple queries
 """
+        elif file_ops > 0:
+            # User made edits - confirm what was done
+            footer = """### End Action Log ###
+
+⚠️ SUMMARIZATION: Report EXACTLY what was done, briefly.
+- Say what files were created/modified and what content was added
+- Use past tense: "I added...", "I created...", "I updated..."
+- Keep it concise - 1-2 sentences per file operation
+- Do NOT dump the entire file content in your response
+"""
+        else:
+            # Generic - read operations, shell commands, etc.
+            footer = """### End Action Log ###
+
+⚠️ SUMMARIZATION: Answer the user's question directly and concisely.
+- If they asked a yes/no question, answer yes or no first
+- If they asked for specific info, provide just that info
+- Do NOT dump raw command output - summarize the key findings
+- Keep your response brief and helpful
+"""
+        
         final_context = header + "\n".join(all_results) + footer
     else:
         final_context = None

@@ -138,6 +138,9 @@ services:
   # -------------------------------------------------
   # Orchestrator API (Agentic Reasoning Engine)
   # -------------------------------------------------
+  # Orchestrator API (Agentic Reasoning + Execution Engine)
+  # NOTE: Executor is now merged into orchestrator (no separate container)
+  # -------------------------------------------------
   orchestrator_api:
     build:
       context: ./layers/orchestrator
@@ -149,35 +152,17 @@ services:
       - OLLAMA_HOST=http://ollama:11434
       - OLLAMA_MODEL=qwen2.5:32b
       - MEMORY_API_URL=http://memory_api:8000
-      - EXECUTOR_API_URL=http://executor_api:8005
       - MAX_PARALLEL_TASKS=5
       - WORKSPACE_ROOT=/workspace
-      - HOST_WORKSPACE_PATH=${HOST_WORKSPACE_PATH:-C:/Code} # Configurable host path
+      - HOST_WORKSPACE_PATH=${HOST_WORKSPACE_PATH:-C:/Code}
+      # Executor settings (now local)
+      - DEFAULT_TIMEOUT=30
+      - MAX_TIMEOUT=120
     volumes:
-      - ${HOST_WORKSPACE_PATH:-C:/Code}:/workspace:rw # Mount host code directory
+      - ${HOST_WORKSPACE_PATH:-C:/Code}:/workspace:rw
     depends_on:
       - ollama
       - memory_api
-    restart: unless-stopped
-    networks:
-      - webtools_network
-
-  # -------------------------------------------------
-  # Executor API (Polyglot Code Execution)
-  # -------------------------------------------------
-  executor_api:
-    build:
-      context: ./layers/executor
-      dockerfile: Dockerfile
-    container_name: executor_api
-    ports:
-      - "8005:8005"
-    environment:
-      - DEFAULT_TIMEOUT=30
-      - MAX_TIMEOUT=120
-      - WORKSPACE_ROOT=/workspace
-    volumes:
-      - ${HOST_WORKSPACE_PATH:-C:/Code}:/workspace:rw # Same mount as orchestrator
     restart: unless-stopped
     networks:
       - webtools_network

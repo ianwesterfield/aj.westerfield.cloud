@@ -35,12 +35,11 @@ flowchart TD
     A["User message"] --> B["AJ Filter"]
     B --> C["Intent Classification<br/>(Pragmatics)"]
     C --> D{"Intent?"}
-    D -->|task| E["Orchestrator<br/>(reasoning)"]
+    D -->|task| E["Orchestrator<br/>(reasoning + execution)"]
     D -->|recall| F["Memory Search"]
     D -->|save| G["Memory Save"]
     D -->|casual| H["Pass to LLM"]
-    E --> I["Executor<br/>(shell/files)"]
-    I -->|results| E
+    E -->|"tools (local)"| E
     E -->|patterns| F
     F -->|context| E
     E -->|thinking + results| J["Inject Context"]
@@ -49,20 +48,24 @@ flowchart TD
     J --> L["LLM Response"]
 ```
 
-**Key principle:** All task intents go to the Orchestrator for reasoning—no shortcut patterns in the filter.
+**Key optimizations:**
+
+- Executor merged into Orchestrator (no HTTP hop for tool execution)
+- Extractor has batch endpoint (single call for all files + images)
 
 ## Services
 
-| Service            | Port  | What it does                           |
-| ------------------ | ----- | -------------------------------------- |
-| `memory_api`       | 8000  | Agent core + semantic memory           |
-| `pragmatics_api`   | 8001  | 4-class intent classifier (DistilBERT) |
-| `extractor_api`    | 8002  | Image/audio/PDF extraction (GPU)       |
-| `orchestrator_api` | 8004  | Multi-step reasoning engine            |
-| `executor_api`     | 8005  | File ops + code execution              |
-| `qdrant`           | 6333  | Vector database                        |
-| `ollama`           | 11434 | Local LLM inference                    |
-| `open-webui`       | 8180  | Chat UI (filter runs here)             |
+| Service            | Port  | What it does                                     |
+| ------------------ | ----- | ------------------------------------------------ |
+| `memory_api`       | 8000  | Agent core + semantic memory                     |
+| `pragmatics_api`   | 8001  | 4-class intent classifier (DistilBERT)           |
+| `extractor_api`    | 8002  | Image/audio/PDF extraction (GPU, batch endpoint) |
+| `orchestrator_api` | 8004  | Multi-step reasoning + executor (merged)         |
+| `qdrant`           | 6333  | Vector database                                  |
+| `ollama`           | 11434 | Local LLM inference                              |
+| `open-webui`       | 8180  | Chat UI (filter runs here)                       |
+
+**Note:** Executor is merged into Orchestrator (no separate container) for reduced latency.
 
 ## Intent Classification
 

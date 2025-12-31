@@ -82,6 +82,33 @@ class ExtractResponse(BaseModel):
     total_chunks: int
 
 
+class BatchItem(BaseModel):
+    """Single item in a batch extraction request."""
+    content: str
+    content_type: str
+    source_name: Optional[str] = None
+    source_type: Optional[str] = None  # "file" or "image" hint
+
+
+class BatchExtractRequest(BaseModel):
+    """
+    Request to extract from multiple files/images in one call.
+    
+    Reduces HTTP round-trips by batching all extraction in a single request.
+    """
+    items: List[BatchItem]
+    chunk_size: int = 500
+    chunk_overlap: int = 50
+    prompt: Optional[str] = None  # Shared prompt for images
+
+
+class BatchExtractResponse(BaseModel):
+    """Response containing all extracted chunks from batch."""
+    results: List[ExtractResponse]
+    total_chunks: int
+    total_items: int
+
+
 # ============================================================================
 # Router
 # ============================================================================
@@ -290,3 +317,62 @@ async def extract_file(
     )
     
     return await extract(req)
+
+
+@router.post("/batch", response_model=BatchExtractResponse)
+async def extract_batch(req: BatchExtractRequest):
+    """
+    Extract text chunks from multiple files/images in one request.
+    
+    Reduces HTTP round-trips by batching all extraction.
+    Each item is processed with the shared chunk_size/overlap/prompt settings.
+    
+    Returns:
+        BatchExtractResponse with results for each item
+    """
+    results = []
+    total_chunks = 0
+    
+    for item in req.items:
+        try:
+            single_req = ExtractRequest(
+                content=item.content,
+                content_type=item.content_type,
+                source_name=item.source_name,
+                chunk_size=req.chunk_size,
+                chunk_overlap=req.chunk_overlap,
+                prompt=req.prompt,
+            )
+            result = await extract(single_req)
+            
+            # Add source_type hint if provided
+            if item.source_type:
+                for chunk in result.chunks:
+                    if chunk.metadata is None:
+                        chunk.metadata = {}
+                    chunk.metadata["source_type"] = item.source_type
+            
+            results.append(result)
+            total_chunks += result.total_chunks
+            
+        except HTTPException as e:
+            # Return partial result for this item
+            results.append(ExtractResponse(
+                chunks=[],
+                source_name=item.source_name,
+                source_type="error",
+                total_chunks=0,
+            ))
+        except Exception as e:
+            results.append(ExtractResponse(
+                chunks=[],
+                source_name=item.source_name,
+                source_type="error",
+                total_chunks=0,
+            ))
+    
+    return BatchExtractResponse(
+        results=results,
+        total_chunks=total_chunks,
+        total_items=len(req.items),
+    )

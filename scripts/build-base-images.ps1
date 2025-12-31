@@ -1,33 +1,27 @@
 <#
 .SYNOPSIS
-    Build and push AJ base images to Docker Hub
+  Build and push AJ base images to Docker Hub
 
 .DESCRIPTION
-    This script builds the base images (system deps + pip packages) and optionally
-    pushes them to Docker Hub. Run this when requirements.txt changes.
-    
-    By default, it checks if local images match remote and skips unchanged images.
+  This script builds the base images (system deps + pip packages) and optionally
+  pushes them to Docker Hub. Run this when requirements.txt changes.
+  
+  By default, it checks if local images match remote and skips unchanged images.
 
 .PARAMETER Registry
-    Docker Hub username or registry (default: "ianwesterfield")
-
-.PARAMETER Push
-    Push images to Docker Hub after building (default: true)
-
-.PARAMETER Services
-    Which services to build (default: all)
-
-.PARAMETER Force
-    Force rebuild and push even if images haven't changed
-
-.EXAMPLE
+  Docker Hub username or registry (default: "ianwesterfield")
+    
     .\build-base-images.ps1
-
-.EXAMPLE
+.PARAMETER Push
+  Push images to Docker Hub after building (default: true)
     .\build-base-images.ps1 -Registry "yourusername" -Push
 
-.EXAMPLE
-    .\build-base-images.ps1 -Services "memory" -Force
+.PARAMETER Services
+  Which services to build (default: all)
+
+.PARAMETER Force
+  Force rebuild and push even if images haven't changed
+    .\scripts\build-base-images.ps1 -Services "memory" -Force
 #>
 
 param(

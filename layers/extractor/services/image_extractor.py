@@ -103,7 +103,7 @@ def _load_llava_4bit() -> None:
     )
     
     model_id = "llava-hf/llava-1.5-7b-hf"
-    _processor = AutoProcessor.from_pretrained(model_id)
+    _processor = AutoProcessor.from_pretrained(model_id, use_fast=True)
     _model = LlavaForConditionalGeneration.from_pretrained(
         model_id,
         quantization_config=quantization_config,
@@ -130,7 +130,7 @@ def _load_llava() -> None:
     print("[extractor] Loading LLaVA-1.5-7B (full precision)...")
     
     model_id = "llava-hf/llava-1.5-7b-hf"
-    _processor = AutoProcessor.from_pretrained(model_id)
+    _processor = AutoProcessor.from_pretrained(model_id, use_fast=True)
     _model = LlavaForConditionalGeneration.from_pretrained(
         model_id,
         torch_dtype=_dtype,
@@ -156,7 +156,7 @@ def _load_florence() -> None:
     print("[extractor] Loading Florence-2-large...")
     
     model_id = "microsoft/Florence-2-large"
-    _processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
+    _processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True, use_fast=True)
     _model = AutoModelForCausalLM.from_pretrained(
         model_id,
         trust_remote_code=True,
