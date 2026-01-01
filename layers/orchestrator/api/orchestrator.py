@@ -42,6 +42,7 @@ from services.parallel_executor import ParallelExecutor
 from services.memory_connector import MemoryConnector
 from services.workspace_state import WorkspaceState, get_workspace_state, reset_workspace_state
 from services.tool_dispatcher import dispatch_tool
+from services.agent_discovery import get_discovery_service, AgentCapabilities
 from utils.workspace_context import WorkspaceContextManager
 
 
@@ -117,6 +118,56 @@ async def set_workspace(request: SetWorkspaceRequest) -> WorkspaceContext:
         raise HTTPException(status_code=400, detail=str(e))
     except PermissionError as e:
         raise HTTPException(status_code=403, detail=str(e))
+
+
+@router.get("/discover-agents")
+async def discover_agents(force: bool = False):
+    """
+    Discover FunnelCloud agents on the network.
+    
+    Broadcasts UDP discovery and returns list of available agents.
+    Results are cached for 5 minutes unless force=True.
+    
+    Args:
+        force: If True, bypass cache and re-discover
+        
+    Returns:
+        List of agent capabilities
+    """
+    logger.info(f"Agent discovery requested (force={force})")
+    discovery = get_discovery_service()
+    agents = await discovery.discover(force=force)
+    return {
+        "agents": [agent.to_dict() for agent in agents],
+        "count": len(agents),
+    }
+
+
+@router.get("/agents")
+async def list_agents():
+    """
+    List currently cached FunnelCloud agents.
+    
+    Returns cached agents without re-broadcasting.
+    Use /discover-agents to refresh the list.
+    """
+    discovery = get_discovery_service()
+    return {
+        "agents": discovery.list_agents(),
+        "count": len(discovery.list_agents()),
+    }
+
+
+@router.get("/agents/{agent_id}")
+async def get_agent(agent_id: str):
+    """
+    Get details for a specific agent by ID.
+    """
+    discovery = get_discovery_service()
+    agent = discovery.get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
+    return agent.to_dict()
 
 
 @router.post("/clone-workspace", response_model=CloneWorkspaceResponse)
@@ -452,9 +503,13 @@ async def _execute_tool(workspace_root: str, tool: str, params: dict) -> dict:
     Executor functionality is merged into orchestrator for reduced latency.
     """
     try:
-        # Resolve relative paths in params
+        # FunnelCloud remote tools operate on the HOST machine, not the container
+        # DO NOT resolve paths for these - they use Windows paths like C:\
+        remote_tools = {"remote_execute", "parallel_scan", "list_agents"}
+        
+        # Resolve relative paths in params (only for local tools)
         resolved_params = params.copy()
-        if "path" in resolved_params:
+        if "path" in resolved_params and tool not in remote_tools:
             path = resolved_params["path"]
             project_name = workspace_root.rstrip("/").split("/")[-1].lower()
             
@@ -569,6 +624,24 @@ def _format_result_block(tool: str, params: dict, output: str, reasoning: str) -
 **Command:** `{cmd}`
 ```
 {output or "(no output)"}
+```
+"""
+    
+    elif tool == "remote_execute":
+        cmd = params.get("command", "")
+        agent = params.get("agent_id", "host")
+        return f"""<!-- aj:remote-exec -->
+**Remote ({agent}):** `{cmd}`
+```
+{output or "(no output)"}
+```
+"""
+    
+    elif tool == "list_agents":
+        return f"""<!-- aj:agent-list -->
+**Available Agents:**
+```
+{output or "(no agents found)"}
 ```
 """
     
@@ -733,6 +806,8 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
                 "execute_code": "▶️",
                 "search_files": "🔎",
                 "grep": "🔎",
+                "remote_execute": "🖥️",
+                "list_agents": "🔍",
             }
             icon = tool_icons.get(tool, "⚙️")
             
@@ -750,6 +825,11 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
             elif tool == "execute_shell":
                 cmd = params.get("command", "")[:25]
                 action = f"Running `{cmd}`"
+            elif tool == "remote_execute":
+                cmd = params.get("command", "")[:30]
+                action = f"Remote: `{cmd}`"
+            elif tool == "list_agents":
+                action = "Discovering agents"
             elif tool == "execute_code":
                 lang = params.get("language", "code")
                 action = f"Executing {lang}"

@@ -138,6 +138,13 @@ Your brief reasoning about what to do next and why.
 </think>
 {"tool": "tool_name", "params": {...}, "note": "Brief status"}
 
+⛔⛔⛔ CRITICAL: OUTPUT EXACTLY ONE JSON OBJECT PER RESPONSE ⛔⛔⛔
+- You will be called repeatedly in a loop
+- Each call = one step = one tool call
+- NEVER output multiple tool calls in one response
+- NEVER output multiple <think> blocks
+- If you need to do 5 things, output ONE now, you'll be called again for the rest
+
 === COMMUNICATION STYLE ===
 
 NEVER mention internal tool names or system terminology to the user:
@@ -162,16 +169,141 @@ NEVER guess or fabricate user information.
 
 === AVAILABLE TOOLS ===
 
+WORKSPACE TOOLS (run inside Docker container):
 - scan_workspace: List files. Params: {"path": "string"}
 - read_file: Read file. Params: {"path": "string"}
 - write_file: Create/overwrite file. Params: {"path": "string", "content": "string"}
 - replace_in_file: Find/replace EXISTING text. Params: {"path": "string", "old_text": "string", "new_text": "string"}
 - insert_in_file: ADD NEW text at start or end. Params: {"path": "string", "position": "start"|"end", "text": "string"}
 - append_to_file: Append to end. Params: {"path": "string", "content": "string"}
-- execute_shell: Run shell command. Params: {"command": "string"}
+- execute_shell: Run shell command IN CONTAINER. Params: {"command": "string"}
 - dump_state: Output full workspace state as JSON. Params: {} — Use when user asks to see state/metadata
+
+FUNNELCLOUD TOOLS (run on user's HOST machine via agent):
+- list_agents: Discover available FunnelCloud agents. Params: {}
+  ⚠️ MUST call this FIRST when user says "my machine", "my PC", "my computer", etc.
+  Returns: agent names and their platforms (e.g., "ians-r16" on Windows)
+  
+- remote_execute: Run command on HOST machine. Params: {"command": "string", "agent_id": "optional"}
+  ⚠️ ALWAYS use PowerShell syntax (NOT cmd.exe)!
+  ⚠️ Default timeout is 2 minutes - comprehensive scans are usually fine!
+  
+  GOOD commands:
+    Get-ChildItem C:\\ -Directory                    # List top-level dirs
+    Get-ChildItem C:\\Users -Directory               # List user folders
+    Get-ChildItem S:\\ -Recurse                      # Full scan of network share (OK - bounded)
+    Get-ChildItem D:\\ -Recurse -File                # Full scan of secondary drive
+    Get-Process | Select -First 10                  # Running processes
+  
+- parallel_scan: Fast parallel scan of ANY drive. Params: {"path": "C:\\", "agent_id": "optional", "max_parallel": 4}
+  ⚠️ USE THIS FOR ALL "FULL SCAN" REQUESTS ON ANY DRIVE!
+  
+  Works for: C:\, D:\, S:\, Z:\ - any drive letter!
+  Automatically:
+  - Gets top-level directories
+  - Fans out parallel scans for each (skipping Windows, $Recycle.Bin, etc.)
+  - Aggregates results with file counts and sizes per directory
+  - Shows largest files
+  
+  WHEN TO USE parallel_scan (ALWAYS for "full scan" of any drive):
+  - User says "full scan of C:" → parallel_scan with path="C:\\"
+  - User says "full scan of S:" → parallel_scan with path="S:\\"
+  - User says "scan D:" → parallel_scan with path="D:\\"
+  - User asks "what's taking up space" → parallel_scan
+  - User wants comprehensive file listing → parallel_scan
+  
+  EXAMPLES:
+  {"tool": "parallel_scan", "params": {"path": "C:\\", "agent_id": "ians-r16"}}
+  {"tool": "parallel_scan", "params": {"path": "S:\\", "agent_id": "ians-r16"}}
+  {"tool": "parallel_scan", "params": {"path": "D:\\", "agent_id": "ians-r16"}}
+  
+  USE remote_execute ONLY for:
+  - Specific subdirectories: "C:\\Users\\Ian\\Documents"
+  - Quick listing with -Depth limit
+  - Non-scan commands (Get-Process, etc.)
+  
+  FINDING LARGE FILES:
+    # For specific drives/shares - no depth limit needed:
+    Get-ChildItem S:\\ -Recurse -File -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 10 FullName, @{N='SizeMB';E={[math]::Round($_.Length/1MB,1)}}
+    
+    # For C:\\ only - use depth limit:
+    Get-ChildItem C:\\ -Recurse -File -Depth 4 -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 10 FullName, @{N='SizeMB';E={[math]::Round($_.Length/1MB,1)}}
+  
+  ⚠️ Use -ErrorAction SilentlyContinue to skip permission errors
+
+  ⛔ WMI/CIM COMMANDS WILL HANG ON OPTICAL DRIVES! ⛔
+  
+  NEVER use these for drive info (they block indefinitely on USB DVD/CD drives):
+    Get-CimInstance Win32_CDROMDrive        # HANGS on optical drives!
+    Get-CimInstance Win32_LogicalDisk       # HANGS if DVD drive exists!
+    Get-CimInstance Win32_DiskDrive         # HANGS if DVD drive exists!
+    Get-WmiObject Win32_*                   # Same problem (deprecated anyway)
+    [System.IO.DriveInfo]::GetDrives()      # Also blocks on optical!
+    Test-Path E:/                           # Blocks if E: is optical drive!
+    Get-PSDrive                             # Can hang on drive enumeration!
+  
+  SAFE alternatives for drive/disk info:
+    # List mounted drive letters (instant, reads from registry):
+    (Get-ItemProperty HKLM:/SYSTEM/MountedDevices).PSObject.Properties.Name | Where-Object { $_ -like "*DosDevices*" }
+    
+    # Check if specific non-optical drive exists (C: is always safe):
+    Test-Path C:/
+    
+    # Get disk space for C: drive (safe, won't enumerate optical):
+    Get-PSDrive C | Select Used,Free
+    
+    # Get disk space for multiple known drives:
+    Get-PSDrive C,D,F -ErrorAction SilentlyContinue | Select Name,Used,Free
+  
+  WHEN USER ASKS ABOUT "DISKS" OR "DRIVES":
+  - First list mounted drives via registry (instant, safe)
+  - Then query specific drives like C:, D: for space info
+  - ONLY mention optical limitation if user specifically asks about CD/DVD/optical
+  - "Is there a disk" usually means hard drives - CHECK THEM!
+  
+  ⛔ ONLY for explicit optical disc questions (CD, DVD, Blu-ray, optical):
+  - You cannot safely check if a disc is loaded (causes hangs)
+  - Explain the USB DVD limitation and suggest physical check
+
+CONTROL TOOLS:
 - none: Skip (change already present). Params: {"reason": "string"}
-- complete: Done. Params: {"answer": "your response to user"} OR {"error": "reason why you can't complete"}
+- complete: Done or ask clarification. Params: 
+    {"answer": "your response to user"} - when task is complete
+    {"error": "reason why you can't complete"} - when something went wrong
+    {"question": "clarifying question"} - when you need user input before proceeding
+
+  USE {"question": ...} WHEN:
+  - User asks to scan C:\\ without specifying depth
+  - Ambiguous request that could mean quick or thorough
+  - You need confirmation before a potentially long operation
+  
+  EXAMPLE:
+  <think>User wants to scan C: but didn't specify depth. I should ask.</think>
+  {"tool": "complete", "params": {"question": "Do you want a quick scan (top 3-4 levels) or a full deep scan? Full scans of C:\\ can take several minutes."}, "note": "Asking for clarification"}
+
+=== MACHINE REFERENCE VALIDATION (MANDATORY) ===
+
+⛔ YOU MUST CALL list_agents BEFORE ANY remote_execute! ⛔
+
+When user references "my machine", "my computer", "my PC", "locally", or any machine name:
+
+1. FIRST call list_agents to discover available agents - NO EXCEPTIONS!
+2. If you already called list_agents THIS SESSION and found an agent, you may skip step 1
+3. If user said a specific name (e.g., "on server-01"), verify that agent exists
+4. If no agents found → complete with error asking user to start an agent
+5. Only THEN proceed with remote_execute using the verified agent_id
+
+⚠️ NEVER assume "my machine" = any specific agent. ALWAYS verify first!
+
+Example flow:
+  User: "What's running on my PC?"
+  Step 1: {"tool": "list_agents", "params": {}}
+  Step 2: (after seeing agent list) {"tool": "remote_execute", "params": {"agent_id": "ians-r16", "command": "Get-Process | Select -First 10"}}
+
+⚠️ WHEN TO USE REMOTE vs LOCAL:
+- User mentions their machine/PC/computer + list_agents found agents → remote_execute
+- User asks about workspace files (in /workspace) → scan_workspace, read_file
+- If list_agents returns empty → tell user no agent is running
 
 ⚠️ ALWAYS include "answer" when completing! If you can answer from workspace state, put your response in the answer param.
 
@@ -215,6 +347,23 @@ If task is "list/scan files" and you already did scan_workspace → complete wit
 If task is "read file X" and X is in "Already read" → complete with your answer
 If you can answer from existing state → {"tool": "complete", "params": {"answer": "Your response here"}, "note": "Answered from state"}
 If you can't make progress → {"tool": "complete", "params": {"error": "Cannot complete task"}, "note": "Stuck"}
+
+⛔ CRITICAL - SUCCESSFUL RESULTS = COMPLETE IMMEDIATELY ⛔
+
+When a command returns data successfully:
+1. DO NOT retry with "better" parameters
+2. DO NOT run a similar command "to be sure"
+3. IMMEDIATELY complete with the answer from the successful result
+
+Example - WRONG behavior:
+  Step 1: remote_execute → returns 162 files ✓
+  Step 2: remote_execute with -Depth 3 → WRONG! Already have data!
+
+Example - CORRECT behavior:
+  Step 1: remote_execute → returns 162 files ✓
+  Step 2: complete with answer listing those files ✓
+
+If you got output, you're DONE. Complete and summarize it!
 
 === USING EXISTING STATE ===
 
@@ -733,6 +882,45 @@ class ReasoningEngine:
     def _apply_guardrails(self, step: Step, workspace_state: WorkspaceState) -> Step:
         """Apply guardrails to a parsed step. Returns corrected step if needed."""
         
+        # GUARDRAIL: Prevent lazy completion after list_agents
+        # If we just discovered agents and LLM tries to complete without doing actual work,
+        # reject it - the task likely requires remote_execute or parallel_scan
+        if step.tool == "complete":
+            recent_steps = workspace_state.completed_steps[-3:]
+            last_was_list_agents = any(s.tool == "list_agents" for s in recent_steps)
+            did_remote_work = any(s.tool in ("remote_execute", "parallel_scan") for s in workspace_state.completed_steps)
+            
+            if last_was_list_agents and not did_remote_work and workspace_state.discovered_agents:
+                # LLM is trying to complete without doing remote work after discovering agents
+                error_text = step.params.get("error", "")
+                answer_text = step.params.get("answer", "")
+                
+                # Only block if this looks like a lazy completion (hallucinated answer)
+                if answer_text and "scan" not in answer_text.lower() and "error" not in answer_text.lower():
+                    logger.warning(f"GUARDRAIL: Blocking lazy completion after list_agents - no remote work done")
+                    return Step(
+                        step_id="guardrail_require_remote_work",
+                        tool="complete",
+                        params={"error": "You discovered agents but didn't perform the requested remote operation. Use parallel_scan or remote_execute to do the actual work."},
+                        reasoning="Blocked lazy completion - LLM must use discovered agents",
+                    )
+        
+        # GUARDRAIL: If last remote_execute or parallel_scan succeeded with output, don't run another one
+        # This catches the "retry with better parameters" anti-pattern
+        if step.tool in ("remote_execute", "parallel_scan"):
+            recent_remote = [s for s in workspace_state.completed_steps[-3:] if s.tool in ("remote_execute", "parallel_scan")]
+            if recent_remote:
+                last_remote = recent_remote[-1]
+                # Check if last remote operation was successful (has output)
+                if last_remote.success and "Got" in last_remote.output_summary:
+                    logger.warning(f"GUARDRAIL: Blocking duplicate {step.tool} - previous remote operation succeeded")
+                    return Step(
+                        step_id="guardrail_no_retry_remote",
+                        tool="complete",
+                        params={"answer": "I already retrieved the requested information. See the output above."},
+                        reasoning=f"Blocked retry of {step.tool} - previous command succeeded",
+                    )
+        
         # GUARDRAIL: Detect tool repetition loops (same tool called 3+ times recently)
         recent_tools = [s.tool for s in workspace_state.completed_steps[-5:]]
         if step.tool in recent_tools:
@@ -813,10 +1001,16 @@ class ReasoningEngine:
         Response format is now:
         <think>reasoning here</think>
         {"tool": "...", "params": {...}, "note": "..."}
+        
+        Handles edge cases:
+        - Multiple JSON objects (LLM outputting more than one action) - takes first only
+        - Windows paths with unescaped backslashes
+        - Extra content after JSON
         """
         import uuid
         
         # Extract thinking content (for logging/reasoning field)
+        # Only extract from the FIRST think block
         thinking = ""
         if "<think>" in response and "</think>" in response:
             think_start = response.index("<think>") + len("<think>")
@@ -828,9 +1022,18 @@ class ReasoningEngine:
         if "</think>" in response:
             json_str = response.split("</think>", 1)[1].strip()
         
+        # CRITICAL: Extract only the FIRST JSON object
+        # LLMs sometimes output multiple tool calls - we only want the first one
+        json_str = self._extract_first_json_object(json_str)
+        
         try:
+            # Fix common JSON issues from LLMs
+            # 1. Windows paths with single backslashes: C:\ → C:\\
+            import re
+            fixed_json = re.sub(r'(?<!\\)\\(?![\\nrt"])', r'\\\\', json_str)
+            
             # Try to parse as JSON
-            data = json.loads(json_str)
+            data = json.loads(fixed_json)
             
             # Generate step ID
             step_id = f"step_{uuid.uuid4().hex[:8]}"
@@ -848,16 +1051,68 @@ class ReasoningEngine:
             )
         except json.JSONDecodeError as e:
             logger.warning(f"Failed to parse LLM response as JSON: {e}")
-            logger.debug(f"Raw response: {response[:500]}")
-            logger.debug(f"JSON portion: {json_str[:500]}")
+            logger.warning(f"Raw response (first 500 chars): {response[:500] if response else '(empty)'}")
+            logger.warning(f"JSON portion (first 500 chars): {json_str[:500] if json_str else '(empty)'}")
             
             # Return error step
             return Step(
                 step_id=f"parse_error_{uuid.uuid4().hex[:8]}",
                 tool="complete",
-                params={"error": "Failed to parse LLM response"},
+                params={"error": f"LLM returned invalid response: {e}"},
                 reasoning=f"Parse error: {e}",
             )
+    
+    def _extract_first_json_object(self, text: str) -> str:
+        """
+        Extract only the first JSON object from text.
+        
+        Handles cases where LLM outputs multiple JSON objects or extra content.
+        Uses brace counting to find the end of the first object.
+        """
+        if not text:
+            return text
+        
+        # Find start of JSON
+        start = text.find('{')
+        if start == -1:
+            return text
+        
+        # Count braces to find matching close
+        depth = 0
+        in_string = False
+        escape_next = False
+        
+        for i, char in enumerate(text[start:], start):
+            if escape_next:
+                escape_next = False
+                continue
+            
+            if char == '\\':
+                escape_next = True
+                continue
+            
+            if char == '"' and not escape_next:
+                in_string = not in_string
+                continue
+            
+            if in_string:
+                continue
+            
+            if char == '{':
+                depth += 1
+            elif char == '}':
+                depth -= 1
+                if depth == 0:
+                    # Found end of first JSON object
+                    result = text[start:i+1]
+                    # Log if we truncated additional content
+                    remaining = text[i+1:].strip()
+                    if remaining and (remaining.startswith('<think>') or remaining.startswith('{')):
+                        logger.warning(f"Truncated additional LLM output: {remaining[:100]}...")
+                    return result
+        
+        # If we get here, braces didn't balance - return original
+        return text[start:]
     
     async def close(self):
         """Close the HTTP client."""

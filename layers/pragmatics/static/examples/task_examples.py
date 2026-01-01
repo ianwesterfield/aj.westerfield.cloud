@@ -315,4 +315,77 @@ TASK_EXAMPLES = [
     "Execute it",
     "Try that",
     "Test it",
+    
+    # =======================================================================
+    # REMOTE MACHINE / FUNNELCLOUD OPERATIONS
+    # =======================================================================
+    # Queries about remote machines, hardware status, system checks
+    
+    # Machine state queries
+    "Is there a disc in the drive?",
+    "Is there an optical disc loaded?",
+    "Is there a CD in the drive?",
+    "Is there a DVD loaded?",
+    "What's in the disc drive?",
+    "Check if there's a disc loaded",
+    "Is the printer online?",
+    "Is the printer connected?",
+    "What printers are available?",
+    "List connected devices",
+    "What USB devices are connected?",
+    "Is the external drive mounted?",
+    "Check the hardware status",
+    "What's the CPU usage?",
+    "What's the memory usage?",
+    "How much RAM is being used?",
+    "What processes are running?",
+    "Is the service running?",
+    "Check if Docker is running",
+    "Is the database running?",
+    
+    # Machine-specific queries (with machine names)
+    "What's on ians-r16?",
+    "Check ians-r16 for disc",
+    "Is there a disc on ians-r16?",
+    "What files are on ians-r16?",
+    "Check the server status",
+    "What's running on my PC?",
+    "Check my computer for updates",
+    "What's on my machine?",
+    "List files on my desktop",
+    "Check my downloads folder",
+    "What's in my Documents?",
+    "Scan my computer for large files",
+    "What's using disk space on my PC?",
+    "Check my system for errors",
+    "What services are running on my machine?",
+    "Is there anything in my recycle bin?",
+    "Check my temp folder",
+    "What's installed on my computer?",
+    "List programs on my PC",
+    "What software is installed?",
+    
+    # Remote execution requests
+    "Run this on my machine",
+    "Execute this on my PC",
+    "Run a command on my computer",
+    "Check something on my machine",
+    "Do this on the remote machine",
+    "Execute on the host",
+    "Run remotely",
+    "Check the remote system",
+    
+    # Drive/storage queries
+    "What drives are available?",
+    "List available drives",
+    "What's on the C drive?",
+    "What's on the D drive?",
+    "Check the C: drive",
+    "How much space on the C drive?",
+    "What's on the external drive?",
+    "List drives on my PC",
+    "Show disk usage",
+    "What's taking up space?",
+    "Find large files on my computer",
+    "Which files are biggest on my PC?",
 ]

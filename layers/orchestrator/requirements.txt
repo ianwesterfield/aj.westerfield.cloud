@@ -9,3 +9,7 @@ python-dotenv>=1.0.0
 
 # Executor dependencies (merged)
 pathspec>=0.11.0  # For gitignore pattern matching in file_handler
+
+# gRPC for FunnelCloud agent communication
+grpcio>=1.60.0
+grpcio-tools>=1.60.0

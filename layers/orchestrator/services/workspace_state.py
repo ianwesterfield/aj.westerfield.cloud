@@ -210,6 +210,10 @@ class WorkspaceState:
     # Conversation ledger - running record of entire session
     ledger: ConversationLedger = field(default_factory=ConversationLedger)
     
+    # FunnelCloud agent tracking
+    discovered_agents: List[str] = field(default_factory=list)  # Agent IDs discovered this session
+    agents_verified: bool = False  # True after list_agents has been called
+    
     def add_user_request(self, request: str) -> None:
         """Log a user request to the ledger."""
         self.ledger.add_request(request)
@@ -271,6 +275,24 @@ class WorkspaceState:
         
         elif tool == "dump_state":
             summary = "dump_state: DONE - state already shown above, do NOT call again"
+        
+        elif tool == "list_agents":
+            # Track that agents were verified this session
+            self.agents_verified = True
+            if success and output:
+                # Extract agent IDs from output
+                import re
+                agent_matches = re.findall(r'Agent:\s*(\S+)', output)
+                self.discovered_agents = agent_matches
+            agent_count = len(self.discovered_agents)
+            summary = f"list_agents: {agent_count} agent(s) found"
+            if self.discovered_agents:
+                summary += f" ({', '.join(self.discovered_agents)})"
+        
+        elif tool == "remote_execute":
+            cmd = params.get("command", "")[:40]
+            agent = params.get("agent_id", "default")
+            summary = f"remote({agent}): {cmd}... {'OK' if success else 'FAILED'}"
             
         else:
             summary = f"{tool}: {'OK' if success else 'FAILED'}"
@@ -603,6 +625,20 @@ class WorkspaceState:
             lines.append("=== WORKSPACE STATE ===\n")
             lines.append("⚠️ WORKSPACE NOT YET SCANNED")
             lines.append("   You MUST call scan_workspace first to see files")
+            lines.append("")
+        
+        # FunnelCloud agent status - critical for remote execution
+        if self.agents_verified:
+            if self.discovered_agents:
+                lines.append(f"🖥️ AGENTS VERIFIED: {', '.join(self.discovered_agents)}")
+                lines.append("   You may now use remote_execute with these agent(s)")
+            else:
+                lines.append("🖥️ AGENTS VERIFIED: None found")
+                lines.append("   No remote execution available - tell user to start an agent")
+            lines.append("")
+        else:
+            lines.append("🖥️ AGENTS NOT VERIFIED")
+            lines.append("   ⛔ MUST call list_agents BEFORE any remote_execute!")
             lines.append("")
         
         # Completed steps - with strong warnings against repetition

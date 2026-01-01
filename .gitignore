@@ -23,13 +23,15 @@ ENV/
 # IDE / Editor
 .vscode/
 .idea/
-.github/
 *.swp
 *.swo
 *~
 .project
 .pydevproject
 .settings/
+
+# FunnelCloud (private repo - developed separately)
+FunnelCloud/
 
 # OS
 .DS_Store

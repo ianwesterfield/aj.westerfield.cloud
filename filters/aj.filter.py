@@ -127,6 +127,11 @@ def _classify_intent(text: str) -> Dict[str, Any]:
     """
     Classify user intent via pragmatics 4-class model.
     
+    All intent detection is handled by the pragmatics API - no hardcoded
+    patterns in the filter. This follows the architecture principle:
+    "Orchestrator owns all reasoning — Filter routes by intent but NEVER
+    hardcodes tool selection patterns."
+    
     Returns:
         {"intent": "recall"|"save"|"task"|"casual", "confidence": float}
     """
@@ -145,8 +150,8 @@ def _classify_intent(text: str) -> Dict[str, Any]:
     except Exception as e:
         print(f"[aj] Pragmatics API error: {e}")
     
-    # Fallback if pragmatics is down - very basic heuristics
-    print("[aj] Warning: Pragmatics unavailable, using basic fallback")
+    # Fallback if pragmatics is down - default to casual (safe)
+    print("[aj] Warning: Pragmatics unavailable, defaulting to casual")
     return {"intent": "casual", "confidence": 0.3}
 
 
@@ -157,6 +162,9 @@ def _detect_task_continuation(user_text: str, messages: List[dict], confidence: 
     Uses pragmatics context-aware classification to determine if short
     responses like "yes", "ok", "do it" are task continuations.
     
+    All pattern detection is delegated to the pragmatics API - no hardcoded
+    patterns in the filter.
+    
     Args:
         user_text: Current user message
         messages: Conversation history
@@ -164,8 +172,6 @@ def _detect_task_continuation(user_text: str, messages: List[dict], confidence: 
     
     Returns True if we should upgrade intent to 'task'.
     """
-    user_lower = user_text.lower().strip()
-    
     # Get recent assistant message for context
     context = ""
     for msg in reversed(messages):
@@ -181,31 +187,7 @@ def _detect_task_continuation(user_text: str, messages: List[dict], confidence: 
         print(f"[aj] Task continuation: no assistant context")
         return False
     
-    # HEURISTIC 1: Previous response has orchestrator markers (unique HTML comments we control)
-    orchestrator_markers = [
-        "<!-- aj:workspace-scan -->",  # scan_workspace output
-        "<!-- aj:file-read -->",       # read_file output
-        "<!-- aj:file-edit -->",       # file edit operations
-        "<!-- aj:shell-exec -->",      # shell command output
-        "<!-- aj:direct-answer -->",   # complete tool answer
-        "> 💭",                        # orchestrator thinking block (visible to user)
-    ]
-    has_orchestrator_context = any(marker in context for marker in orchestrator_markers)
-    
-    # HEURISTIC 2: User is asking about "it" or "this" or "these" (anaphora)
-    anaphora_patterns = [
-        "how much ", "how many ", "what is ", "what's ",
-        " it ", " it?", " it.", " this ", " this?", " these ",
-        " them ", " them?", "which ", "list ", "show ",
-    ]
-    has_anaphora = any(pattern in f" {user_lower} " or user_lower.startswith(pattern.strip()) for pattern in anaphora_patterns)
-    
-    # If previous response was from orchestrator AND user uses anaphora → upgrade
-    if has_orchestrator_context and has_anaphora:
-        print(f"[aj] Task continuation: YES (orchestrator context + anaphora)")
-        return True
-    
-    # Call pragmatics context-aware endpoint
+    # Delegate to pragmatics context-aware endpoint
     try:
         resp = requests.post(
             f"{PRAGMATICS_API_URL}/api/pragmatics/classify-with-context",
@@ -222,15 +204,11 @@ def _detect_task_continuation(user_text: str, messages: List[dict], confidence: 
                 return True
             else:
                 print(f"[aj] Task continuation: NO via pragmatics (intent={intent}, conf={ctx_confidence:.2f})")
-                # Don't return False yet - check fallback heuristics
+                return False
     except Exception as e:
         print(f"[aj] Task continuation: pragmatics error: {e}")
     
-    # Fallback: low confidence + short message + orchestrator context
-    if has_orchestrator_context and confidence < 0.7 and len(user_text.strip()) < 100:
-        print(f"[aj] Task continuation: MAYBE (orchestrator context + low conf)")
-        return True
-    
+    # Fallback: if pragmatics unavailable, don't upgrade (safe default)
     return False
 
 

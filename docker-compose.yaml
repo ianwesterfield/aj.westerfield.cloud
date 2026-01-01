@@ -158,6 +158,13 @@ services:
       # Executor settings (now local)
       - DEFAULT_TIMEOUT=30
       - MAX_TIMEOUT=120
+      # FunnelCloud agent discovery (for host machine execution)
+      - FUNNEL_HOST_ADDRESS=host.docker.internal
+      - FUNNEL_DISCOVERY_PORT=41234
+      - FUNNEL_GRPC_PORT=41235
+      - FUNNEL_DISCOVERY_TIMEOUT=3.0
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ${HOST_WORKSPACE_PATH:-C:/Code}:/workspace:rw
     depends_on:
