@@ -505,7 +505,7 @@ async def _execute_tool(workspace_root: str, tool: str, params: dict) -> dict:
     try:
         # FunnelCloud remote tools operate on the HOST machine, not the container
         # DO NOT resolve paths for these - they use Windows paths like C:\
-        remote_tools = {"remote_execute", "parallel_scan", "list_agents"}
+        remote_tools = {"remote_execute", "list_agents"}
         
         # Resolve relative paths in params (only for local tools)
         resolved_params = params.copy()
@@ -714,7 +714,25 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
         yield f"data: {json.dumps({'event_type': 'error', 'status': f'Failed to set workspace: {e}', 'done': True})}\n\n"
         return
     
-    # Emit thinking blockquote prefix (status already emitted by caller)
+    # === PLANNING PHASE ===
+    # Generate task plan BEFORE execution to show user what will happen
+    yield f"data: {json.dumps({'event_type': 'status', 'status': '📋 Planning...', 'done': False})}\n\n"
+    
+    plan_steps = await reasoning_engine.generate_task_plan(request.task)
+    
+    # Create TaskPlan and store in workspace state
+    from services.workspace_state import TaskPlan
+    task_plan = TaskPlan(original_task=request.task)
+    for step_desc in plan_steps:
+        task_plan.add_item(step_desc)
+    workspace_state.set_task_plan(task_plan)
+    
+    # Stream the plan to user as markdown
+    plan_markdown = task_plan.format_for_display()
+    yield f"data: {json.dumps({'event_type': 'plan', 'content': plan_markdown, 'steps': plan_steps})}\n\n"
+    yield f"data: {json.dumps({'event_type': 'thinking', 'content': plan_markdown + chr(10) + chr(10)})}\n\n"
+    
+    # Emit thinking blockquote prefix
     yield f"data: {json.dumps({'event_type': 'thinking', 'content': '> 💭 '})}\n\n"
     
     step_history = []
@@ -867,6 +885,10 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
                 output=output[:500000] if output else "",  # DEV MODE: 500KB limit
                 success=success,
             )
+            
+            # Advance task plan on successful steps
+            if success and workspace_state.task_plan:
+                workspace_state.advance_plan()
             
             # Record step
             step_history.append({

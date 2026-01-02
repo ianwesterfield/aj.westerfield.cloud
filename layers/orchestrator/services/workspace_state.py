@@ -10,7 +10,7 @@ injects it as context into the LLM prompt.
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 import re
 import logging
 
@@ -168,6 +168,124 @@ class EnvironmentFacts:
 
 
 @dataclass
+class TaskPlanItem:
+    """A single item in the task plan."""
+    index: int  # 1-based index
+    description: str  # What this step will do
+    status: str = "pending"  # pending, in_progress, completed, skipped
+    tool_hint: Optional[str] = None  # Expected tool (optional)
+
+
+@dataclass
+class TaskPlan:
+    """
+    Structured plan generated at task start.
+    
+    Provides:
+    - Clear visibility to user of what will happen
+    - Script for LLM to follow
+    - Progress tracking
+    """
+    items: List[TaskPlanItem] = field(default_factory=list)
+    original_task: str = ""
+    created_at: Optional[str] = None
+    
+    def add_item(self, description: str, tool_hint: Optional[str] = None) -> None:
+        """Add a plan item."""
+        self.items.append(TaskPlanItem(
+            index=len(self.items) + 1,
+            description=description,
+            tool_hint=tool_hint,
+        ))
+    
+    def mark_in_progress(self, index: int) -> None:
+        """Mark an item as in progress."""
+        for item in self.items:
+            if item.index == index:
+                item.status = "in_progress"
+                break
+    
+    def mark_completed(self, index: int) -> None:
+        """Mark an item as completed."""
+        for item in self.items:
+            if item.index == index:
+                item.status = "completed"
+                break
+    
+    def mark_skipped(self, index: int, reason: str = "") -> None:
+        """Mark an item as skipped."""
+        for item in self.items:
+            if item.index == index:
+                item.status = "skipped"
+                if reason:
+                    item.description += f" (skipped: {reason})"
+                break
+    
+    def get_current_item(self) -> Optional[TaskPlanItem]:
+        """Get the next pending or in-progress item."""
+        for item in self.items:
+            if item.status in ("pending", "in_progress"):
+                return item
+        return None
+    
+    def get_progress(self) -> tuple:
+        """Return (completed_count, total_count)."""
+        completed = sum(1 for i in self.items if i.status in ("completed", "skipped"))
+        return completed, len(self.items)
+    
+    def is_complete(self) -> bool:
+        """Check if all items are done."""
+        return all(i.status in ("completed", "skipped") for i in self.items)
+    
+    def format_for_display(self) -> str:
+        """Format plan for user display (markdown)."""
+        if not self.items:
+            return ""
+        
+        lines = ["📋 **Task Plan:**"]
+        for item in self.items:
+            if item.status == "completed":
+                icon = "✅"
+            elif item.status == "in_progress":
+                icon = "⏳"
+            elif item.status == "skipped":
+                icon = "⏭️"
+            else:
+                icon = "⬜"
+            lines.append(f"{icon} {item.index}. {item.description}")
+        
+        completed, total = self.get_progress()
+        lines.append(f"\n_Progress: {completed}/{total}_")
+        return "\n".join(lines)
+    
+    def format_for_prompt(self) -> str:
+        """Format plan for LLM context injection."""
+        if not self.items:
+            return ""
+        
+        lines = ["📋 TASK PLAN (follow this script):"]
+        for item in self.items:
+            status_marker = {
+                "completed": "✓ DONE",
+                "in_progress": "→ NOW",
+                "skipped": "⏭ SKIP",
+                "pending": "☐ TODO",
+            }.get(item.status, "☐")
+            lines.append(f"  {item.index}. [{status_marker}] {item.description}")
+        
+        current = self.get_current_item()
+        if current:
+            lines.append(f"")
+            lines.append(f"⚡ CURRENT TASK: Step {current.index} - {current.description}")
+            lines.append(f"   Complete this step, then move to the next.")
+        else:
+            lines.append(f"")
+            lines.append(f"✅ ALL STEPS COMPLETE - call 'complete' with your answer")
+        
+        return "\n".join(lines)
+
+
+@dataclass
 class CompletedStep:
     """Record of a completed step."""
     step_id: str
@@ -175,6 +293,8 @@ class CompletedStep:
     params: Dict[str, Any]
     output_summary: str  # Brief summary, not full output
     success: bool
+    error_type: Optional[str] = None  # e.g., "syntax_error", "timeout", "permission_denied"
+    error_message: Optional[str] = None  # Full error text for analysis
     timestamp: Optional[str] = None
 
 
@@ -213,6 +333,20 @@ class WorkspaceState:
     # FunnelCloud agent tracking
     discovered_agents: List[str] = field(default_factory=list)  # Agent IDs discovered this session
     agents_verified: bool = False  # True after list_agents has been called
+    
+    # Task plan - generated at start, guides execution
+    task_plan: Optional[TaskPlan] = None
+    
+    def set_task_plan(self, plan: TaskPlan) -> None:
+        """Set the task plan for this task."""
+        self.task_plan = plan
+    
+    def advance_plan(self) -> None:
+        """Mark current plan item as completed and advance to next."""
+        if self.task_plan:
+            current = self.task_plan.get_current_item()
+            if current:
+                self.task_plan.mark_completed(current.index)
     
     def add_user_request(self, request: str) -> None:
         """Log a user request to the ledger."""
@@ -297,12 +431,20 @@ class WorkspaceState:
         else:
             summary = f"{tool}: {'OK' if success else 'FAILED'}"
         
+        # Detect error type and message if not successful
+        error_type = None
+        error_message = None
+        if not success:
+            error_type, error_message = self._classify_error(tool, output)
+        
         self.completed_steps.append(CompletedStep(
             step_id=step_id,
             tool=tool,
             params={k: v for k, v in params.items() if k not in ("content", "text", "new_text")},
             output_summary=summary,
             success=success,
+            error_type=error_type,
+            error_message=error_message,
             timestamp=datetime.utcnow().isoformat() + "Z",
         ))
         
@@ -607,6 +749,61 @@ class WorkspaceState:
         """Get files that haven't been read yet."""
         return [f for f in self.files if f not in self.read_files]
     
+    def _classify_error(self, tool: str, output: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Classify error type from tool output to enable intelligent failure analysis.
+        
+        Returns (error_type, error_message) tuple for logging and adaptive planning.
+        """
+        if not output:
+            return None, None
+        
+        output_lower = output.lower()
+        
+        # Syntax/quoting errors
+        if "missing" in output_lower and ("terminator" in output_lower or "quote" in output_lower):
+            return "syntax_error", output[:200]
+        if "syntax error" in output_lower or "invalid syntax" in output_lower:
+            return "syntax_error", output[:200]
+        if "unexpected token" in output_lower:
+            return "syntax_error", output[:200]
+        
+        # Timeout/hung operations
+        if "timeout" in output_lower or "timed out" in output_lower:
+            return "timeout", output[:200]
+        if "no response" in output_lower or "unresponsive" in output_lower:
+            return "timeout", output[:200]
+        
+        # Permission errors
+        if "permission denied" in output_lower or "access denied" in output_lower:
+            return "permission_denied", output[:200]
+        if "unauthorized" in output_lower or "forbidden" in output_lower:
+            return "permission_denied", output[:200]
+        
+        # File/path not found
+        if "not found" in output_lower or "no such file" in output_lower:
+            return "not_found", output[:200]
+        if "does not exist" in output_lower or "path not found" in output_lower:
+            return "not_found", output[:200]
+        
+        # Connection errors
+        if "connection refused" in output_lower or "unable to connect" in output_lower:
+            return "connection_error", output[:200]
+        if "unreachable" in output_lower or "offline" in output_lower:
+            return "connection_error", output[:200]
+        
+        # Resource exhaustion
+        if "out of memory" in output_lower or "memory exhausted" in output_lower:
+            return "resource_error", output[:200]
+        if "disk full" in output_lower or "no space left" in output_lower:
+            return "resource_error", output[:200]
+        
+        # Generic execution errors
+        if "error" in output_lower or "failed" in output_lower:
+            return "execution_error", output[:200]
+        
+        return None, None
+    
     def format_for_prompt(self) -> str:
         """
         Format state as context for LLM prompt injection.
@@ -614,6 +811,11 @@ class WorkspaceState:
         This replaces asking the LLM to maintain state.
         """
         lines = []
+        
+        # Task plan - show at the TOP so LLM sees it first
+        if self.task_plan and self.task_plan.items:
+            lines.append(self.task_plan.format_for_prompt())
+            lines.append("")
         
         # Workspace index - show status prominently
         if self.files or self.dirs:
@@ -663,6 +865,38 @@ class WorkspaceState:
             if len(self.completed_steps) > 10:
                 lines.append(f"  ... ({len(self.completed_steps) - 10} earlier steps)")
             lines.append("")
+            
+            # CRITICAL: Show failure analysis if recent failures exist
+            failed_steps = [s for s in self.completed_steps[-5:] if not s.success]
+            if failed_steps:
+                lines.append("⚠️⚠️⚠️ RECENT FAILURES - ANALYZE AND ADAPT ⚠️⚠️⚠️")
+                lines.append("Previous attempts failed. Do NOT retry the same approach.")
+                lines.append("Generate a new strategy and updated plan based on root causes:")
+                lines.append("")
+                for step in failed_steps:
+                    lines.append(f"  ❌ {step.tool} FAILED on step {step.step_id}")
+                    if step.error_type:
+                        lines.append(f"     Error type: {step.error_type}")
+                    if step.error_message:
+                        # Show first 150 chars of error
+                        error_preview = step.error_message[:150].replace('\n', ' ')
+                        lines.append(f"     Error: {error_preview}...")
+                    lines.append("")
+                
+                # Suggest specific adaptations based on error types
+                error_types = {s.error_type for s in failed_steps if s.error_type}
+                if "syntax_error" in error_types:
+                    lines.append("  → FIX: Adjust command syntax (quoting, escaping, formatting)")
+                if "timeout" in error_types:
+                    lines.append("  → FIX: Reduce scope (smaller directory, specific pattern, shorter timeout)")
+                if "permission_denied" in error_types:
+                    lines.append("  → FIX: Try alternative paths or request elevated permissions")
+                if "not_found" in error_types:
+                    lines.append("  → FIX: Verify path exists or use different file/directory")
+                
+                lines.append("")
+                lines.append("Now generate a NEW task plan that fixes the root cause:")
+                lines.append("")
         
         # Show top-level structure (directories containing files)
         if self.files or self.dirs:

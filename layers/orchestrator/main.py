@@ -29,11 +29,30 @@ from api.orchestrator import router
 # Logging
 # ============================================================================
 
+# Configure only our namespace loggers, not the root logger
+# This prevents duplicate logs when uvicorn also configures logging
+def setup_logging():
+    """Configure orchestrator logging without duplicating handlers."""
+    formatter = logging.Formatter("[%(asctime)s] %(name)s - %(levelname)s - %(message)s")
+    
+    # Get our namespace logger
+    orchestrator_logger = logging.getLogger("orchestrator")
+    
+    # Only add handler if none exist (prevents duplicates on reload)
+    if not orchestrator_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(formatter)
+        orchestrator_logger.addHandler(handler)
+        orchestrator_logger.setLevel(logging.INFO)
+        # Don't propagate to root logger (prevents duplicates)
+        orchestrator_logger.propagate = False
+    
+    # Silence noisy httpx logs
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+setup_logging()
 logger = logging.getLogger("orchestrator.main")
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] %(name)s - %(levelname)s - %(message)s",
-)
 
 
 # ============================================================================

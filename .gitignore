@@ -23,15 +23,16 @@ ENV/
 # IDE / Editor
 .vscode/
 .idea/
+.github/
 *.swp
 *.swo
 *~
+obj/
+bin/
+
 .project
 .pydevproject
 .settings/
-
-# FunnelCloud (private repo - developed separately)
-FunnelCloud/
 
 # OS
 .DS_Store
@@ -55,3 +56,6 @@ docker-compose.override.yml
 .env.local
 .env.*.local
 secrets/
+certs/
+certificates/
+*Certificate.ps1

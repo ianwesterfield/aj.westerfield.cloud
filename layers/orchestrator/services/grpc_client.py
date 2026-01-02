@@ -37,7 +37,7 @@ CA_CERT_PATH = os.getenv("CA_CERT_PATH", "certs/ca/ca.crt")
 CA_FINGERPRINT = os.getenv("FUNNEL_CA_FINGERPRINT", "")
 
 # Connection timeout
-GRPC_TIMEOUT_SECONDS = 3600  # 1 hour for comprehensive scans
+GRPC_TIMEOUT_SECONDS = 86400  # 24 hours for comprehensive scans
 
 
 @dataclass
@@ -153,8 +153,8 @@ class AgentGrpcClient:
         target = f"{agent.ip_address}:{agent.grpc_port}"
         credentials = self._load_credentials()
         
-        # Allow large messages for directory scans (100MB)
-        max_message_size = 100 * 1024 * 1024
+        # Allow large messages for directory scans (500MB)
+        max_message_size = 500 * 1024 * 1024
         
         if credentials:
             # Secure channel with mTLS
@@ -303,7 +303,7 @@ class AgentGrpcClient:
         )
         
         try:
-            logger.debug("Executing task %s on %s: %s", task_id, agent_id, command[:50])
+            logger.info("Executing task %s on %s (timeout=%ds): %s", task_id, agent_id, timeout_seconds, command[:80])
             
             response = await stub.Execute(request, timeout=timeout_seconds + 10)
             

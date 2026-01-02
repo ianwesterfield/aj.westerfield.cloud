@@ -127,23 +127,185 @@ class ThinkingStreamParser:
         return full_response.strip()
 
 
-SYSTEM_PROMPT = """You are AJ, an agentic AI that executes repository tasks step-by-step.
+SYSTEM_PROMPT = """You are AJ, an agentic AI that executes tasks by calling tools.
 
-=== OUTPUT FORMAT ===
+⛔⛔⛔ MANDATORY OUTPUT FORMAT - ABSOLUTELY NO EXCEPTIONS ⛔⛔⛔
 
-First, briefly think through your next action (1-2 sentences), then output JSON:
+Your response MUST contain EXACTLY ONE of these:
 
-<think>
-Your brief reasoning about what to do next and why.
-</think>
-{"tool": "tool_name", "params": {...}, "note": "Brief status"}
+FORMAT 1 (with thinking):
+<think>Brief reasoning (1-2 sentences max)</think>
+{"tool": "tool_name", "params": {...}, "note": "status"}
 
-⛔⛔⛔ CRITICAL: OUTPUT EXACTLY ONE JSON OBJECT PER RESPONSE ⛔⛔⛔
+FORMAT 2 (no thinking):
+{"tool": "tool_name", "params": {...}, "note": "status"}
+
+RULES (ABSOLUTE - VIOLATION CAUSES IMMEDIATE FAILURE):
+1. ONLY output JSON tool calls. NOTHING ELSE.
+2. Do NOT output narrative text, explanations, or any words before/after the JSON.
+3. Do NOT output multiple tool calls - exactly ONE per response.
+4. Do NOT claim you will do something - just do it (call the tool).
+5. Do NOT describe fake results - call tools to get real results.
+6. Do NOT output markdown, headers, or formatting.
+7. Do NOT put anything before <think> or after the JSON.
+
+❌ VIOLATIONS THAT WILL FAIL IMMEDIATELY:
+  ❌ "I will now call list_agents..." ← WRONG - just output the JSON!
+  ❌ "To complete this task, we need to..." ← WRONG - output JSON only!
+  ❌ "**Output:** The files are..." ← WRONG - call remote_execute first!
+  ❌ "The script has been executed and produced:" ← WRONG - you didn't call remote_execute!
+  ❌ "folder1 23.45 GB folder2 17.89 GB" ← WRONG - call remote_execute first!
+  ❌ Multiple JSON objects in one response ← WRONG - one tool call only!
+
+✅ CORRECT EXAMPLES:
+<think>User needs folder sizes on S: drive from ians-r16.</think>
+{"tool": "list_agents", "params": {}, "note": "Verify agent available"}
+
+<think>Got ians-r16 from previous step. Now run the script.</think>
+{"tool": "remote_execute", "params": {"command": "...", "agent_id": "ians-r16"}, "note": "Executing script"}
+
+<think>Script completed successfully.</think>
+{"tool": "complete", "params": {"answer": "Here are the results..."}, "note": "Done"}
+
+=== EXECUTION MODEL ===
+
 - You will be called repeatedly in a loop
 - Each call = one step = one tool call
-- NEVER output multiple tool calls in one response
-- NEVER output multiple <think> blocks
+- For multi-part tasks (e.g., "scan C: and S:"), do ONE at a time
+- After C: completes, you'll be called again for S:
 - If you need to do 5 things, output ONE now, you'll be called again for the rest
+
+=== FOLLOW THE TASK PLAN ===
+
+A TASK PLAN is generated at the start of each task and shown in the WORKSPACE STATE.
+- The plan shows numbered steps with status: ☐ TODO, → NOW, ✓ DONE
+- ALWAYS work on the CURRENT TASK (marked → NOW or first ☐ TODO)
+- Do NOT skip steps or jump ahead
+- Do NOT complete until ALL plan items are DONE
+- The plan is your script - follow it!
+
+Example plan in state:
+📋 TASK PLAN (follow this script):
+  1. [✓ DONE] Verify FunnelCloud agent is available
+  2. [→ NOW] Scan C: drive for folder sizes
+  3. [☐ TODO] Scan S: drive for folder sizes
+  4. [☐ TODO] Report largest folders from both drives
+
+⚡ CURRENT TASK: Step 2 - Scan C: drive for folder sizes
+
+In this example, you should execute Step 2 (scan C:). After it completes, you'll
+be called again and the plan will show Step 3 as → NOW.
+
+⛔ FAILURE ANALYSIS & ADAPTIVE PLANNING ⛔
+
+**If the previous step FAILED, you must:**
+1. **Analyze the failure** - What went wrong? (syntax error, timeout, permission denied, not found, etc.)
+2. **DO NOT repeat the same command** - Diagnose the root cause
+3. **Generate a NEW task plan** addressing the root cause, not just retrying
+4. **Show the new plan to the user** in your thinking so they understand your strategy shift
+5. **Attempt a different approach** - Fix the underlying issue, not just the surface problem
+
+**Examples of adaptive responses to common failures:**
+
+- **If remote_execute fails with "missing string terminator" on PowerShell:**
+  ❌ WRONG: Try the same command again with the same quoting
+  ✅ RIGHT: Analyze the error → Recognize the quoting issue → Generate NEW PLAN:
+     1. Fix PowerShell quoting (use single quotes or here-strings)
+     2. Re-test with corrected syntax
+     3. If that fails, try a completely different approach (e.g., write script to file first, then execute)
+
+- **If a file operation fails with "permission denied":**
+  ❌ WRONG: Try the same path again
+  ✅ RIGHT: Generate NEW PLAN:
+     1. Check if path exists and is accessible
+     2. Try with elevated permissions if needed
+     3. Or find alternative path/method
+
+- **If a scan times out:**
+  ❌ WRONG: Run the same scan again (will timeout again)
+  ✅ RIGHT: Generate NEW PLAN:
+     1. Scope the scan more narrowly (smaller directory, specific pattern)
+     2. Or use a faster command (e.g., dir vs recursive scan)
+     3. Break multi-drive scans into separate steps with smaller scope
+
+**When you detect a failure pattern, format your response as:**
+```
+<think>
+Previous step failed with: [error message]
+
+Root cause: [what actually went wrong - not just symptom]
+
+New strategy: [fundamentally different approach or fix]
+
+Updated plan:
+1. [Step to fix root cause]
+2. [Step to attempt operation differently]
+3. [Verification step]
+</think>
+
+{"tool": "...", "params": {...}, "note": "Attempting new approach: [brief description]"}
+```
+
+⛔ MULTI-PART TASK RULE ⛔
+When user asks for MULTIPLE things (e.g., "scan C: and S:", "read X and Y"):
+- Do NOT complete until ALL parts are done
+- After finishing part 1, immediately start part 2 - don't say "I'll do it next"
+- Only call "complete" when EVERY requested item is finished
+- WRONG: Complete after C: with "I'll do S: next" → This ends the task!
+- RIGHT: After C: finishes, call remote_execute for S: in the next step
+
+=== SCRIPT VALIDATION & RISK ASSESSMENT ⚠️ ===
+
+**BEFORE executing ANY script (PowerShell, Python, Bash, etc.):**
+
+1. **ANALYZE THE SCRIPT** for:
+   - Syntax errors (missing quotes, brackets, colons, etc.)
+   - Logic issues (infinite loops, unreachable code, etc.)
+   - Missing error handling that could cause failures
+   - Path issues (hardcoded paths that don't exist, unchecked file operations)
+   - Resource issues (recursion depth, memory, large file operations)
+   - Dangerous operations without guards (recursive deletion, format operations, etc.)
+
+2. **IF YOU FIND FIXABLE ISSUES** (syntax, error handling, path issues):
+   - FIX THEM AUTOMATICALLY
+   - Show the user the changes you made
+   - Then execute the corrected script
+
+3. **IF YOU FIND LOGIC ISSUES** (algorithm problems, design issues):
+   - ASK THE USER for clarification
+   - Show what you think the intended behavior is
+   - Offer your suggested fix
+   - Wait for user approval before executing
+
+4. **IF YOU FIND DANGEROUS OPERATIONS**:
+   - Require explicit user confirmation
+   - Show what data/files will be affected
+   - Example: "This script will RECURSIVELY DELETE folders matching a pattern. Are you sure?"
+
+**EXAMPLE - FIXABLE ISSUE (unclosed quote):**
+```
+User provides: $results = Get-ChildItem | Where-Object { $_.Name -match "test }
+Problem: Missing closing quote on "test
+Action: FIX IT - close the quote
+Corrected: $results = Get-ChildItem | Where-Object { $_.Name -match "test" }
+Then execute.
+```
+
+**EXAMPLE - LOGIC ISSUE (unclear intent):**
+```
+User provides: Script that sorts files but unclear if ascending or descending
+Problem: Behavior unclear - could be either
+Action: ASK THE USER - "Should files be sorted largest→smallest or smallest→largest?"
+Wait for response.
+```
+
+**EXAMPLE - DANGEROUS OPERATION:**
+```
+User provides: Get-ChildItem -Recurse | Remove-Item -Force
+Problem: Recursive delete without confirmation
+Action: ASK THE USER - "This will DELETE all files recursively. Are you SURE?"
+Confirm before executing.
+```
 
 === COMMUNICATION STYLE ===
 
@@ -178,92 +340,33 @@ WORKSPACE TOOLS (run inside Docker container):
 - append_to_file: Append to end. Params: {"path": "string", "content": "string"}
 - execute_shell: Run shell command IN CONTAINER. Params: {"command": "string"}
 - dump_state: Output full workspace state as JSON. Params: {} — Use when user asks to see state/metadata
+- validate_script: Analyze script for syntax/logic/risk before execution. Params: {"script": "string", "language": "powershell|python|bash|other"}
+  Returns: Issues found, whether they're auto-fixable, and corrected script if applicable
+  Use this BEFORE calling remote_execute with a script
 
 FUNNELCLOUD TOOLS (run on user's HOST machine via agent):
 - list_agents: Discover available FunnelCloud agents. Params: {}
   ⚠️ MUST call this FIRST when user says "my machine", "my PC", "my computer", etc.
   Returns: agent names and their platforms (e.g., "ians-r16" on Windows)
   
-- remote_execute: Run command on HOST machine. Params: {"command": "string", "agent_id": "optional"}
+- remote_execute: Run command on HOST machine. Params: {"command": "string", "agent_id": "string"}
   ⚠️ ALWAYS use PowerShell syntax (NOT cmd.exe)!
-  ⚠️ Default timeout is 2 minutes - comprehensive scans are usually fine!
-  
-  GOOD commands:
-    Get-ChildItem C:\\ -Directory                    # List top-level dirs
-    Get-ChildItem C:\\Users -Directory               # List user folders
-    Get-ChildItem S:\\ -Recurse                      # Full scan of network share (OK - bounded)
-    Get-ChildItem D:\\ -Recurse -File                # Full scan of secondary drive
-    Get-Process | Select -First 10                  # Running processes
-  
-- parallel_scan: Fast parallel scan of ANY drive. Params: {"path": "C:\\", "agent_id": "optional", "max_parallel": 4}
-  ⚠️ USE THIS FOR ALL "FULL SCAN" REQUESTS ON ANY DRIVE!
-  
-  Works for: C:\, D:\, S:\, Z:\ - any drive letter!
-  Automatically:
-  - Gets top-level directories
-  - Fans out parallel scans for each (skipping Windows, $Recycle.Bin, etc.)
-  - Aggregates results with file counts and sizes per directory
-  - Shows largest files
-  
-  WHEN TO USE parallel_scan (ALWAYS for "full scan" of any drive):
-  - User says "full scan of C:" → parallel_scan with path="C:\\"
-  - User says "full scan of S:" → parallel_scan with path="S:\\"
-  - User says "scan D:" → parallel_scan with path="D:\\"
-  - User asks "what's taking up space" → parallel_scan
-  - User wants comprehensive file listing → parallel_scan
-  
-  EXAMPLES:
-  {"tool": "parallel_scan", "params": {"path": "C:\\", "agent_id": "ians-r16"}}
-  {"tool": "parallel_scan", "params": {"path": "S:\\", "agent_id": "ians-r16"}}
-  {"tool": "parallel_scan", "params": {"path": "D:\\", "agent_id": "ians-r16"}}
-  
-  USE remote_execute ONLY for:
-  - Specific subdirectories: "C:\\Users\\Ian\\Documents"
-  - Quick listing with -Depth limit
-  - Non-scan commands (Get-Process, etc.)
-  
-  FINDING LARGE FILES:
-    # For specific drives/shares - no depth limit needed:
-    Get-ChildItem S:\\ -Recurse -File -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 10 FullName, @{N='SizeMB';E={[math]::Round($_.Length/1MB,1)}}
-    
-    # For C:\\ only - use depth limit:
-    Get-ChildItem C:\\ -Recurse -File -Depth 4 -ErrorAction SilentlyContinue | Sort-Object Length -Descending | Select-Object -First 10 FullName, @{N='SizeMB';E={[math]::Round($_.Length/1MB,1)}}
-  
-  ⚠️ Use -ErrorAction SilentlyContinue to skip permission errors
+  ⚠️ VALIDATE the script BEFORE executing (see SCRIPT VALIDATION section above)
+  ⚠️ No timeout limit - commands can run as long as needed
 
-  ⛔ WMI/CIM COMMANDS WILL HANG ON OPTICAL DRIVES! ⛔
-  
-  NEVER use these for drive info (they block indefinitely on USB DVD/CD drives):
-    Get-CimInstance Win32_CDROMDrive        # HANGS on optical drives!
-    Get-CimInstance Win32_LogicalDisk       # HANGS if DVD drive exists!
-    Get-CimInstance Win32_DiskDrive         # HANGS if DVD drive exists!
-    Get-WmiObject Win32_*                   # Same problem (deprecated anyway)
-    [System.IO.DriveInfo]::GetDrives()      # Also blocks on optical!
-    Test-Path E:/                           # Blocks if E: is optical drive!
-    Get-PSDrive                             # Can hang on drive enumeration!
-  
-  SAFE alternatives for drive/disk info:
-    # List mounted drive letters (instant, reads from registry):
-    (Get-ItemProperty HKLM:/SYSTEM/MountedDevices).PSObject.Properties.Name | Where-Object { $_ -like "*DosDevices*" }
-    
-    # Check if specific non-optical drive exists (C: is always safe):
-    Test-Path C:/
-    
-    # Get disk space for C: drive (safe, won't enumerate optical):
-    Get-PSDrive C | Select Used,Free
-    
-    # Get disk space for multiple known drives:
-    Get-PSDrive C,D,F -ErrorAction SilentlyContinue | Select Name,Used,Free
-  
-  WHEN USER ASKS ABOUT "DISKS" OR "DRIVES":
-  - First list mounted drives via registry (instant, safe)
-  - Then query specific drives like C:, D: for space info
-  - ONLY mention optical limitation if user specifically asks about CD/DVD/optical
-  - "Is there a disk" usually means hard drives - CHECK THEM!
-  
-  ⛔ ONLY for explicit optical disc questions (CD, DVD, Blu-ray, optical):
-  - You cannot safely check if a disc is loaded (causes hangs)
-  - Explain the USB DVD limitation and suggest physical check
+=== POWERSHELL REFERENCE ===
+
+Useful commands you can figure out yourself - use your PowerShell knowledge:
+- Get-ChildItem for listing files/directories
+- Measure-Object for sizes
+- Sort-Object, Select-Object for filtering
+- Always add -ErrorAction SilentlyContinue to skip permission errors
+
+⛔ AVOID THESE (will hang on optical drives):
+  Get-CimInstance Win32_LogicalDisk    # Hangs if DVD drive exists
+  Get-WmiObject Win32_*                # Same problem
+  [System.IO.DriveInfo]::GetDrives()   # Blocks on optical
+  Get-PSDrive (without specifying drives)  # Can hang
 
 CONTROL TOOLS:
 - none: Skip (change already present). Params: {"reason": "string"}
@@ -271,15 +374,6 @@ CONTROL TOOLS:
     {"answer": "your response to user"} - when task is complete
     {"error": "reason why you can't complete"} - when something went wrong
     {"question": "clarifying question"} - when you need user input before proceeding
-
-  USE {"question": ...} WHEN:
-  - User asks to scan C:\\ without specifying depth
-  - Ambiguous request that could mean quick or thorough
-  - You need confirmation before a potentially long operation
-  
-  EXAMPLE:
-  <think>User wants to scan C: but didn't specify depth. I should ask.</think>
-  {"tool": "complete", "params": {"question": "Do you want a quick scan (top 3-4 levels) or a full deep scan? Full scans of C:\\ can take several minutes."}, "note": "Asking for clarification"}
 
 === MACHINE REFERENCE VALIDATION (MANDATORY) ===
 
@@ -484,6 +578,90 @@ class ReasoningEngine:
                 return max(5, int(size_gb / self._load_speed_gb_per_sec))
         # Default estimate for unknown models
         return 15
+    
+    async def generate_task_plan(self, task: str) -> List[str]:
+        """
+        Generate a task plan (numbered list of steps) before execution begins.
+        
+        This runs ONCE at task start to:
+        1. Show user what will happen
+        2. Give LLM a script to follow
+        3. Enable progress tracking
+        
+        Returns:
+            List of step descriptions (strings)
+        """
+        planning_prompt = """You are a task planner. Given a user request, output a SHORT numbered list of steps needed.
+
+RULES:
+1. Output ONLY a numbered list (1. 2. 3. etc.)
+2. Keep it SHORT - 2-5 steps max
+3. Be specific but concise
+4. If task mentions multiple targets (C: and S:), list them as separate steps
+5. For remote/host operations, include "verify agent" as step 1
+6. End with a summary/report step
+
+EXAMPLES:
+
+User: "What are the largest files on my C: drive?"
+1. Verify FunnelCloud agent is available
+2. Scan C: drive for file sizes
+3. Report top 10 largest files
+
+User: "Add a comment to README.md"
+1. Read README.md
+2. Add comment header to file
+3. Confirm change
+
+User: "Scan C: and S: for large folders"
+1. Verify FunnelCloud agent is available
+2. Scan C: drive for folder sizes
+3. Scan S: drive for folder sizes
+4. Report largest folders from both drives
+
+User: "What's in this workspace?"
+1. Scan workspace directory
+2. Summarize project structure
+
+Now create a plan for:
+"""
+        
+        try:
+            url = f"{self.base_url}/api/chat"
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": "You are a task planner. Output ONLY a numbered list (1. 2. 3.) with 2-5 steps. No other text."},
+                    {"role": "user", "content": planning_prompt + task},
+                ],
+                "stream": False,
+                "options": {"temperature": 0.3},  # Low temp for consistent planning
+            }
+            
+            response = await self.client.post(url, json=payload, timeout=30.0)
+            response.raise_for_status()
+            
+            content = response.json().get("message", {}).get("content", "")
+            
+            # Parse numbered list
+            steps = []
+            for line in content.split("\n"):
+                line = line.strip()
+                # Match lines starting with number + period/paren
+                if line and (line[0].isdigit() or line.startswith("-")):
+                    # Strip the number prefix
+                    import re
+                    cleaned = re.sub(r'^[\d]+[.\)]\s*', '', line)
+                    cleaned = re.sub(r'^[-*]\s*', '', cleaned)
+                    if cleaned:
+                        steps.append(cleaned)
+            
+            logger.info(f"Generated task plan with {len(steps)} steps: {steps}")
+            return steps if steps else ["Execute task"]
+            
+        except Exception as e:
+            logger.warning(f"Task planning failed: {e}")
+            return ["Execute task"]  # Fallback to single generic step
     
     async def check_model_status(self) -> dict:
         """
@@ -884,11 +1062,11 @@ class ReasoningEngine:
         
         # GUARDRAIL: Prevent lazy completion after list_agents
         # If we just discovered agents and LLM tries to complete without doing actual work,
-        # reject it - the task likely requires remote_execute or parallel_scan
+        # reject it - the task likely requires remote_execute
         if step.tool == "complete":
             recent_steps = workspace_state.completed_steps[-3:]
             last_was_list_agents = any(s.tool == "list_agents" for s in recent_steps)
-            did_remote_work = any(s.tool in ("remote_execute", "parallel_scan") for s in workspace_state.completed_steps)
+            did_remote_work = any(s.tool == "remote_execute" for s in workspace_state.completed_steps)
             
             if last_was_list_agents and not did_remote_work and workspace_state.discovered_agents:
                 # LLM is trying to complete without doing remote work after discovering agents
@@ -901,39 +1079,55 @@ class ReasoningEngine:
                     return Step(
                         step_id="guardrail_require_remote_work",
                         tool="complete",
-                        params={"error": "You discovered agents but didn't perform the requested remote operation. Use parallel_scan or remote_execute to do the actual work."},
+                        params={"error": "You discovered agents but didn't perform the requested remote operation. Use remote_execute to do the actual work."},
                         reasoning="Blocked lazy completion - LLM must use discovered agents",
                     )
         
-        # GUARDRAIL: If last remote_execute or parallel_scan succeeded with output, don't run another one
+        # GUARDRAIL: If last remote_execute succeeded with SAME params, don't retry
         # This catches the "retry with better parameters" anti-pattern
-        if step.tool in ("remote_execute", "parallel_scan"):
-            recent_remote = [s for s in workspace_state.completed_steps[-3:] if s.tool in ("remote_execute", "parallel_scan")]
+        # BUT allows different commands (scanning C: then S:)
+        if step.tool == "remote_execute":
+            recent_remote = [s for s in workspace_state.completed_steps[-3:] if s.tool == "remote_execute"]
             if recent_remote:
                 last_remote = recent_remote[-1]
                 # Check if last remote operation was successful (has output)
                 if last_remote.success and "Got" in last_remote.output_summary:
-                    logger.warning(f"GUARDRAIL: Blocking duplicate {step.tool} - previous remote operation succeeded")
-                    return Step(
-                        step_id="guardrail_no_retry_remote",
-                        tool="complete",
-                        params={"answer": "I already retrieved the requested information. See the output above."},
-                        reasoning=f"Blocked retry of {step.tool} - previous command succeeded",
-                    )
+                    # Only block if it's the SAME operation (same path or command)
+                    last_path = last_remote.params.get("path", "")
+                    new_path = step.params.get("path", "")
+                    last_cmd = last_remote.params.get("command", "")
+                    new_cmd = step.params.get("command", "")
+                    
+                    is_same_operation = (last_path and new_path and last_path == new_path) or \
+                                        (last_cmd and new_cmd and last_cmd == new_cmd)
+                    
+                    if is_same_operation:
+                        logger.warning(f"GUARDRAIL: Blocking duplicate {step.tool} - same operation already succeeded")
+                        return Step(
+                            step_id="guardrail_no_retry_remote",
+                            tool="complete",
+                            params={"answer": "I already retrieved the requested information. See the output above."},
+                            reasoning=f"Blocked retry of {step.tool} - previous command succeeded",
+                        )
+                    else:
+                        logger.info(f"GUARDRAIL: Allowing {step.tool} - different target ({new_path or new_cmd} vs {last_path or last_cmd})")
         
         # GUARDRAIL: Detect tool repetition loops (same tool called 3+ times recently)
-        recent_tools = [s.tool for s in workspace_state.completed_steps[-5:]]
-        if step.tool in recent_tools:
-            repeat_count = recent_tools.count(step.tool)
-            if repeat_count >= 2:
-                # This tool was called 2+ times in last 5 steps and LLM is about to call it again
-                logger.warning(f"GUARDRAIL: Loop detected - {step.tool} called {repeat_count}x in last 5 steps")
-                return Step(
-                    step_id="guardrail_loop_break",
-                    tool="complete",
-                    params={"error": f"Loop detected: {step.tool} was already called {repeat_count} times"},
-                    reasoning=f"Forced completion to break {step.tool} loop",
-                )
+        # NOTE: remote_execute is exempt - it has its own smarter duplicate detection above
+        # that checks if the command is actually the same. Multi-drive scans need multiple calls.
+        if step.tool != "remote_execute":
+            recent_tools = [s.tool for s in workspace_state.completed_steps[-5:]]
+            if step.tool in recent_tools:
+                repeat_count = recent_tools.count(step.tool)
+                if repeat_count >= 2:
+                    # This tool was called 2+ times in last 5 steps and LLM is about to call it again
+                    logger.warning(f"GUARDRAIL: Loop detected - {step.tool} called {repeat_count}x in last 5 steps")
+                    return Step(
+                        step_id="guardrail_loop_break",
+                        tool="complete",
+                        params={"error": f"Loop detected: {step.tool} was already called {repeat_count} times"},
+                        reasoning=f"Forced completion to break {step.tool} loop",
+                    )
         
         # GUARDRAIL: Prevent calling dump_state more than once
         if step.tool == "dump_state":
@@ -995,6 +1189,70 @@ class ReasoningEngine:
         
         return step
     
+    def _detect_hallucinated_output(self, response: str) -> Optional[str]:
+        """
+        Detect if LLM is hallucinating tool execution instead of calling tools.
+        
+        CRITICAL: Only checks the JSON portion (after </think>), NOT the thinking block.
+        Thinking blocks can contain narrative - only JSON output matters.
+        
+        Hallucination patterns in JSON:
+        - "**tool_name output:**" (fake markdown results)
+        - "↳ Got X lines" (fake result indicators)
+        - Statements claiming execution happened without corresponding tool call
+        - Extensive narrative text instead of JSON object
+        
+        Returns error message if hallucination detected, None if valid.
+        """
+        # Extract JSON portion only (after </think> if present)
+        json_portion = response
+        if "</think>" in response:
+            json_portion = response.split("</think>", 1)[1].strip()
+        
+        # Patterns that indicate hallucination in the JSON portion
+        # These are ONLY checked against JSON, not thinking blocks
+        hallucination_patterns = [
+            r'\*\*[a-z_]+\s+(?:output|results?):\*\*',  # **tool_name output:** or **results:**
+            r'↳\s+Got\s+\d+\s+(?:lines|results|entries|folders?)',  # ↳ Got X lines
+            r'(?:has been executed|has been run|was executed|executed successfully)',  # Claims of execution without tool call
+            r'(?:remote_execute|script|command).*(?:output|results?):\s*(?:\n|$)',  # Tool output followed by results
+            r'```\s*(?:json|javascript|python|powershell|shell)',  # Code block (fake results)
+        ]
+        
+        for pattern in hallucination_patterns:
+            if re.search(pattern, json_portion, re.IGNORECASE):
+                logger.warning(f"HALLUCINATION DETECTED in JSON: Pattern matched: {pattern}")
+                logger.warning(f"JSON portion: {json_portion[:300]}")
+                return f"LLM is narrating execution instead of calling tools. Detected: '{pattern[:40]}...'"
+        
+        # Check if JSON portion is mostly narrative instead of JSON
+        has_json = '{' in json_portion and '"tool"' in json_portion
+        if not has_json:
+            # If there's substantial text but no JSON, it's hallucination
+            text_length = len(json_portion.strip())
+            
+            # Look for key hallucination indicators in narrative-only responses
+            if text_length > 100:
+                hallucination_indicators = [
+                    r'script\s+(?:was|has been|has|was already)\s+executed',
+                    r'(?:successfully\s+)?(?:retrieved|gathered|collected|found)',
+                    r'folder\w*\s+(?:sizes?|information)',
+                    r'(?:the\s+)?results?\s+(?:are|show|indicate)',
+                ]
+                
+                for indicator in hallucination_indicators:
+                    if re.search(indicator, json_portion, re.IGNORECASE):
+                        logger.warning(f"HALLUCINATION DETECTED: Narration pattern matched: {indicator}")
+                        logger.warning(f"Full response: {json_portion[:200]}")
+                        return "LLM is narrating results instead of calling tools to execute them"
+                
+                # Fallback: if we have substantial text but no JSON, assume hallucination
+                logger.warning(f"HALLUCINATION DETECTED: No JSON found in substantial response")
+                logger.warning(f"JSON portion (no JSON found): {json_portion[:200]}")
+                return "LLM produced narrative text instead of required JSON tool call format"
+        
+        return None
+    
     def _parse_response(self, response: str, task: str) -> Step:
         """Parse LLM response into a Step object.
         
@@ -1008,6 +1266,17 @@ class ReasoningEngine:
         - Extra content after JSON
         """
         import uuid
+        
+        # Check for hallucination FIRST
+        hallucination_error = self._detect_hallucinated_output(response)
+        if hallucination_error:
+            logger.error(f"Hallucination error: {hallucination_error}")
+            return Step(
+                step_id=f"hallucination_{uuid.uuid4().hex[:8]}",
+                tool="complete",
+                params={"error": "INVALID FORMAT: " + hallucination_error + " Output must be exactly: <think>reasoning</think> then JSON."},
+                reasoning="Blocked hallucinated response",
+            )
         
         # Extract thinking content (for logging/reasoning field)
         # Only extract from the FIRST think block
@@ -1054,13 +1323,159 @@ class ReasoningEngine:
             logger.warning(f"Raw response (first 500 chars): {response[:500] if response else '(empty)'}")
             logger.warning(f"JSON portion (first 500 chars): {json_str[:500] if json_str else '(empty)'}")
             
+            # Try to extract intent from the invalid response and suggest a correction
+            # This helps when the model outputs markdown instead of JSON
+            # Note: get workspace state here since _parse_response doesn't receive it as param
+            current_state = get_workspace_state()
+            suggested_tool = self._infer_tool_from_invalid_response(response, task, current_state)
+            if suggested_tool:
+                logger.info(f"Auto-correcting invalid response to: {suggested_tool}")
+                return suggested_tool
+            
             # Return error step
             return Step(
                 step_id=f"parse_error_{uuid.uuid4().hex[:8]}",
                 tool="complete",
-                params={"error": f"LLM returned invalid response: {e}"},
+                params={"error": f"LLM returned invalid response format. Please try again."},
                 reasoning=f"Parse error: {e}",
             )
+    
+    def _extract_task_intent_sync(self, task: str) -> dict:
+        """
+        Use LLM to extract structured intent from a user task (SYNCHRONOUS version).
+        
+        This is called from _infer_tool_from_invalid_response which is sync.
+        Uses requests library instead of httpx to avoid async issues.
+        
+        Returns dict with:
+            - drives: List of drive letters mentioned (e.g., ["C", "S"])
+            - operation: What the user wants (e.g., "scan", "list", "find")
+            - needs_remote: Whether this requires a remote agent
+        """
+        import requests as sync_requests
+        
+        extraction_prompt = """Extract structured information from this user request.
+Return ONLY valid JSON, no explanation.
+
+User request: "{task}"
+
+Return JSON with:
+- "drives": array of drive letters mentioned (uppercase, e.g., ["C", "S"]). Include drives mentioned as "C:", "C drive", "C:\\", etc.
+- "operation": the main operation ("scan", "list", "find", "read", "other")
+- "needs_remote": true if this requires accessing user's machine/drives, false for workspace operations
+
+Example outputs:
+{{"drives": ["C", "S"], "operation": "scan", "needs_remote": true}}
+{{"drives": ["D"], "operation": "find", "needs_remote": true}}
+{{"drives": [], "operation": "list", "needs_remote": false}}
+
+JSON only:"""
+        
+        try:
+            url = f"{self.base_url}/api/chat"
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "user", "content": extraction_prompt.format(task=task)},
+                ],
+                "stream": False,
+                "format": "json",  # Force JSON output
+                "options": {"temperature": 0},  # Deterministic
+            }
+            
+            response = sync_requests.post(url, json=payload, timeout=15.0)
+            response.raise_for_status()
+            
+            content = response.json().get("message", {}).get("content", "{}")
+            result = json.loads(content)
+            
+            logger.info(f"Task intent extraction: {result}")
+            return result
+            
+        except Exception as e:
+            logger.warning(f"Task intent extraction failed: {e}")
+            return {"drives": [], "operation": "unknown", "needs_remote": False}
+    
+    def _infer_tool_from_invalid_response(self, response: str, task: str, workspace_state: Optional[WorkspaceState] = None) -> Optional[Step]:
+        """
+        Try to infer the intended tool from an invalid (non-JSON) LLM response.
+        
+        This handles cases where the model outputs markdown/conversational text
+        instead of the required <think>...</think> + JSON format.
+        
+        Uses workspace_state to determine what's already been done:
+        - If agents not verified → list_agents
+        - If task mentions drive scans → remote_execute with smart size-checking command
+        
+        NOTE: Now uses synchronous _extract_task_intent_sync to avoid async issues.
+        """
+        import uuid
+        
+        response_lower = response.lower()
+        
+        # Get current state
+        if workspace_state is None:
+            workspace_state = get_workspace_state()
+        
+        agents_verified = workspace_state.agents_verified
+        discovered_agents = workspace_state.discovered_agents
+        
+        # Use LLM to extract task intent (synchronous call - no async issues)
+        intent = self._extract_task_intent_sync(task)
+        
+        requested_drives = intent.get("drives", [])
+        operation = intent.get("operation", "unknown")
+        needs_remote = intent.get("needs_remote", False)
+        
+        # Track which drives have already been size-checked (from completed steps)
+        scanned_drives = set()
+        for step in workspace_state.completed_steps:
+            if step.tool == "remote_execute" and step.success:
+                # Check if this was a size-checking command for a drive
+                cmd = step.params.get("command", "")
+                if "Get-ChildItem" in cmd and "-Directory" in cmd:
+                    # Extract drive letter from command like "Get-ChildItem C:\\ -Directory"
+                    import re
+                    drive_match = re.search(r'Get-ChildItem\s+([A-Z]):\\', cmd, re.IGNORECASE)
+                    if drive_match:
+                        scanned_drives.add(drive_match.group(1).upper())
+        
+        logger.info(f"Auto-correct analysis: agents_verified={agents_verified}, requested_drives={requested_drives}, scanned_drives={scanned_drives}, operation={operation}")
+        
+        # MINIMAL AUTO-CORRECTION: Only handle critical prerequisites
+        # The LLM should decide what commands to run - we just ensure agents are verified first
+        
+        # If task needs remote execution but agents not verified, verify them first
+        if needs_remote or requested_drives:
+            if not agents_verified:
+                logger.info("Auto-correcting: agents not verified, calling list_agents first")
+                return Step(
+                    step_id=f"autocorrect_{uuid.uuid4().hex[:8]}",
+                    tool="list_agents",
+                    params={},
+                    reasoning="Auto-corrected: need to verify agents before remote operations",
+                )
+            
+            # If no agents available, can't do remote operations
+            if not discovered_agents:
+                logger.info("Auto-correcting: no agents available, completing with error")
+                return Step(
+                    step_id=f"autocorrect_{uuid.uuid4().hex[:8]}",
+                    tool="complete",
+                    params={"error": "No FunnelCloud agents available. Start an agent on your machine first."},
+                    reasoning="Auto-corrected: no agents available for remote operations",
+                )
+        
+        # PRIORITY 2: If response mentions needing agents and we haven't verified
+        if not agents_verified and ("agent" in response_lower or "list_agents" in response_lower):
+            return Step(
+                step_id=f"autocorrect_{uuid.uuid4().hex[:8]}",
+                tool="list_agents",
+                params={},
+                reasoning="Auto-corrected: need to discover agents first",
+            )
+        
+        return None
     
     def _extract_first_json_object(self, text: str) -> str:
         """
@@ -1113,6 +1528,336 @@ class ReasoningEngine:
         
         # If we get here, braces didn't balance - return original
         return text[start:]
+    
+    def validate_script(self, script: str, language: str = "powershell") -> dict:
+        """
+        Validate a script for syntax, logic, and safety issues.
+        
+        Returns dict with:
+            {
+                "valid": bool,
+                "issues": [{"type": "syntax|logic|safety|resource", "severity": "error|warning", "description": "...", "line": int or None, "suggestion": "..."}],
+                "summary": "...",
+                "can_fix": bool,  # True if issues are automatically fixable
+                "fixed_script": str or None,
+            }
+        """
+        issues = []
+        language = language.lower()
+        
+        if language == "powershell":
+            issues = self._validate_powershell(script)
+        elif language == "python":
+            issues = self._validate_python(script)
+        elif language in ("bash", "shell", "sh"):
+            issues = self._validate_bash(script)
+        else:
+            # Generic validation
+            issues = self._validate_generic(script)
+        
+        # Categorize issues
+        errors = [i for i in issues if i.get("severity") == "error"]
+        warnings = [i for i in issues if i.get("severity") == "warning"]
+        
+        # Determine if fixable
+        fixable_types = {"syntax", "missing_error_handling", "missing_quoting"}
+        can_fix = all(i.get("type") in fixable_types for i in errors)
+        
+        # Build fixed version if issues are fixable
+        fixed_script = None
+        if can_fix and errors:
+            fixed_script = self._fix_script(script, errors, language)
+        
+        # Build summary
+        if not issues:
+            summary = "✅ Script looks good - no syntax or safety issues detected"
+        elif can_fix:
+            summary = f"⚠️ Found {len(errors)} fixable issue(s). Can auto-correct."
+        else:
+            summary = f"❌ Found {len(errors)} issue(s) needing review + {len(warnings)} warning(s)"
+        
+        return {
+            "valid": len(errors) == 0,
+            "issues": issues,
+            "errors": errors,
+            "warnings": warnings,
+            "summary": summary,
+            "can_fix": can_fix,
+            "fixed_script": fixed_script,
+            "language": language,
+        }
+    
+    def _validate_powershell(self, script: str) -> list:
+        """Validate PowerShell script."""
+        issues = []
+        lines = script.split("\n")
+        
+        # Check for unmatched quotes
+        quote_issues = self._check_unmatched_quotes(script)
+        for line_num, quote_char in quote_issues:
+            issues.append({
+                "type": "syntax",
+                "severity": "error",
+                "description": f"Missing closing {quote_char}",
+                "line": line_num,
+                "suggestion": f"Check line {line_num} for unclosed {quote_char}"
+            })
+        
+        # Check for unmatched braces/parens
+        brace_issues = self._check_unmatched_braces(script)
+        for line_num, pair in brace_issues:
+            issues.append({
+                "type": "syntax",
+                "severity": "error",
+                "description": f"Unmatched {pair[0]}...{pair[1]}",
+                "line": line_num,
+                "suggestion": f"Check line {line_num} for unclosed bracket"
+            })
+        
+        # Check for missing error handling on Get-ChildItem with -Recurse
+        if "Get-ChildItem" in script and "-Recurse" in script:
+            if "-ErrorAction" not in script:
+                issues.append({
+                    "type": "missing_error_handling",
+                    "severity": "warning",
+                    "description": "Get-ChildItem -Recurse without -ErrorAction handling",
+                    "line": None,
+                    "suggestion": "Add -ErrorAction SilentlyContinue to skip permission errors"
+                })
+        
+        # Check for dangerous operations without guards
+        dangerous_patterns = [
+            (r"Remove-Item\s+.*-Recurse", "Recursive delete without confirmation"),
+            (r"Format-Volume", "Disk format operation without confirmation"),
+        ]
+        for pattern, description in dangerous_patterns:
+            if re.search(pattern, script, re.IGNORECASE):
+                issues.append({
+                    "type": "safety",
+                    "severity": "error",
+                    "description": description,
+                    "line": None,
+                    "suggestion": "This operation requires explicit user confirmation"
+                })
+        
+        # Check for problematic cmdlets that might hang
+        problematic = [
+            (r"Get-CimInstance\s+Win32_", "Get-CimInstance hangs if DVD drive present"),
+            (r"Get-WmiObject\s+Win32_", "Get-WmiObject can hang on optical drives"),
+            (r"\[System.IO.DriveInfo\]", "DriveInfo can block on optical drives"),
+        ]
+        for pattern, note in problematic:
+            if re.search(pattern, script, re.IGNORECASE):
+                issues.append({
+                    "type": "resource",
+                    "severity": "warning",
+                    "description": f"Potential timeout: {note}",
+                    "line": None,
+                    "suggestion": "Consider specifying drives explicitly (e.g., @('C:', 'D:'))"
+                })
+        
+        return issues
+    
+    def _validate_python(self, script: str) -> list:
+        """Validate Python script."""
+        issues = []
+        
+        # Check for syntax with ast module
+        try:
+            import ast
+            ast.parse(script)
+        except SyntaxError as e:
+            issues.append({
+                "type": "syntax",
+                "severity": "error",
+                "description": f"Syntax error: {e.msg}",
+                "line": e.lineno,
+                "suggestion": f"Check line {e.lineno}: {e.text.strip() if e.text else ''}"
+            })
+        
+        # Check for common issues
+        if "import" in script and "__name__" not in script:
+            if any(line.strip().startswith("import") for line in script.split("\n")):
+                issues.append({
+                    "type": "logic",
+                    "severity": "warning",
+                    "description": "No if __name__ == '__main__' guard",
+                    "line": None,
+                    "suggestion": "Add proper main guard for script execution"
+                })
+        
+        # Check for missing error handling on file operations
+        if "open(" in script and "except" not in script:
+            issues.append({
+                "type": "missing_error_handling",
+                "severity": "warning",
+                "description": "File operations without error handling",
+                "line": None,
+                "suggestion": "Add try/except for file operations"
+            })
+        
+        return issues
+    
+    def _validate_bash(self, script: str) -> list:
+        """Validate Bash script."""
+        issues = []
+        
+        # Check for shebang
+        if not script.startswith("#!/"):
+            issues.append({
+                "type": "logic",
+                "severity": "warning",
+                "description": "No shebang line",
+                "line": 1,
+                "suggestion": "Start script with #!/bin/bash"
+            })
+        
+        # Check for unmatched quotes
+        quote_issues = self._check_unmatched_quotes(script)
+        for line_num, quote_char in quote_issues:
+            issues.append({
+                "type": "syntax",
+                "severity": "error",
+                "description": f"Missing closing {quote_char}",
+                "line": line_num,
+                "suggestion": f"Check line {line_num} for unclosed {quote_char}"
+            })
+        
+        # Check for rm -rf without safety
+        if "rm -rf" in script and "-i" not in script:
+            issues.append({
+                "type": "safety",
+                "severity": "error",
+                "description": "rm -rf without confirmation",
+                "line": None,
+                "suggestion": "This is dangerous. Requires explicit user confirmation."
+            })
+        
+        return issues
+    
+    def _validate_generic(self, script: str) -> list:
+        """Generic validation for unknown script types."""
+        issues = []
+        
+        # Just check for obvious syntax patterns
+        quote_issues = self._check_unmatched_quotes(script)
+        for line_num, quote_char in quote_issues:
+            issues.append({
+                "type": "syntax",
+                "severity": "error",
+                "description": f"Possible unmatched {quote_char}",
+                "line": line_num,
+                "suggestion": f"Check line {line_num}"
+            })
+        
+        return issues
+    
+    def _check_unmatched_quotes(self, text: str) -> list:
+        """Check for unmatched quotes. Returns [(line_num, quote_char), ...]"""
+        issues = []
+        lines = text.split("\n")
+        
+        for line_num, line in enumerate(lines, 1):
+            # Skip comments
+            if line.strip().startswith("#"):
+                continue
+            
+            # Simple quote counting (not perfect, but catches common issues)
+            double_quotes = 0
+            single_quotes = 0
+            
+            in_string = False
+            escape_next = False
+            
+            for char in line:
+                if escape_next:
+                    escape_next = False
+                    continue
+                
+                if char == "\\":
+                    escape_next = True
+                    continue
+                
+                if char == '"' and not in_string:
+                    double_quotes += 1
+                    in_string = True
+                elif char == '"' and in_string:
+                    double_quotes -= 1
+                    if double_quotes < 0:
+                        double_quotes = 0
+                    in_string = False
+                
+                if char == "'" and not in_string:
+                    single_quotes += 1
+                    in_string = True
+                elif char == "'" and in_string:
+                    single_quotes -= 1
+                    if single_quotes < 0:
+                        single_quotes = 0
+                    in_string = False
+            
+            if double_quotes > 0:
+                issues.append((line_num, '"'))
+            if single_quotes > 0:
+                issues.append((line_num, "'"))
+        
+        return issues
+    
+    def _check_unmatched_braces(self, text: str) -> list:
+        """Check for unmatched braces/brackets. Returns [(line_num, (open, close)), ...]"""
+        issues = []
+        lines = text.split("\n")
+        
+        # Track nesting
+        stack = []
+        pairs = {"{": "}", "[": "]", "(": ")"}
+        
+        for line_num, line in enumerate(lines, 1):
+            # Skip comments
+            if line.strip().startswith("#"):
+                continue
+            
+            for char in line:
+                if char in pairs:
+                    stack.append((char, line_num))
+                elif char in pairs.values():
+                    if not stack:
+                        # Close without open
+                        issues.append((line_num, ("?", char)))
+                    else:
+                        open_char, open_line = stack[-1]
+                        if pairs[open_char] == char:
+                            stack.pop()
+                        else:
+                            # Mismatched
+                            issues.append((line_num, (open_char, char)))
+        
+        # Any remaining on stack are unclosed
+        for char, line_num in stack:
+            issues.append((line_num, (char, pairs[char])))
+        
+        return issues
+    
+    def _fix_script(self, script: str, errors: list, language: str) -> str:
+        """
+        Attempt to fix known-fixable issues.
+        Returns fixed script or original if can't fix.
+        """
+        fixed = script
+        
+        # For PowerShell, add missing error handling
+        if language == "powershell":
+            for error in errors:
+                if error.get("type") == "missing_error_handling":
+                    if "Get-ChildItem" in fixed and "-ErrorAction" not in fixed:
+                        # Add -ErrorAction to Get-ChildItem
+                        fixed = re.sub(
+                            r"(Get-ChildItem\s+[^|]*?)(\s*\|)",
+                            r"\1 -ErrorAction SilentlyContinue\2",
+                            fixed
+                        )
+        
+        return fixed
     
     async def close(self):
         """Close the HTTP client."""

@@ -67,7 +67,7 @@ services:
       - INDEX_NAME=user_memory_collection
       - EMBEDDING_PROVIDER=sentence_transformers # Keep ST for embeddings (768-dim, fast)
       - OLLAMA_BASE_URL=http://ollama:11434
-      - OLLAMA_MODEL=qwen2.5:32b # Use same model as orchestrator
+      - OLLAMA_MODEL=llama3.1:70b # Switched to llama3.1:70b for better JSON format compliance
       - SUMMARY_MODEL=sshleifer/distilbart-cnn-12-6
       - SUMMARY_DEVICE=0 # Use cpu for summarizer (or 0 for GPU)
       - HF_HOME=/models
@@ -136,10 +136,7 @@ services:
       - webtools_network
 
   # -------------------------------------------------
-  # Orchestrator API (Agentic Reasoning Engine)
-  # -------------------------------------------------
   # Orchestrator API (Agentic Reasoning + Execution Engine)
-  # NOTE: Executor is now merged into orchestrator (no separate container)
   # -------------------------------------------------
   orchestrator_api:
     build:
@@ -150,14 +147,16 @@ services:
       - "8004:8004"
     environment:
       - OLLAMA_HOST=http://ollama:11434
-      - OLLAMA_MODEL=qwen2.5:32b
+      - OLLAMA_MODEL=llama3.1:70b
       - MEMORY_API_URL=http://memory_api:8000
       - MAX_PARALLEL_TASKS=5
       - WORKSPACE_ROOT=/workspace
       - HOST_WORKSPACE_PATH=${HOST_WORKSPACE_PATH:-C:/Code}
+
       # Executor settings (now local)
       - DEFAULT_TIMEOUT=30
       - MAX_TIMEOUT=120
+
       # FunnelCloud agent discovery (for host machine execution)
       - FUNNEL_HOST_ADDRESS=host.docker.internal
       - FUNNEL_DISCOVERY_PORT=41234
@@ -187,11 +186,6 @@ services:
       - GLOBAL_LOG_LEVEL=DEBUG
       - OLLAMA_BASE_URL=http://ollama:11434
       - ENABLE_API_KEY=true # Allow API key authentication
-
-      # Note: Set these manually or use docker secrets in production
-      # - WEBUI_ADMIN_USERNAME=admin
-      # - WEBUI_ADMIN_PASSWORD=changeme
-
       - RAG_EMBEDDING_ENGINE=ollama
       - EMBEDDING_MODEL=BAAI/bge-large-en-v1.5
       - MEMORY_ENABLED=true

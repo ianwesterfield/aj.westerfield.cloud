@@ -13,10 +13,132 @@ import os
 import re
 import json
 import base64
+import sys
 from typing import Optional, List, Tuple, Dict, Any
+from enum import Enum
 
 import requests
 from pydantic import BaseModel, Field
+
+
+# ============================================================================
+# Centralized Logging Utilities (Inline for Open-WebUI Compatibility)
+# ============================================================================
+
+class LogLevel(str, Enum):
+    """Status/state of a message."""
+    SUCCESS = "success"
+    DONE = "done"
+    SAVED = "saved"
+    VERIFIED = "verified"
+    RUNNING = "running"
+    THINKING = "thinking"
+    PROCESSING = "processing"
+    LOADING = "loading"
+    SCANNING = "scanning"
+    INFO = "info"
+    READY = "ready"
+    WAITING = "waiting"
+    WARNING = "warning"
+    PARTIAL_ERROR = "partial_error"
+    ERROR = "error"
+    FAILED = "failed"
+    BLOCKED = "blocked"
+    MEMORY = "memory"
+    CONTEXT = "context"
+    EXECUTING = "executing"
+    RESULT = "result"
+
+
+class LogCategory(str, Enum):
+    """Source/component emitting the message."""
+    FILTER = "filter"
+    ORCHESTRATOR = "orchestrator"
+    EXECUTOR = "executor"
+    MEMORY = "memory"
+    PRAGMATICS = "pragmatics"
+    EXTRACTOR = "extractor"
+    DISPATCHER = "dispatcher"
+    REASONING = "reasoning"
+    FILE_HANDLER = "file_handler"
+    SHELL_HANDLER = "shell_handler"
+    POLYGLOT_HANDLER = "polyglot_handler"
+    STATE = "state"
+    TASK_PLANNER = "task_planner"
+    TRAINING = "training"
+    VALIDATION = "validation"
+    MIGRATION = "migration"
+
+
+# Icon mapping: (LogCategory, LogLevel) -> icon
+ICON_MAP: Dict[Tuple[LogCategory, LogLevel], str] = {
+    (LogCategory.FILTER, LogLevel.SUCCESS): "✅",
+    (LogCategory.FILTER, LogLevel.DONE): "✅",
+    (LogCategory.FILTER, LogLevel.SAVED): "💾",
+    (LogCategory.FILTER, LogLevel.THINKING): "💭",
+    (LogCategory.FILTER, LogLevel.RUNNING): "⏳",
+    (LogCategory.FILTER, LogLevel.READY): "✅",
+    (LogCategory.FILTER, LogLevel.MEMORY): "📚",
+    (LogCategory.FILTER, LogLevel.CONTEXT): "📖",
+    (LogCategory.FILTER, LogLevel.WAITING): "⏸️",
+    (LogCategory.FILTER, LogLevel.INFO): "ℹ️",
+    (LogCategory.FILTER, LogLevel.WARNING): "⚠️",
+    (LogCategory.FILTER, LogLevel.PARTIAL_ERROR): "⚠️",
+    (LogCategory.FILTER, LogLevel.ERROR): "❌",
+    (LogCategory.FILTER, LogLevel.FAILED): "❌",
+    (LogCategory.FILTER, LogLevel.BLOCKED): "🚫",
+    (LogCategory.FILTER, LogLevel.SCANNING): "🔍",
+    (LogCategory.ORCHESTRATOR, LogLevel.SUCCESS): "✅",
+    (LogCategory.ORCHESTRATOR, LogLevel.DONE): "✅",
+    (LogCategory.ORCHESTRATOR, LogLevel.THINKING): "🧠",
+    (LogCategory.ORCHESTRATOR, LogLevel.RUNNING): "⚡",
+    (LogCategory.ORCHESTRATOR, LogLevel.INFO): "ℹ️",
+    (LogCategory.ORCHESTRATOR, LogLevel.WARNING): "⚠️",
+    (LogCategory.ORCHESTRATOR, LogLevel.ERROR): "❌",
+    (LogCategory.ORCHESTRATOR, LogLevel.LOADING): "⏳",
+    (LogCategory.MEMORY, LogLevel.SAVED): "💾",
+    (LogCategory.MEMORY, LogLevel.MEMORY): "📚",
+    (LogCategory.MEMORY, LogLevel.CONTEXT): "📖",
+    (LogCategory.MEMORY, LogLevel.ERROR): "❌",
+}
+
+DEFAULT_ICON = "◆"
+
+
+def get_icon(category: LogCategory, level: LogLevel) -> str:
+    """Get icon for category and level combination."""
+    return ICON_MAP.get((category, level), DEFAULT_ICON)
+
+
+def log_message(message: str, category: LogCategory, level: LogLevel, include_icon: bool = True, icon_override: Optional[str] = None) -> str:
+    """Generate formatted log message with icon."""
+    if not include_icon:
+        return message
+    icon = icon_override if icon_override else get_icon(category, level)
+    return f"{icon} {message}"
+
+
+def create_status_dict(message: str, category: LogCategory, level: LogLevel, done: bool = False, hidden: bool = False) -> Dict[str, any]:
+    """Create status dict ready for event emitter."""
+    formatted_message = log_message(message, category, level)
+    return {
+        "type": "status",
+        "data": {
+            "description": formatted_message,
+            "done": done,
+            "hidden": hidden,
+        }
+    }
+
+
+def create_error_dict(message: str, category: LogCategory, done: bool = True, hidden: bool = False) -> Dict[str, any]:
+    """Create error status dict."""
+    return create_status_dict(message, category, LogLevel.ERROR, done=done, hidden=hidden)
+
+
+def create_success_dict(message: str, category: LogCategory, done: bool = True, hidden: bool = False) -> Dict[str, any]:
+    """Create success status dict."""
+    return create_status_dict(message, category, LogLevel.SUCCESS, done=done, hidden=hidden)
 
 
 # ============================================================================
@@ -337,10 +459,9 @@ async def _orchestrate_task(
                     
                     # Forward status events to UI (these don't accumulate in message)
                     if event_type == "status" and status:
-                        await __event_emitter__({
-                            "type": "status",
-                            "data": {"description": status, "done": done, "hidden": False}
-                        })
+                        await __event_emitter__(
+                            create_status_dict(status, LogCategory.FILTER, LogLevel.RUNNING, done=done)
+                        )
                     
                     elif event_type == "thinking":
                         # Stream thinking content to the message AND accumulate
@@ -376,29 +497,26 @@ async def _orchestrate_task(
                             })
                     
                     elif event_type == "error":
-                        await __event_emitter__({
-                            "type": "status",
-                            "data": {"description": f"❌ {status}", "done": done, "hidden": False}
-                        })
+                        await __event_emitter__(
+                            create_error_dict(status, LogCategory.FILTER, done=done)
+                        )
                     
                     elif event_type == "complete":
                         result = event.get("result", {})
                         final_context = result.get("context")
                         # Emit final completion status
-                        complete_status = event.get("status", "✅ Done")
-                        await __event_emitter__({
-                            "type": "status",
-                            "data": {"description": complete_status, "done": True, "hidden": False}
-                        })
+                        complete_status = event.get("status", "Done")
+                        await __event_emitter__(
+                            create_status_dict(complete_status, LogCategory.FILTER, LogLevel.SUCCESS, done=True)
+                        )
                 
                 return final_context, streamed_content
                 
     except Exception as e:
         print(f"[aj] Orchestrator streaming error: {e}")
-        await __event_emitter__({
-            "type": "status",
-            "data": {"description": f"❌ Error: {str(e)[:30]}", "done": True, "hidden": False}
-        })
+        await __event_emitter__(
+            create_error_dict(str(e)[:30], LogCategory.FILTER, done=True)
+        )
         return None, ""
 
 
@@ -1003,10 +1121,9 @@ class Filter:
             if not messages or not isinstance(messages, list):
                 return body
             
-            await __event_emitter__({
-                "type": "status",
-                "data": {"description": "⏳ Thinking...", "done": False, "hidden": False}
-            })
+            await __event_emitter__(
+                create_status_dict("Thinking", LogCategory.FILTER, LogLevel.THINKING)
+            )
             
             # Extract user text for classification
             user_text = _extract_user_text_prompt(messages)
@@ -1030,14 +1147,13 @@ class Filter:
             # Save document chunks
             chunks_saved = 0
             if chunks:
-                await __event_emitter__({
-                    "type": "status",
-                    "data": {
-                        "description": f"✏️ Saving {len(chunks)} chunk(s)...",
-                        "done": False,
-                        "hidden": False,
-                    }
-                })
+                await __event_emitter__(
+                    create_status_dict(
+                        f"Saving {len(chunks)} chunk(s)",
+                        LogCategory.MEMORY,
+                        LogLevel.PROCESSING
+                    )
+                )
                 
                 source_name = filenames[0] if filenames else "attachment"
                 for chunk in chunks:
@@ -1104,46 +1220,41 @@ class Filter:
             has_context = bool(context) or bool(orchestrator_context)
             
             # Emit status and inject
-            # Note: orchestrator already emitted "Ready" via complete event, so skip for tasks
+            # Note: orchestrator already emitted completion status, so skip for tasks
             if has_context:
                 memory_count = len(context) if context else 0
                 
                 if memory_count > 0:
-                    await __event_emitter__({
-                        "type": "status",
-                        "data": {
-                            "description": f"� Found {memory_count} memories",
-                            "done": False,
-                            "hidden": False,
-                        }
-                    })
+                    await __event_emitter__(
+                        create_status_dict(
+                            f"Found {memory_count} memories",
+                            LogCategory.MEMORY,
+                            LogLevel.CONTEXT
+                        )
+                    )
                 
                 # Only emit Ready if we didn't go through orchestrator
                 if not orchestrator_context:
-                    await __event_emitter__({
-                        "type": "status",
-                        "data": {"description": "✅ Ready", "done": True, "hidden": False}
-                    })
+                    await __event_emitter__(
+                        create_status_dict("Ready", LogCategory.FILTER, LogLevel.READY, done=True)
+                    )
                 
                 body = self._inject_context(body, context or [], orchestrator_context)
             
             elif status == "saved":
-                await __event_emitter__({
-                    "type": "status",
-                    "data": {"description": "✅ Saved", "done": True, "hidden": False}
-                })
+                await __event_emitter__(
+                    create_status_dict("Saved", LogCategory.FILTER, LogLevel.SAVED, done=True)
+                )
             
             elif status == "skipped":
-                await __event_emitter__({
-                    "type": "status",
-                    "data": {"description": "✅ Ready", "done": True, "hidden": True}
-                })
+                await __event_emitter__(
+                    create_status_dict("Ready", LogCategory.FILTER, LogLevel.READY, done=True, hidden=True)
+                )
             
             else:
-                await __event_emitter__({
-                    "type": "status",
-                    "data": {"description": "✅ Ready", "done": True, "hidden": False}
-                })
+                await __event_emitter__(
+                    create_status_dict("Ready", LogCategory.FILTER, LogLevel.READY, done=True)
+                )
             
             print(f"[aj] user={user_id} intent={intent_result.get('intent')} status={status} context={len(context or [])} chunks={chunks_saved}")
             return body
@@ -1151,10 +1262,9 @@ class Filter:
         except Exception as e:
             print(f"[aj] Error: {e}")
             
-            await __event_emitter__({
-                "type": "status",
-                "data": {"description": f"⚠ Error: {str(e)[:40]}", "done": True, "hidden": False}
-            })
+            await __event_emitter__(
+                create_error_dict(str(e)[:40], LogCategory.FILTER, done=True)
+            )
             
             return body
     

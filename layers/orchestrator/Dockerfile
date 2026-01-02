@@ -16,6 +16,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
+# Set Ollama model - llama3.1:70b is much better at JSON format compliance than qwen
+ENV OLLAMA_MODEL=llama3.1:70b
+
 # Expose port
 EXPOSE 8004
 

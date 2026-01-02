@@ -12,11 +12,16 @@ multi-class intent detection.
 import torch
 import random
 import os
+import sys
 from pathlib import Path
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, Trainer, TrainingArguments
 import numpy as np
+
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
+from shared.logging_utils import format_training_message
 
 # -----------------------------------------------------------------
 # GPU Detection
@@ -282,7 +287,7 @@ with open(f"{final_model_path}/intent_labels.json", "w") as f:
         "label2id": label2id,
     }, f, indent=2)
 
-print("\n✓ Training complete!")
+print("\n" + format_training_message("Training complete!"))
 print(f"Model saved to: {final_model_path}")
 print("\nTo use in production:")
 print(f"  1. Copy {final_model_path}/ to the container")
