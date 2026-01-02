@@ -16,8 +16,13 @@ Architecture:
   - Memory Connector: Pattern retrieval + storage for learning
 """
 
+import sys
+import os
 import logging
 from contextlib import asynccontextmanager
+
+# Add parent directory to path so we can import shared module
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

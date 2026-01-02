@@ -10,11 +10,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends git \
   && rm -rf /var/lib/apt/lists/*
 
 # Install dependencies
-COPY requirements.txt .
+COPY orchestrator/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy shared module (needed for logging_utils)
+COPY shared /app/shared
+
 # Copy application code
-COPY . .
+COPY orchestrator . .
 
 # Set Ollama model - llama3.1:70b is much better at JSON format compliance than qwen
 ENV OLLAMA_MODEL=llama3.1:70b

@@ -166,8 +166,8 @@ AJ is an agentic-capable AI-assisted filter for Open-WebUI. It sits between the 
 
 ## Key Principle (No Shortcuts)
 
-- If intent == `task`, ALWAYS delegate planning and step selection to the Orchestrator.
 - AJ must not hardcode "patterns" (e.g., "largest files" => `du`) inside the filter. The Orchestrator decides tools, parameters, and ordering.
+- If intent == `task`, ALWAYS delegate planning and step selection to the Orchestrator.
 
 ## Intent Routing
 

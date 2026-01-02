@@ -140,8 +140,8 @@ services:
   # -------------------------------------------------
   orchestrator_api:
     build:
-      context: ./layers/orchestrator
-      dockerfile: Dockerfile
+      context: ./layers
+      dockerfile: orchestrator/Dockerfile
     container_name: orchestrator_api
     ports:
       - "8004:8004"
