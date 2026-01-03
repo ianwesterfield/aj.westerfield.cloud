@@ -1,61 +1,45 @@
-# Python
 __pycache__/
-*.py[cod]
-.pytest_cache/
-*$py.class
-*.so
-.Python
-*.egg-info/
-*.egg
+.DS_Store
 .eggs/
-dist/
-build/
-*.manifest
-*.spec
-
-# Virtual environments
 .env
-.venv
-env/
-venv/
-ENV/
-
-# IDE / Editor
-.vscode/
-.idea/
+.env.*.local
+.env.local
 .github/
-*.swp
-*.swo
-*~
-obj/
-bin/
-
+.idea/
 .project
 .pydevproject
+.pytest_cache/
+.Python
 .settings/
-
-# OS
-.DS_Store
-Thumbs.db
-Desktop.ini
-
-# Logs
+.venv
+.vscode/
+*.egg
+*.egg-info/
+*.key
 *.log
-logs/
-
-# training checkpoints
+*.manifest
+*.pem
+*.py[cod]
+*.so
+*.spec
+*.swo
+*.swp
 **/checkpoint-*/
 **/distilbert_*/
-
-# Docker
-docker-compose.override.yml
-
-# Secrets
-*.pem
-*.key
-.env.local
-.env.*.local
-secrets/
-certs/
-certificates/
+*~
+*$py.class
 *Certificate.ps1
+bin/
+build/
+certificates/
+certs/
+Desktop.ini
+dist/
+docker-compose.override.yml
+env/
+ENV/
+logs/
+obj/
+secrets/
+Thumbs.db
+venv/

@@ -508,7 +508,7 @@ requirements.txt      file      128 B     2025-01-01
         
         # Check file metadata was extracted
         assert "README.md" in state.file_metadata
-        assert state.file_metadata["README.md"].size_human == "1.2"
+        assert state.file_metadata["README.md"].size_human == "1.2 KiB"
         
         assert "setup.py" in state.file_metadata
         

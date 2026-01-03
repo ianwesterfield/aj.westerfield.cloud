@@ -251,11 +251,9 @@ class TaskPlan:
             elif item.status == "skipped":
                 icon = "⏭️"
             else:
-                icon = "⬜"
-            lines.append(f"{icon} {item.index}. {item.description}")
+                icon = "•"
+            lines.append(f"{icon} {item.description}")
         
-        completed, total = self.get_progress()
-        lines.append(f"\n_Progress: {completed}/{total}_")
         return "\n".join(lines)
     
     def format_for_prompt(self) -> str:
@@ -418,6 +416,9 @@ class WorkspaceState:
                 import re
                 agent_matches = re.findall(r'Agent:\s*(\S+)', output)
                 self.discovered_agents = agent_matches
+                logger.info(f"list_agents extracted agents: {agent_matches} from output: {output[:200]}")
+            else:
+                logger.warning(f"list_agents: success={success}, output length={len(output) if output else 0}")
             agent_count = len(self.discovered_agents)
             summary = f"list_agents: {agent_count} agent(s) found"
             if self.discovered_agents:

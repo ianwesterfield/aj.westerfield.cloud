@@ -509,6 +509,11 @@ async def _execute_tool(workspace_root: str, tool: str, params: dict) -> dict:
         
         # Resolve relative paths in params (only for local tools)
         resolved_params = params.copy()
+        
+        # Normalize file_path to path for consistency
+        if "file_path" in resolved_params and "path" not in resolved_params:
+            resolved_params["path"] = resolved_params["file_path"]
+        
         if "path" in resolved_params and tool not in remote_tools:
             path = resolved_params["path"]
             project_name = workspace_root.rstrip("/").split("/")[-1].lower()
@@ -714,6 +719,36 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
         yield f"data: {json.dumps({'event_type': 'error', 'status': f'Failed to set workspace: {e}', 'done': True})}\n\n"
         return
     
+    # Pre-load model to prevent cold start delays
+    # This ensures the model stays in Ollama's memory with KEEP_ALIVE=24h
+    try:
+        await reasoning_engine.warmup_model()
+    except Exception as e:
+        logger.warning(f"Model warmup failed (non-blocking): {e}")
+    
+    # === MEMORY CONTEXT PHASE ===
+    # Query memory for workspace/user context BEFORE planning
+    # This implements the OODA loop's "Learn" phase - recall what we already know
+    yield f"data: {json.dumps({'event_type': 'status', 'status': '📚 Checking memory...', 'done': False})}\n\n"
+    
+    memory_connector = _get_memory_connector()
+    try:
+        # Search memory for patterns related to this task
+        # This provides learned approaches from previous similar tasks
+        search_query = request.task if len(request.task) < 100 else request.task[:100]
+        relevant_patterns = await memory_connector.search_patterns(
+            query=search_query,
+            user_id=request.user_id,
+            top_k=3
+        )
+        
+        # Also log successful completion - this adds to memory for future reference
+        if relevant_patterns:
+            logger.info(f"Found {len(relevant_patterns)} relevant memory patterns for task planning")
+    except Exception as e:
+        logger.warning(f"Memory context retrieval failed (non-blocking): {e}")
+        relevant_patterns = []
+    
     # === PLANNING PHASE ===
     # Generate task plan BEFORE execution to show user what will happen
     yield f"data: {json.dumps({'event_type': 'status', 'status': '📋 Planning...', 'done': False})}\n\n"
@@ -746,6 +781,7 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
         """Callback to queue status updates from model checker."""
         try:
             status_queue.put_nowait(status_msg)
+            logger.debug(f"Status queued: {status_msg}")  # Debug logging
         except asyncio.QueueFull:
             pass  # Drop if queue is full
     
@@ -755,28 +791,53 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
             step = None
             llm_tokens = ""
             
-            async for token, parsed_step in reasoning_engine.generate_next_step_streaming(
-                task=user_text,
-                history=[],  # History is now in workspace_state
-                memory_context=[],
-                workspace_context=None,
-                workspace_state=workspace_state,
-                status_callback=on_model_status,
-            ):
-                # Drain any pending status updates
-                while not status_queue.empty():
-                    try:
-                        status_msg = status_queue.get_nowait()
-                        yield f"data: {json.dumps({'event_type': 'status', 'status': status_msg, 'done': False})}\n\n"
-                    except asyncio.QueueEmpty:
-                        break
+            # Start timer for monitoring how long model takes to load
+            step_start_time = asyncio.get_event_loop().time()
+            
+            try:
+                # Create generator for this step
+                gen = reasoning_engine.generate_next_step_streaming(
+                    task=user_text,
+                    history=[],  # History is now in workspace_state
+                    memory_context=relevant_patterns,  # Pass memory patterns from search above
+                    workspace_context=None,
+                    workspace_state=workspace_state,
+                    status_callback=on_model_status,
+                )
                 
-                if token:
-                    # Stream each token as it arrives
-                    llm_tokens += token
-                    yield f"data: {json.dumps({'event_type': 'thinking', 'content': token})}\n\n"
-                if parsed_step is not None:
-                    step = parsed_step
+                async for token, parsed_step in gen:
+                    # Flush status queue on EVERY iteration, not just periodically
+                    # This ensures loading progress updates show immediately
+                    try:
+                        while not status_queue.empty():
+                            status_msg = status_queue.get_nowait()
+                            logger.debug(f"Flushing status: {status_msg}")
+                            yield f"data: {json.dumps({'event_type': 'status', 'status': status_msg, 'done': False})}\n\n"
+                    except asyncio.QueueEmpty:
+                        pass
+                    
+                    # Small sleep to allow other tasks to run
+                    await asyncio.sleep(0.001)
+                    
+                    if token:
+                        # Stream each token as it arrives
+                        llm_tokens += token
+                        yield f"data: {json.dumps({'event_type': 'thinking', 'content': token})}\n\n"
+                    if parsed_step is not None:
+                        step = parsed_step
+                
+                # Final flush after streaming ends
+                try:
+                    while not status_queue.empty():
+                        status_msg = status_queue.get_nowait()
+                        logger.debug(f"Final flush: {status_msg}")
+                        yield f"data: {json.dumps({'event_type': 'status', 'status': status_msg, 'done': False})}\n\n"
+                except asyncio.QueueEmpty:
+                    pass
+            except Exception as e:
+                logger.error(f"Error during step generation: {e}", exc_info=True)
+                yield f"data: {json.dumps({'event_type': 'error', 'status': f'Reasoning error: {e}', 'done': True})}\n\n"
+                break
             
             # End the thinking stream with newline
             newline_event = json.dumps({'event_type': 'thinking', 'content': '\n'})
@@ -803,12 +864,9 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
 """)
                 break
             
-            # Build status message - show LLM's note/reasoning more prominently
+            # Build status message
             tool_path = params.get("path", "")
             short_path = tool_path.split("/")[-1].split("\\")[-1] if tool_path else ""
-            
-            # Use the full note from LLM (up to 80 chars) - it's meant to be user-facing
-            note = reasoning[:80] if reasoning else ""
             
             # Descriptive icons for each tool type
             tool_icons = {
@@ -857,11 +915,8 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
             else:
                 action = tool
             
-            # Combine: "🔍 Scanning workspace — Looking for project files"
-            if note:
-                status = f"{icon} {action} — {note}"
-            else:
-                status = f"{icon} {action}"
+            # Status is succinct: just icon + action (no reasoning/notes)
+            status = f"{icon} {action}"
             
             # Silence batch edits after the first
             if tool in edit_tools:
@@ -910,12 +965,7 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
                 output_limit = 100000  # No practical limit
                 yield f"data: {json.dumps({'event_type': 'result', 'step_num': step_num, 'tool': tool, 'result': {'success': True, 'output_preview': (output[:output_limit] if output else None)}, 'done': False})}\n\n"
                 
-                # Stream observation
-                output_lines = len(output.split('\n')) if output else 0
-                if output_lines > 0:
-                    obs_content = f'\n> ↳ _Got {output_lines} lines_\n'
-                    obs_event = json.dumps({'event_type': 'thinking', 'content': obs_content})
-                    yield f"data: {obs_event}\n\n"
+                # No observation needed - raw output speaks for itself
             else:
                 error_snippet = (error[:40] + "...") if error and len(error) > 40 else (error or "unknown")
                 yield f"data: {json.dumps({'event_type': 'status', 'step_num': step_num, 'tool': tool, 'status': f'⚠️ Failed: {error_snippet}', 'done': False})}\n\n"

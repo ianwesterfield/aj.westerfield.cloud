@@ -17,10 +17,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY shared /app/shared
 
 # Copy application code
-COPY orchestrator . .
+COPY orchestrator .
 
-# Set Ollama model - llama3.1:70b is much better at JSON format compliance than qwen
-ENV OLLAMA_MODEL=llama3.1:70b
+# Set Ollama model - Nous-Hermes 2 34B provides Claude-like reasoning with better efficiency
+ENV OLLAMA_MODEL=nous-hermes2:34b
 
 # Expose port
 EXPOSE 8004

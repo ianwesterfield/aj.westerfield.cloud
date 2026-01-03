@@ -8,6 +8,7 @@ This module eliminates duplication between orchestrator.py and parallel_executor
 by centralizing tool dispatch logic.
 """
 
+import base64
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -198,7 +199,7 @@ async def dispatch_tool(
     
     if tool == "read_file":
         result = await file_handler.read(
-            path=params.get("path", ""),
+            path=params.get("path", "") or params.get("file_path", ""),
             workspace_context=workspace_context,
         )
         return {
@@ -209,7 +210,7 @@ async def dispatch_tool(
     
     if tool == "write_file":
         result = await file_handler.write(
-            path=params.get("path", ""),
+            path=params.get("path", "") or params.get("file_path", ""),
             content=params.get("content", ""),
             workspace_context=workspace_context,
         )
@@ -438,8 +439,28 @@ async def _handle_remote_execute(params: Dict[str, Any]) -> Dict[str, Any]:
         command: Command to execute (PowerShell on Windows)
         timeout: Optional timeout in seconds (default 30)
     """
-    command = params.get("command", "")
-    agent_id = params.get("agent_id", "")
+    command = params.get("command", "") or params.get("cmd", "")
+    # Handle list format: ["python", "-m", "venv", "..."] -> "python -m venv ..."
+    if isinstance(command, list):
+        command = " ".join(str(c) for c in command)
+    command = str(command).strip()
+    
+    # ⚡ BASE64 DECODING: If command_b64 is provided, decode it (avoids JSON escaping issues)
+    command_b64 = params.get("command_b64", "")
+    if command_b64:
+        try:
+            command = base64.b64decode(command_b64).decode('utf-8')
+            logger.info(f"Decoded base64 command: {command[:80]}...")
+        except Exception as e:
+            logger.warning(f"Failed to decode base64 command: {e}")
+            # Fall back to regular command if base64 decode fails
+    
+    agent_id = params.get("agent_id", "") or params.get("agent", "")
+    # Handle list format for agent_id too
+    if isinstance(agent_id, list):
+        agent_id = agent_id[0] if agent_id else ""
+    agent_id = str(agent_id).strip()
+    
     timeout = params.get("timeout", 86400)  # 24 hour default for remote commands
     
     if not command:
@@ -447,6 +468,21 @@ async def _handle_remote_execute(params: Dict[str, Any]) -> Dict[str, Any]:
             "success": False,
             "output": None,
             "error": "No command specified for remote execution",
+        }
+    
+    # ⛔ SAFETY: Validate script before execution
+    from services.reasoning_engine import ReasoningEngine
+    engine = ReasoningEngine()
+    validation = engine.validate_script(command, "powershell")
+    
+    if not validation.get("valid", True):
+        errors = validation.get("errors", [])
+        error_msgs = [e.get("description", str(e)) for e in errors]
+        logger.warning(f"Script validation failed: {error_msgs}")
+        return {
+            "success": False,
+            "output": None,
+            "error": f"PowerShell syntax error: {'; '.join(error_msgs)}. Fix the command and try again.",
         }
     
     try:

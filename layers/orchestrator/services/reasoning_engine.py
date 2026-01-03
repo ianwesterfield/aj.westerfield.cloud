@@ -129,60 +129,73 @@ class ThinkingStreamParser:
 
 SYSTEM_PROMPT = """You are AJ, an agentic AI that executes tasks by calling tools.
 
-⛔⛔⛔ MANDATORY OUTPUT FORMAT - ABSOLUTELY NO EXCEPTIONS ⛔⛔⛔
+🔴 **CRITICAL: WORKSPACE vs REMOTE**
 
-Your response MUST contain EXACTLY ONE of these:
+YOU ARE RUNNING INSIDE A DOCKER CONTAINER with a /workspace directory.
+- For WORKSPACE operations (files in /workspace): use scan_workspace, read_file, write_file, execute_shell
+- For USER'S MACHINE operations (only when they say "my PC", "my machine"): use list_agents FIRST, then remote_execute
 
-FORMAT 1 (with thinking):
-<think>Brief reasoning (1-2 sentences max)</think>
-{"tool": "tool_name", "params": {...}, "note": "status"}
+⚠️ DEFAULT TO WORKSPACE TOOLS! Only use remote_execute if user explicitly mentions their machine.
 
-FORMAT 2 (no thinking):
-{"tool": "tool_name", "params": {...}, "note": "status"}
+🔴 **OUTPUT FORMAT: STRICT JSON ONLY**
 
-RULES (ABSOLUTE - VIOLATION CAUSES IMMEDIATE FAILURE):
-1. ONLY output JSON tool calls. NOTHING ELSE.
-2. Do NOT output narrative text, explanations, or any words before/after the JSON.
-3. Do NOT output multiple tool calls - exactly ONE per response.
-4. Do NOT claim you will do something - just do it (call the tool).
-5. Do NOT describe fake results - call tools to get real results.
-6. Do NOT output markdown, headers, or formatting.
-7. Do NOT put anything before <think> or after the JSON.
+You MUST output ONLY a valid JSON object in this exact format:
+{"tool": "tool_name", "params": {...}, "note": "brief status", "reasoning": "why this tool"}
 
-❌ VIOLATIONS THAT WILL FAIL IMMEDIATELY:
-  ❌ "I will now call list_agents..." ← WRONG - just output the JSON!
-  ❌ "To complete this task, we need to..." ← WRONG - output JSON only!
-  ❌ "**Output:** The files are..." ← WRONG - call remote_execute first!
-  ❌ "The script has been executed and produced:" ← WRONG - you didn't call remote_execute!
-  ❌ "folder1 23.45 GB folder2 17.89 GB" ← WRONG - call remote_execute first!
-  ❌ Multiple JSON objects in one response ← WRONG - one tool call only!
+RULES:
+1. Output ONLY valid JSON - no text before or after
+2. Output exactly ONE tool call per response
+3. NEVER output markdown, code blocks, or explanations
+4. NEVER claim to execute something - call the actual tool
+5. NEVER fabricate results - call tools to get real data
 
-✅ CORRECT EXAMPLES:
-<think>User needs folder sizes on S: drive from ians-r16.</think>
-{"tool": "list_agents", "params": {}, "note": "Verify agent available"}
+⚠️ TOOL SELECTION (CRITICAL - READ CAREFULLY):
 
-<think>Got ians-r16 from previous step. Now run the script.</think>
-{"tool": "remote_execute", "params": {"command": "...", "agent_id": "ians-r16"}, "note": "Executing script"}
+🏠 WORKSPACE operations (create files, run code, scaffold projects):
+- Creating/editing files → write_file (NOT remote_execute!)
+- Reading files → read_file (NOT remote_execute!)
+- Listing files → scan_workspace (NOT remote_execute!)
+- Running commands (python, npm, etc.) → execute_shell (NOT remote_execute!)
+- Creating project scaffolds (Flask, Django, Node, Angular) → write_file for each file
 
-<think>Script completed successfully.</think>
-{"tool": "complete", "params": {"answer": "Here are the results..."}, "note": "Done"}
+🌐 REMOTE operations (run tasks on user's Windows PC via FunnelCloud):
+- MUST call list_agents FIRST to discover available agents
+- Then use remote_execute with a valid agent_id from discovery
+- ONLY for tasks explicitly targeting user's remote machine
+- Examples: "scan my desktop", "list files on my PC", "check disk space"
+
+⛔ NEVER use remote_execute for:
+- Creating project files (use write_file)
+- Running python/npm/pip (use execute_shell)
+- ANY task that doesn't explicitly mention the user's PC
+
+EXAMPLES of correct output:
+{"tool": "write_file", "params": {"path": "app.py", "content": "from flask import Flask\\napp = Flask(__name__)"}, "note": "Creating Flask app", "reasoning": "Creating Python file in workspace"}
+{"tool": "scan_workspace", "params": {"path": "."}, "note": "Listing files", "reasoning": "User wants to see workspace contents"}
+{"tool": "read_file", "params": {"path": "test.txt"}, "note": "Reading file", "reasoning": "Need to read file contents"}
+{"tool": "execute_shell", "params": {"command": "python app.py"}, "note": "Running script", "reasoning": "Execute the Python file"}
+{"tool": "execute_shell", "params": {"command": "pip install flask"}, "note": "Installing Flask", "reasoning": "Install dependency in workspace"}
+{"tool": "complete", "params": {"answer": "Task completed successfully"}, "note": "Done", "reasoning": "All steps finished"}
 
 === EXECUTION MODEL ===
 
 - You will be called repeatedly in a loop
 - Each call = one step = one tool call
-- For multi-part tasks (e.g., "scan C: and S:"), do ONE at a time
-- After C: completes, you'll be called again for S:
-- If you need to do 5 things, output ONE now, you'll be called again for the rest
+- For multi-part tasks, do ONE step at a time
+- If you need to create 3 files, output ONE write_file now, you'll create the rest in subsequent calls
+- NEVER batch multiple files in one write_file call - each file needs its own step
+
+⚠️ CRITICAL: write_file takes {"path": "filename.ext", "content": "..."} for ONE FILE only!
+Wrong: {"tool": "write_file", "params": {"file1.txt": "...", "file2.txt": "..."}}
+Right: {"tool": "write_file", "params": {"path": "file1.txt", "content": "..."}}
 
 === FOLLOW THE TASK PLAN ===
 
-A TASK PLAN is generated at the start of each task and shown in the WORKSPACE STATE.
+A TASK PLAN is generated at the start and shown in the WORKSPACE STATE.
 - The plan shows numbered steps with status: ☐ TODO, → NOW, ✓ DONE
 - ALWAYS work on the CURRENT TASK (marked → NOW or first ☐ TODO)
 - Do NOT skip steps or jump ahead
 - Do NOT complete until ALL plan items are DONE
-- The plan is your script - follow it!
 
 Example plan in state:
 📋 TASK PLAN (follow this script):
@@ -307,6 +320,22 @@ Action: ASK THE USER - "This will DELETE all files recursively. Are you SURE?"
 Confirm before executing.
 ```
 
+⛔⛔⛔ REMOTE EXECUTION GUARDRAILS ⛔⛔⛔
+
+ABSOLUTELY CRITICAL - REMOTE OPERATIONS REQUIRE EXPLICIT VERIFICATION:
+
+1. **User MUST explicitly name the computer** - Never assume
+   ❌ WRONG: User says "scan my C drive" → remote_execute (which computer??)
+   ✅ RIGHT: User says "scan C: on ians-r16" → Now you know the target
+
+2. **MUST call list_agents FIRST** - Always verify agent availability
+   ❌ WRONG: User says "scan C: on my-pc" → Direct remote_execute
+   ✅ RIGHT: list_agents → Verify my-pc is running → Then remote_execute
+
+3. **Agent MUST be in list_agents response** - Never hallucinate results
+   ❌ WRONG: list_agents returns empty → remote_execute with fake output
+   ✅ RIGHT: list_agents returns empty → "That machine isn't available"
+
 === COMMUNICATION STYLE ===
 
 NEVER mention internal tool names or system terminology to the user:
@@ -351,16 +380,39 @@ FUNNELCLOUD TOOLS (run on user's HOST machine via agent):
   
 - remote_execute: Run command on HOST machine. Params: {"command": "string", "agent_id": "string"}
   ⚠️ ALWAYS use PowerShell syntax (NOT cmd.exe)!
-  ⚠️ VALIDATE the script BEFORE executing (see SCRIPT VALIDATION section above)
   ⚠️ No timeout limit - commands can run as long as needed
+  ⚠️ Use SIMPLE path syntax without quotes when possible: -Path S:\ or -Path C:\Windows
+  ⚠️ DON'T call the same command multiple times - once is enough!
 
 === POWERSHELL REFERENCE ===
 
-Useful commands you can figure out yourself - use your PowerShell knowledge:
-- Get-ChildItem for listing files/directories
-- Measure-Object for sizes
-- Sort-Object, Select-Object for filtering
-- Always add -ErrorAction SilentlyContinue to skip permission errors
+⚠️ ALWAYS use PowerShell cmdlets, NOT cmd.exe commands!
+   ❌ WRONG: dir, type, copy (these are cmd.exe aliases that may fail)
+   ✅ RIGHT: Get-ChildItem, Get-Content, Copy-Item
+
+Common patterns (use UNQUOTED paths for simplicity):
+- Get-ChildItem -Path C:\path -File             # List files only (not directories)
+- Get-ChildItem -Path S:\ -File -Recurse        # Recursive file listing  
+- Add -ErrorAction SilentlyContinue to skip permission errors
+
+⚠️ FOR LARGEST FILES - use this exact pattern (produces clean single table):
+   Get-ChildItem -Path C:\path -File -Recurse -ErrorAction SilentlyContinue | 
+   Sort-Object Length -Descending | 
+   Select-Object -First 10 -Property FullName, @{N='SizeMB';E={[math]::Round($_.Length/1MB,1)}}
+
+⚠️ FOR FILE METADATA INDEXING - use this pattern:
+   Get-ChildItem -Path S:\ -Recurse -ErrorAction SilentlyContinue |
+   Select-Object FullName, Length, LastWriteTime, Mode |
+   Format-Table -AutoSize
+
+⚠️ FOR DIRECTORY LISTING ONLY (top level):
+   Get-ChildItem -Path S:\ -ErrorAction SilentlyContinue
+
+⚠️ IMPORTANT: Keep commands SIMPLE!
+   - Use -File flag instead of Where-Object {$_.PSIsContainer} 
+   - Don't wrap commands in powershell -Command "..." (agent already runs PowerShell)
+   - Don't use quotes around drive paths: -Path S:\ NOT -Path 'S:\'
+   - User often wants raw output, not over-processed data
 
 ⛔ AVOID THESE (will hang on optical drives):
   Get-CimInstance Win32_LogicalDisk    # Hangs if DVD drive exists
@@ -383,16 +435,20 @@ When user references "my machine", "my computer", "my PC", "locally", or any mac
 
 1. FIRST call list_agents to discover available agents - NO EXCEPTIONS!
 2. If you already called list_agents THIS SESSION and found an agent, you may skip step 1
-3. If user said a specific name (e.g., "on server-01"), verify that agent exists
+3. If user said a specific name (e.g., "on ians-r16"), verify that agent exists
 4. If no agents found → complete with error asking user to start an agent
 5. Only THEN proceed with remote_execute using the verified agent_id
 
 ⚠️ NEVER assume "my machine" = any specific agent. ALWAYS verify first!
 
 Example flow:
-  User: "What's running on my PC?"
+  User: "List files in C:\Windows on ians-r16"
   Step 1: {"tool": "list_agents", "params": {}}
-  Step 2: (after seeing agent list) {"tool": "remote_execute", "params": {"agent_id": "ians-r16", "command": "Get-Process | Select -First 10"}}
+  Step 2: (after seeing agent list) {"tool": "remote_execute", "params": {"agent_id": "ians-r16", "command": "Get-ChildItem -Path C:\\Windows -File"}}
+  Step 3: {"tool": "complete", "params": {"answer": "<format the ACTUAL results from step 2>"}}
+
+⛔ CRITICAL: Your "complete" answer MUST use the ACTUAL data from remote_execute output!
+⛔ DO NOT make up file names or sizes - use ONLY what the command returned!
 
 ⚠️ WHEN TO USE REMOTE vs LOCAL:
 - User mentions their machine/PC/computer + list_agents found agents → remote_execute
@@ -554,7 +610,7 @@ class ReasoningEngine:
             "llama3.2:1b": 1.3,
             "llama3.2:3b": 2.0,
             "llama3.2": 2.0,
-            "llama3.1:70b": 40.0,
+            "nous-hermes2:34b": 22.0,
             "llama3.1:8b": 4.7,
             "llama3.1": 4.7,
             "llama3:70b": 40.0,
@@ -569,6 +625,44 @@ class ReasoningEngine:
         }
         # Estimate load speed - very conservative (0.2 GB/sec accounts for disk I/O)
         self._load_speed_gb_per_sec = 0.2
+        self._model_preloaded = False
+    
+    async def warmup_model(self) -> bool:
+        """
+        Pre-load the model into Ollama's memory to prevent cold start delays.
+        
+        This is called at the START of task execution to ensure the model is
+        already loaded and will stay loaded with KEEP_ALIVE=24h setting.
+        
+        Returns:
+            True if successful, False if failed (but doesn't block execution)
+        """
+        if self._model_preloaded:
+            return True  # Already warmed up in this session
+        
+        try:
+            logger.info(f"Pre-loading model: {self.model}")
+            
+            # Send a simple completion request that won't generate much output
+            # This loads the model into memory without doing real work
+            url = f"{self.base_url}/api/generate"
+            payload = {
+                "model": self.model,
+                "prompt": "x",  # Minimal prompt
+                "stream": False,
+                "keep_alive": "24h",  # Ensure it stays loaded
+            }
+            
+            response = await self.client.post(url, json=payload, timeout=300.0)
+            response.raise_for_status()
+            
+            self._model_preloaded = True
+            logger.info(f"Model pre-loaded successfully: {self.model}")
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Model pre-load failed (non-blocking): {e}")
+            return False  # Non-fatal - execution will continue
     
     def _estimate_load_time(self) -> int:
         """Estimate cold load time in seconds based on model size."""
@@ -591,15 +685,19 @@ class ReasoningEngine:
         Returns:
             List of step descriptions (strings)
         """
-        planning_prompt = """You are a task planner. Given a user request, output a SHORT numbered list of steps needed.
+        planning_prompt = """You are a task planner that helps AI assistants break down complex tasks into clear, sequential steps.
 
-RULES:
-1. Output ONLY a numbered list (1. 2. 3. etc.)
-2. Keep it SHORT - 2-5 steps max
-3. Be specific but concise
-4. If task mentions multiple targets (C: and S:), list them as separate steps
-5. For remote/host operations, include "verify agent" as step 1
-6. End with a summary/report step
+OUTPUT FORMAT - CRITICAL:
+1. First, briefly explain your strategy (1-2 sentences)
+2. Then output a SHORT numbered list (1. 2. 3. etc.) of concrete steps
+3. Keep total plan SHORT - 2-5 steps max
+4. Each step should be specific and actionable
+
+STRATEGY TIPS:
+- If task mentions multiple targets (C: and S:), list them as separate steps
+- For remote/host operations, include "verify agent available" as first step  
+- Break complex operations into atomic steps (read, process, verify, report)
+- End plan with a final verification or summary step
 
 EXAMPLES:
 
@@ -649,8 +747,7 @@ Now create a plan for:
                 line = line.strip()
                 # Match lines starting with number + period/paren
                 if line and (line[0].isdigit() or line.startswith("-")):
-                    # Strip the number prefix
-                    import re
+                    # Strip the number prefix (uses module-level re import)
                     cleaned = re.sub(r'^[\d]+[.\)]\s*', '', line)
                     cleaned = re.sub(r'^[-*]\s*', '', cleaned)
                     if cleaned:
@@ -706,6 +803,9 @@ Now create a plan for:
         with estimated time remaining until first token arrives.
         
         Yields same as _call_ollama_streaming: (token, in_think_block, full_response)
+        
+        **Important**: Also yields empty tokens with status updates to keep
+        the async loop active even while Ollama is loading the model.
         """
         first_token_received = asyncio.Event()
         status_task = None
@@ -714,10 +814,10 @@ Now create a plan for:
         
         async def status_monitor():
             """Background task to emit status while waiting for first token."""
-            await asyncio.sleep(1.0)  # Initial delay before first status
-            
+            # NO initial delay - start checking immediately
             model_was_loaded = False
             last_status = ""
+            check_interval = 0.3  # Check every 300ms for smooth updates
             
             while not first_token_received.is_set():
                 elapsed = asyncio.get_event_loop().time() - start_time
@@ -752,7 +852,7 @@ Now create a plan for:
                 try:
                     await asyncio.wait_for(
                         first_token_received.wait(),
-                        timeout=3.0  # Check every 3 seconds
+                        timeout=check_interval  # Check every 300ms
                     )
                     break
                 except asyncio.TimeoutError:
@@ -877,6 +977,45 @@ Now create a plan for:
         """Call Ollama API and return the response text."""
         url = f"{self.base_url}/api/chat"
         
+        # JSON Schema for structured output - forces exact format
+        tool_call_schema = {
+            "type": "object",
+            "properties": {
+                "tool": {
+                    "type": "string",
+                    "description": "Tool to call - WORKSPACE tools for files, list_agents+remote_execute for remote PC",
+                    "enum": [
+                        "write_file",      # Create or overwrite files in workspace
+                        "read_file",       # Read file contents in workspace
+                        "scan_workspace",  # List files/dirs - USE THIS for listing files
+                        "execute_shell",   # Run shell command in container
+                        "replace_in_file", # Find/replace text in workspace file
+                        "insert_in_file",  # Insert text at position in file
+                        "append_to_file",  # Append to workspace file
+                        "dump_state",      # Output workspace state
+                        "validate_script", # Validate a script
+                        "complete",        # Task done or error
+                        "none",            # Skip step
+                        "list_agents",     # ONLY for "my PC/machine" - discover available agents first
+                        "remote_execute",  # Run command on remote PC - MUST call list_agents first!
+                    ]
+                },
+                "params": {
+                    "type": "object",
+                    "description": "Parameters for the tool"
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Brief status note"
+                },
+                "reasoning": {
+                    "type": "string",
+                    "description": "Why this tool is being called"
+                }
+            },
+            "required": ["tool", "params"]
+        }
+        
         payload = {
             "model": self.model,
             "messages": [
@@ -885,7 +1024,12 @@ Now create a plan for:
             ],
             "stream": False,
             "keep_alive": -1,  # Keep model loaded indefinitely
-            # No "format": "json" - we want <think>...</think> then JSON
+            "format": tool_call_schema,  # Structured output with JSON schema
+            "options": {
+                "temperature": 0,  # Deterministic - force format compliance
+                "top_p": 0.1,  # Very narrow sampling to avoid hallucinations
+                "top_k": 5,    # Only consider top 5 tokens
+            }
         }
         
         logger.debug(f"Calling Ollama: {self.model}")
@@ -909,6 +1053,45 @@ Now create a plan for:
         """
         url = f"{self.base_url}/api/chat"
         
+        # JSON Schema for structured output - forces exact format
+        tool_call_schema = {
+            "type": "object",
+            "properties": {
+                "tool": {
+                    "type": "string",
+                    "description": "Tool to call - WORKSPACE tools for files, list_agents+remote_execute for remote PC",
+                    "enum": [
+                        "write_file",      # Create or overwrite files in workspace
+                        "read_file",       # Read file contents in workspace
+                        "scan_workspace",  # List files/dirs - USE THIS for listing files
+                        "execute_shell",   # Run shell command in container
+                        "replace_in_file", # Find/replace text in workspace file
+                        "insert_in_file",  # Insert text at position in file
+                        "append_to_file",  # Append to workspace file
+                        "dump_state",      # Output workspace state
+                        "validate_script", # Validate a script
+                        "complete",        # Task done or error
+                        "none",            # Skip step
+                        "list_agents",     # ONLY for "my PC/machine" - discover available agents first
+                        "remote_execute",  # Run command on remote PC - MUST call list_agents first!
+                    ]
+                },
+                "params": {
+                    "type": "object",
+                    "description": "Parameters for the tool"
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Brief status note"
+                },
+                "reasoning": {
+                    "type": "string",
+                    "description": "Why this tool is being called"
+                }
+            },
+            "required": ["tool", "params"]
+        }
+        
         payload = {
             "model": self.model,
             "messages": [
@@ -917,7 +1100,12 @@ Now create a plan for:
             ],
             "stream": True,
             "keep_alive": -1,  # Keep model loaded indefinitely
-            # No "format": "json" - we want <think>...</think> then JSON
+            "format": tool_call_schema,  # Structured output with JSON schema
+            "options": {
+                "temperature": 0,  # Deterministic - force format compliance
+                "top_p": 0.1,  # Very narrow sampling to avoid hallucinations
+                "top_k": 5,    # Only consider top 5 tokens
+            }
         }
         
         logger.debug(f"Calling Ollama (streaming): {self.model}")
@@ -1060,6 +1248,146 @@ Now create a plan for:
     def _apply_guardrails(self, step: Step, workspace_state: WorkspaceState) -> Step:
         """Apply guardrails to a parsed step. Returns corrected step if needed."""
         
+        # ⛔ CRITICAL GUARDRAIL: remote_execute requires verified agents
+        # If model tries remote_execute without agents, redirect to workspace tools if appropriate
+        if step.tool == "remote_execute":
+            agent_id = step.params.get("agent_id", "") or step.params.get("agent", "")
+            # Model uses various param names: 'command', 'cmd', 'commands' (plural), 'code', etc.
+            command = step.params.get("command", "") or step.params.get("cmd", "") or step.params.get("commands", "")
+            code = step.params.get("code", "")  # Sometimes model sends 'code' param with a full script
+            
+            if isinstance(command, list):
+                command = " ".join(command) if command else ""  # Handle ["touch", "file.txt"] or ["touch file.txt"]
+            command = str(command).strip()
+            
+            # Check if this targets the INTERNAL workspace (not user's remote machine)
+            # /workspace/ paths and . (current dir) are workspace operations
+            is_workspace_path = "/workspace" in command or command.startswith("find .") or command.startswith("ls .")
+            
+            # Common workspace commands that should NOT use remote_execute
+            workspace_commands = ["touch ", "echo ", "cat ", "mkdir ", "rm ", "cp ", "mv ", "find ", "ls "]
+            is_workspace_cmd = any(command.startswith(cmd) for cmd in workspace_commands)
+            
+            # If targeting workspace paths, ALWAYS redirect to workspace tools (even with agent)
+            if is_workspace_path:
+                logger.warning(f"GUARDRAIL: Redirecting remote_execute targeting /workspace/ - command: {command[:50]}")
+                redirected = self._redirect_workspace_command(command, code)
+                if redirected:
+                    return redirected
+                # If couldn't redirect but it's a workspace path, use scan_workspace as fallback
+                return Step(
+                    step_id="guardrail_redirect_workspace",
+                    tool="scan_workspace",
+                    params={"path": "."},
+                    reasoning="Redirected workspace path command to scan_workspace",
+                )
+            
+            if not workspace_state.discovered_agents:
+                # If 'code' param contains a Python script, redirect to write_file
+                if code and ("import " in code or "def " in code or "class " in code):
+                    logger.warning(f"GUARDRAIL: Redirecting remote_execute with code to write_file")
+                    # Determine filename from code content
+                    filename = "app.py"  # Default
+                    if "flask" in code.lower():
+                        filename = "app.py"
+                    elif "django" in code.lower():
+                        filename = "manage.py"
+                    return Step(
+                        step_id="guardrail_redirect_code_to_file",
+                        tool="write_file",
+                        params={"path": filename, "content": code},
+                        reasoning="Redirected remote_execute code to write_file (workspace operation)",
+                    )
+                
+                if is_workspace_cmd or not agent_id:
+                    logger.warning(f"GUARDRAIL: Redirecting remote_execute to workspace tool - command: {command[:50]}")
+                    redirected = self._redirect_workspace_command(command, code)
+                    if redirected:
+                        return redirected
+                    # If we couldn't redirect, block it
+                    logger.error(f"GUARDRAIL BLOCK: remote_execute without agent discovery, cmd: {command[:50]}")
+                    return Step(
+                        step_id="guardrail_require_list_agents",
+                        tool="complete",
+                        params={"error": "Cannot execute remote commands - no FunnelCloud agents discovered. For workspace files, use write_file/read_file instead. For remote machine access, call list_agents first."},
+                        reasoning="Blocked remote_execute - agent verification required",
+                    )
+                else:
+                    logger.error(f"GUARDRAIL BLOCK: remote_execute without agent discovery")
+                    return Step(
+                        step_id="guardrail_require_list_agents",
+                        tool="complete",
+                        params={"error": "Cannot execute remote commands - no FunnelCloud agents discovered. Call list_agents first to verify target machines are available."},
+                        reasoning="Blocked remote_execute - agent verification required",
+                    )
+            if agent_id and agent_id not in workspace_state.discovered_agents:
+                logger.error(f"GUARDRAIL BLOCK: remote_execute on unknown agent '{agent_id}'")
+                available = ", ".join(workspace_state.discovered_agents)
+                return Step(
+                    step_id="guardrail_unknown_agent",
+                    tool="complete",
+                    params={"error": f"Cannot execute on '{agent_id}' - not running. Available: {available}"},
+                    reasoning=f"Blocked remote_execute - target agent '{agent_id}' unavailable",
+                )
+            
+            # ⛔ GUARDRAIL: Validate PowerShell syntax before executing
+            # Catch common model mistakes that cause massive error output
+            if command:
+                syntax_errors = self._validate_powershell_syntax(command)
+                if syntax_errors:
+                    logger.warning(f"GUARDRAIL: Fixing PowerShell syntax errors: {syntax_errors}")
+                    fixed_command = self._fix_powershell_command(command, syntax_errors)
+                    if fixed_command != command:
+                        logger.info(f"GUARDRAIL: Fixed command: {fixed_command[:100]}")
+                        return Step(
+                            step_id=step.step_id,
+                            tool="remote_execute",
+                            params={**step.params, "command": fixed_command},
+                            reasoning=f"Fixed PowerShell syntax: {syntax_errors[0]}"
+                        )
+        
+        # ⛔ CRITICAL GUARDRAIL: Force remote_execute when agents are discovered
+        # If we found agents via list_agents, the model MUST use remote_execute for subsequent operations
+        # This catches the common failure where model uses scan_workspace/execute_shell instead
+        logger.debug(f"Guardrail check: discovered_agents={workspace_state.discovered_agents}, tool={step.tool}")
+        if workspace_state.discovered_agents and step.tool in ("scan_workspace", "execute_shell"):
+            # Check if we just did list_agents in the last few steps
+            recent_steps = workspace_state.completed_steps[-3:]
+            did_list_agents = any(s.tool == "list_agents" for s in recent_steps)
+            logger.info(f"Guardrail: agents={workspace_state.discovered_agents}, recent_tools={[s.tool for s in recent_steps]}, did_list_agents={did_list_agents}")
+            
+            if did_list_agents:
+                # Get the first available agent (discovered_agents is a List[str])
+                agent_id = workspace_state.discovered_agents[0]
+                
+                logger.warning(f"GUARDRAIL: Redirecting {step.tool} to remote_execute on {agent_id}")
+                
+                # Convert the workspace tool call to remote_execute
+                if step.tool == "scan_workspace":
+                    # Convert scan_workspace to Get-ChildItem on remote - keep it simple!
+                    path = step.params.get("path", "C:\\")
+                    return Step(
+                        step_id="guardrail_force_remote",
+                        tool="remote_execute",
+                        params={
+                            "agent_id": agent_id,
+                            "command": f"Get-ChildItem -Path '{path}' -File"
+                        },
+                        reasoning=f"Redirected scan_workspace to remote_execute on {agent_id} - use discovered agent",
+                    )
+                elif step.tool == "execute_shell":
+                    # Convert execute_shell to remote_execute
+                    cmd = step.params.get("cmd", "") or step.params.get("command", "")
+                    return Step(
+                        step_id="guardrail_force_remote",
+                        tool="remote_execute",
+                        params={
+                            "agent_id": agent_id,
+                            "command": cmd
+                        },
+                        reasoning=f"Redirected execute_shell to remote_execute on {agent_id} - use discovered agent",
+                    )
+        
         # GUARDRAIL: Prevent lazy completion after list_agents
         # If we just discovered agents and LLM tries to complete without doing actual work,
         # reject it - the task likely requires remote_execute
@@ -1067,6 +1395,33 @@ Now create a plan for:
             recent_steps = workspace_state.completed_steps[-3:]
             last_was_list_agents = any(s.tool == "list_agents" for s in recent_steps)
             did_remote_work = any(s.tool == "remote_execute" for s in workspace_state.completed_steps)
+            
+            # CRITICAL: If list_agents found NO agents, force completion with clear error message
+            # This prevents the model from hallucinating fake results
+            if last_was_list_agents and not workspace_state.discovered_agents:
+                answer_text = step.params.get("answer", "")
+                # Detect if model is trying to provide fake results (hallucination)
+                hallucination_indicators = [
+                    "here are the",
+                    "top 10",
+                    "largest files",
+                    "scanned",
+                    "/home/",
+                    "/user/",
+                    ".bin",
+                    ".tar",
+                    ".iso",
+                ]
+                is_hallucinating = any(ind in answer_text.lower() for ind in hallucination_indicators)
+                
+                if is_hallucinating:
+                    logger.warning(f"GUARDRAIL: Blocking hallucinated results - no agents available")
+                    return Step(
+                        step_id="guardrail_no_hallucination",
+                        tool="complete",
+                        params={"error": "No FunnelCloud agents are available. I cannot access remote machines without an agent running. Please start the FunnelCloud agent on the target machine and try again."},
+                        reasoning="Blocked hallucination - list_agents returned empty but model tried to provide fake results",
+                    )
             
             if last_was_list_agents and not did_remote_work and workspace_state.discovered_agents:
                 # LLM is trying to complete without doing remote work after discovering agents
@@ -1087,47 +1442,75 @@ Now create a plan for:
         # This catches the "retry with better parameters" anti-pattern
         # BUT allows different commands (scanning C: then S:)
         if step.tool == "remote_execute":
-            recent_remote = [s for s in workspace_state.completed_steps[-3:] if s.tool == "remote_execute"]
+            recent_remote = [s for s in workspace_state.completed_steps[-5:] if s.tool == "remote_execute"]
             if recent_remote:
                 last_remote = recent_remote[-1]
-                # Check if last remote operation was successful (has output)
-                if last_remote.success and "Got" in last_remote.output_summary:
-                    # Only block if it's the SAME operation (same path or command)
-                    last_path = last_remote.params.get("path", "")
-                    new_path = step.params.get("path", "")
+                # Check if last remote operation was successful
+                if last_remote.success:
                     last_cmd = last_remote.params.get("command", "")
                     new_cmd = step.params.get("command", "")
                     
-                    is_same_operation = (last_path and new_path and last_path == new_path) or \
-                                        (last_cmd and new_cmd and last_cmd == new_cmd)
+                    logger.debug(f"Checking duplicate: last='{last_cmd[:50]}' new='{new_cmd[:50]}'")
+                    
+                    # Check for exact match or similar command (same base operation)
+                    is_same_operation = False
+                    if last_cmd and new_cmd:
+                        # Exact match
+                        if last_cmd == new_cmd:
+                            is_same_operation = True
+                        # Similar command - same base cmdlet with minor variations
+                        elif "Get-ChildItem" in last_cmd and "Get-ChildItem" in new_cmd:
+                            is_same_operation = True
+                        # Both listing files with du or ls
+                        elif ("du " in last_cmd or "ls " in last_cmd) and ("du " in new_cmd or "ls " in new_cmd):
+                            is_same_operation = True
                     
                     if is_same_operation:
-                        logger.warning(f"GUARDRAIL: Blocking duplicate {step.tool} - same operation already succeeded")
+                        logger.warning(f"GUARDRAIL: Blocking duplicate remote_execute - similar command already succeeded")
                         return Step(
                             step_id="guardrail_no_retry_remote",
                             tool="complete",
                             params={"answer": "I already retrieved the requested information. See the output above."},
-                            reasoning=f"Blocked retry of {step.tool} - previous command succeeded",
+                            reasoning=f"Blocked retry of remote_execute - previous similar command succeeded",
                         )
                     else:
-                        logger.info(f"GUARDRAIL: Allowing {step.tool} - different target ({new_path or new_cmd} vs {last_path or last_cmd})")
+                        logger.info(f"GUARDRAIL: Allowing remote_execute - different command")
         
-        # GUARDRAIL: Detect tool repetition loops (same tool called 3+ times recently)
+        # GUARDRAIL: Detect tool repetition loops (same tool called 3+ times with SAME target)
+        # For file operations, allow multiple calls to different paths
         # NOTE: remote_execute is exempt - it has its own smarter duplicate detection above
-        # that checks if the command is actually the same. Multi-drive scans need multiple calls.
         if step.tool != "remote_execute":
-            recent_tools = [s.tool for s in workspace_state.completed_steps[-5:]]
-            if step.tool in recent_tools:
-                repeat_count = recent_tools.count(step.tool)
-                if repeat_count >= 2:
-                    # This tool was called 2+ times in last 5 steps and LLM is about to call it again
-                    logger.warning(f"GUARDRAIL: Loop detected - {step.tool} called {repeat_count}x in last 5 steps")
-                    return Step(
-                        step_id="guardrail_loop_break",
-                        tool="complete",
-                        params={"error": f"Loop detected: {step.tool} was already called {repeat_count} times"},
-                        reasoning=f"Forced completion to break {step.tool} loop",
+            # For file tools, check if we're targeting the same path
+            file_tools = {"write_file", "read_file", "replace_in_file", "insert_in_file", "append_to_file"}
+            if step.tool in file_tools:
+                current_path = step.params.get("path", "") or step.params.get("file_path", "")
+                if current_path:
+                    same_path_count = sum(
+                        1 for s in workspace_state.completed_steps[-5:]
+                        if s.tool == step.tool and 
+                        (s.params.get("path", "") or s.params.get("file_path", "")) == current_path
                     )
+                    if same_path_count >= 2:
+                        logger.warning(f"GUARDRAIL: Loop detected - {step.tool} on same path {current_path} {same_path_count}x")
+                        return Step(
+                            step_id="guardrail_loop_break",
+                            tool="complete",
+                            params={"error": f"Loop detected: {step.tool} on {current_path} was already called {same_path_count} times"},
+                            reasoning=f"Forced completion to break {step.tool} loop on same file",
+                        )
+            else:
+                # For non-file tools, use simple count
+                recent_tools = [s.tool for s in workspace_state.completed_steps[-5:]]
+                if step.tool in recent_tools:
+                    repeat_count = recent_tools.count(step.tool)
+                    if repeat_count >= 2:
+                        logger.warning(f"GUARDRAIL: Loop detected - {step.tool} called {repeat_count}x in last 5 steps")
+                        return Step(
+                            step_id="guardrail_loop_break",
+                            tool="complete",
+                            params={"error": f"Loop detected: {step.tool} was already called {repeat_count} times"},
+                            reasoning=f"Forced completion to break {step.tool} loop",
+                        )
         
         # GUARDRAIL: Prevent calling dump_state more than once
         if step.tool == "dump_state":
@@ -1165,7 +1548,7 @@ Now create a plan for:
         
         # GUARDRAIL: Prevent re-reading already read files
         if step.tool == "read_file":
-            path = step.params.get("path", "")
+            path = step.params.get("path", "") or step.params.get("file_path", "")
             if path and path in workspace_state.read_files:
                 logger.warning(f"GUARDRAIL: Blocking re-read of '{path}'")
                 return Step(
@@ -1175,17 +1558,18 @@ Now create a plan for:
                     reasoning=f"Blocked re-read of already-read file: {path}",
                 )
         
-        # GUARDRAIL: Validate paths exist in state
-        if step.tool in ("read_file", "write_file", "insert_in_file", "replace_in_file", "append_to_file"):
-            path = step.params.get("path", "")
+        # GUARDRAIL: Validate paths exist in state (for edit operations only)
+        # NOTE: read_file should return actual errors, not be blocked by guardrails
+        # NOTE: write_file can create new files, so don't block it
+        if step.tool in ("insert_in_file", "replace_in_file", "append_to_file"):
+            path = step.params.get("path", "") or step.params.get("file_path", "")
             if path and workspace_state.files and path not in workspace_state.files:
-                if step.tool != "write_file":
-                    logger.warning(f"GUARDRAIL: Path '{path}' not in scanned files")
-                    similar = [f for f in workspace_state.files if f.endswith(path) or path in f]
-                    if similar:
-                        correct_path = similar[0]
-                        logger.info(f"GUARDRAIL: Correcting path to '{correct_path}'")
-                        step.params["path"] = correct_path
+                logger.warning(f"GUARDRAIL: Path '{path}' not in scanned files for edit operation")
+                similar = [f for f in workspace_state.files if f.endswith(path) or path in f]
+                if similar:
+                    correct_path = similar[0]
+                    logger.info(f"GUARDRAIL: Correcting path to '{correct_path}'")
+                    step.params["path"] = correct_path
         
         return step
     
@@ -1226,7 +1610,10 @@ Now create a plan for:
                 return f"LLM is narrating execution instead of calling tools. Detected: '{pattern[:40]}...'"
         
         # Check if JSON portion is mostly narrative instead of JSON
-        has_json = '{' in json_portion and '"tool"' in json_portion
+        # Accept various key names that models might use for tool/action
+        has_json = '{' in json_portion and any(
+            key in json_portion for key in ['"tool"', '"action"', '"step"', '"task"', '"instruction"']
+        )
         if not has_json:
             # If there's substantial text but no JSON, it's hallucination
             text_length = len(json_portion.strip())
@@ -1267,6 +1654,9 @@ Now create a plan for:
         """
         import uuid
         
+        # Log the raw response for debugging
+        logger.info(f"Raw LLM response (first 500 chars): {response[:500] if response else '(empty)'}")
+        
         # Check for hallucination FIRST
         hallucination_error = self._detect_hallucinated_output(response)
         if hallucination_error:
@@ -1298,7 +1688,7 @@ Now create a plan for:
         try:
             # Fix common JSON issues from LLMs
             # 1. Windows paths with single backslashes: C:\ → C:\\
-            import re
+            # (uses module-level re import)
             fixed_json = re.sub(r'(?<!\\)\\(?![\\nrt"])', r'\\\\', json_str)
             
             # Try to parse as JSON
@@ -1308,13 +1698,48 @@ Now create a plan for:
             step_id = f"step_{uuid.uuid4().hex[:8]}"
             
             # Use thinking as reasoning, fall back to note
-            note = data.get("note", "") or data.get("reasoning", "")
+            note = data.get("note", "") or data.get("reasoning", "") or data.get("description", "") or data.get("instruction", "")
             reasoning = thinking if thinking else note
+            
+            # Handle alternative key names from the model
+            # Model sometimes outputs various keys instead of "tool"
+            tool_name = (
+                data.get("tool") or 
+                data.get("action") or 
+                data.get("step") or  # Sometimes model puts tool name in "step"
+                "unknown"
+            )
+            
+            # If tool_name is a full sentence, try to extract tool from it
+            if tool_name and len(tool_name) > 30:
+                # Model might output something like "call scan_workspace to identify..."
+                for known_tool in ["scan_workspace", "read_file", "write_file", "execute_shell", 
+                                   "list_agents", "remote_execute", "complete", "dump_state"]:
+                    if known_tool in tool_name.lower():
+                        tool_name = known_tool
+                        break
+                else:
+                    tool_name = "unknown"
+            
+            # Model sometimes outputs params in different ways
+            params = data.get("params", {})
+            if not params:
+                # Try to extract params from other common model outputs
+                if "path" in data:
+                    params = {"path": data["path"]}
+                elif "file_path" in data:
+                    params = {"path": data["file_path"]}
+                elif "command" in data:
+                    params = {"command": data["command"]}
+                elif "answer" in data:
+                    params = {"answer": data["answer"]}
+            
+            logger.info(f"Parsed step: tool={tool_name}, params={params}")
             
             return Step(
                 step_id=step_id,
-                tool=data.get("tool", "unknown"),
-                params=data.get("params", {}),
+                tool=tool_name,
+                params=params,
                 reasoning=reasoning,
                 batch_id=data.get("batch_id"),
             )
@@ -1434,8 +1859,7 @@ JSON only:"""
                 # Check if this was a size-checking command for a drive
                 cmd = step.params.get("command", "")
                 if "Get-ChildItem" in cmd and "-Directory" in cmd:
-                    # Extract drive letter from command like "Get-ChildItem C:\\ -Directory"
-                    import re
+                    # Extract drive letter from command (uses module-level re import)
                     drive_match = re.search(r'Get-ChildItem\s+([A-Z]):\\', cmd, re.IGNORECASE)
                     if drive_match:
                         scanned_drives.add(drive_match.group(1).upper())
@@ -1613,6 +2037,19 @@ JSON only:"""
                 "line": line_num,
                 "suggestion": f"Check line {line_num} for unclosed bracket"
             })
+        
+        # Check for missing $_ in script blocks (common LLM mistake)
+        # Wrong: Where-Object {.PSIsContainer -eq $false}
+        # Right: Where-Object {$_.PSIsContainer -eq $false}
+        if re.search(r'Where-Object|Where\s+\{|ForEach-Object|ForEach\s+\{', script):
+            if re.search(r'\{\s*\.([A-Za-z])', script):
+                issues.append({
+                    "type": "syntax",
+                    "severity": "error",
+                    "description": "Missing $_ before property in script block (e.g., {.Property} should be {$_.Property})",
+                    "line": None,
+                    "suggestion": "Use $_.PropertyName instead of .PropertyName in Where-Object/ForEach-Object blocks"
+                })
         
         # Check for missing error handling on Get-ChildItem with -Recurse
         if "Get-ChildItem" in script and "-Recurse" in script:
@@ -1856,6 +2293,219 @@ JSON only:"""
                             r"\1 -ErrorAction SilentlyContinue\2",
                             fixed
                         )
+        
+        return fixed
+    
+    def _redirect_workspace_command(self, command: str, code: str = "") -> Optional[Step]:
+        """
+        Convert a bash/shell command targeting the workspace into the appropriate workspace tool.
+        Returns None if the command cannot be redirected.
+        """
+        # If 'code' param contains a Python script, redirect to write_file
+        if code and ("import " in code or "def " in code or "class " in code):
+            filename = "app.py"  # Default
+            if "flask" in code.lower():
+                filename = "app.py"
+            elif "django" in code.lower():
+                filename = "manage.py"
+            return Step(
+                step_id="guardrail_redirect_code_to_file",
+                tool="write_file",
+                params={"path": filename, "content": code},
+                reasoning="Redirected remote_execute code to write_file (workspace operation)",
+            )
+        
+        if command.startswith("touch "):
+            # touch file.py -> write_file
+            files_str = command.replace("touch ", "").strip().replace("/workspace/", "")
+            files = files_str.split()
+            first_file = files[0] if files else "unnamed.txt"
+            return Step(
+                step_id="guardrail_redirect_workspace",
+                tool="write_file",
+                params={"path": first_file, "content": ""},
+                reasoning=f"Redirected touch to write_file - file: {first_file}",
+            )
+        elif command.startswith("echo ") and " > " in command:
+            # echo content > file -> write_file
+            parts = command.split(" > ")
+            content = parts[0].replace("echo ", "").replace("-n ", "").strip().strip('"').strip("'")
+            filename = parts[1].strip().replace("/workspace/", "")
+            return Step(
+                step_id="guardrail_redirect_workspace",
+                tool="write_file",
+                params={"path": filename, "content": content},
+                reasoning="Redirected echo to write_file",
+            )
+        elif command.startswith("cat "):
+            # cat file -> read_file
+            filename = command.replace("cat ", "").strip().replace("/workspace/", "")
+            return Step(
+                step_id="guardrail_redirect_workspace",
+                tool="read_file",
+                params={"path": filename},
+                reasoning="Redirected cat to read_file",
+            )
+        elif command.startswith("find ") or command.startswith("ls "):
+            # find/ls -> scan_workspace
+            return Step(
+                step_id="guardrail_redirect_workspace",
+                tool="scan_workspace",
+                params={"path": "."},
+                reasoning="Redirected find/ls to scan_workspace",
+            )
+        elif command.startswith("mkdir "):
+            # Let execute_shell handle mkdir
+            return Step(
+                step_id="guardrail_redirect_workspace",
+                tool="execute_shell",
+                params={"command": command},
+                reasoning="Redirected mkdir to execute_shell",
+            )
+        
+        # Can't redirect this command
+        return None
+    
+    def _validate_powershell_syntax(self, command: str) -> List[str]:
+        """
+        Validate PowerShell command syntax and return list of errors.
+        Catches common LLM mistakes before they cause massive error output.
+        
+        NOTE: Uses module-level 're' import - do NOT add local 'import re' here
+        as it causes Python scoping bugs (UnboundLocalError).
+        """
+        errors = []
+        
+        # Check for unnecessary powershell -Command wrapper (agent already runs PS)
+        if command.startswith("powershell -Command") or command.startswith('powershell -c'):
+            errors.append("Unnecessary 'powershell -Command' wrapper - agent runs PowerShell directly")
+        
+        # Check for unbalanced quotes (causes "missing terminator" errors)
+        # PowerShell uses backtick (`) for escaping, NOT backslash
+        # So 'S:\\' is valid (two chars: backslash, backslash) not an escape sequence
+        single_quotes = command.count("'")
+        double_quotes = command.count('"')
+        # Only count backtick-escaped quotes as escaped in PowerShell
+        single_quotes -= command.count("`'")
+        double_quotes -= command.count('`"')
+        
+        if single_quotes % 2 != 0:
+            errors.append("Missing closing single quote (') - unbalanced quotes")
+        if double_quotes % 2 != 0:
+            errors.append("Missing closing double quote (\") - unbalanced quotes")
+        
+        # Check for unbalanced braces (script blocks)
+        open_braces = command.count('{')
+        close_braces = command.count('}')
+        if open_braces != close_braces:
+            errors.append(f"Missing closing brace - {open_braces} open, {close_braces} close")
+        
+        # Check for unbalanced parentheses
+        open_parens = command.count('(')
+        close_parens = command.count(')')
+        if open_parens != close_parens:
+            errors.append(f"Missing closing parenthesis - {open_parens} open, {close_parens} close")
+        
+        # Check for missing $_ in Where-Object script blocks
+        # Wrong: Where-Object {.Property -eq ...}  
+        # Right: Where-Object {$_.Property -eq ...}
+        if "Where-Object" in command or "Where" in command:
+            # Pattern: { followed by .PropertyName without $_ prefix
+            bad_where = re.search(r'\{\s*\.([A-Za-z]+)', command)
+            if bad_where:
+                errors.append(f"Missing $_ before .{bad_where.group(1)} in Where-Object")
+        
+        # Check for Where-Object PSIsContainer pattern (should use -File flag)
+        if re.search(r'Where-Object.*PSIsContainer.*\$false', command, re.IGNORECASE):
+            errors.append("Use -File flag instead of Where-Object PSIsContainer filter")
+        
+        # Check for missing $_ in ForEach-Object script blocks
+        if "ForEach-Object" in command or "ForEach" in command:
+            bad_foreach = re.search(r'\{\s*\.([A-Za-z]+)', command)
+            if bad_foreach:
+                errors.append(f"Missing $_ before .{bad_foreach.group(1)} in ForEach-Object")
+        
+        # Check for cmd.exe syntax in what should be PowerShell
+        # ANY use of 'dir' command should be converted to Get-ChildItem
+        if command.strip().lower().startswith("dir ") or command.strip().lower() == "dir":
+            errors.append("Using cmd.exe 'dir' command - use Get-ChildItem instead")
+        
+        # Check for broken piping (common with recursive patterns)
+        if "| |" in command:
+            errors.append("Broken pipe syntax: '| |'")
+        
+        # Check for $False/$True not being boolean (common typo)
+        if re.search(r'-eq\s+Fal', command) and "$false" not in command.lower():
+            errors.append("Use $false instead of False/Fal in comparisons")
+        
+        return errors
+    
+    def _fix_powershell_command(self, command: str, errors: List[str]) -> str:
+        """
+        Attempt to fix PowerShell syntax errors.
+        Returns fixed command or simplified alternative.
+        
+        NOTE: Uses module-level 're' import - do NOT add local 'import re' here.
+        """
+        fixed = command
+        
+        for error in errors:
+            # Remove unnecessary powershell -Command wrapper
+            if "Unnecessary 'powershell -Command'" in error:
+                # Extract the actual command from: powershell -Command "actual command"
+                wrapper_match = re.search(r'powershell\s+(?:-Command|-c)\s+["\'](.+)["\']$', fixed, re.IGNORECASE | re.DOTALL)
+                if wrapper_match:
+                    fixed = wrapper_match.group(1)
+                    logger.info(f"GUARDRAIL: Removed powershell wrapper, command: {fixed[:80]}")
+            
+            if "Missing $_" in error:
+                # Fix: {.Property -> {$_.Property
+                fixed = re.sub(r'\{\s*\.', '{$_.', fixed)
+            
+            # Replace Where-Object PSIsContainer with -File flag
+            if "Use -File flag instead" in error:
+                # Remove the Where-Object clause and add -File
+                fixed = re.sub(
+                    r'\|\s*Where-Object\s*\{[^}]*PSIsContainer[^}]*\}',
+                    '',
+                    fixed,
+                    flags=re.IGNORECASE
+                )
+                # Add -File flag if not present
+                if "-File" not in fixed and "Get-ChildItem" in fixed:
+                    fixed = re.sub(r'(Get-ChildItem\s+)', r'\1-File ', fixed)
+                logger.info(f"GUARDRAIL: Replaced PSIsContainer filter with -File flag")
+            
+            if "cmd.exe 'dir'" in error:
+                # Replace dir with Get-ChildItem equivalent
+                # Patterns: dir, dir S:\, dir /s C:\path, dir S:\ /ad
+                # Extract path (drive letter with colon and optional backslash/path)
+                path_match = re.search(r'dir\s+(?:/[a-z-]+\s+)*([A-Z]:[\\]?[^\s/]*)', fixed, re.IGNORECASE)
+                recurse_flag = "/s" in fixed.lower()
+                
+                if path_match:
+                    path = path_match.group(1)
+                    # Ensure path ends properly
+                    if path.endswith(':'):
+                        path = path + '\\'
+                else:
+                    path = 'C:\\'
+                
+                recurse = "-Recurse" if recurse_flag else ""
+                fixed = f"Get-ChildItem -Path {path} {recurse}".strip()
+            
+            if "$false instead of False" in error:
+                # Fix False -> $false
+                fixed = re.sub(r'-eq\s+False', '-eq $false', fixed, flags=re.IGNORECASE)
+                fixed = re.sub(r'-eq\s+Fal\w*', '-eq $false', fixed, flags=re.IGNORECASE)
+        
+        # Add -ErrorAction if missing on Get-ChildItem -Recurse
+        if "Get-ChildItem" in fixed and "-Recurse" in fixed and "-ErrorAction" not in fixed:
+            fixed = re.sub(
+                r'(Get-ChildItem[^|]*-Recurse[^|]*?)(\s*\||$)',
+                r'\1 -ErrorAction SilentlyContinue\2',
+                fixed
+            )
         
         return fixed
     

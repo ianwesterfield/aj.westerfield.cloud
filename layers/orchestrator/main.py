@@ -19,6 +19,7 @@ Architecture:
 import sys
 import os
 import logging
+import asyncio
 from contextlib import asynccontextmanager
 
 # Add parent directory to path so we can import shared module
@@ -28,6 +29,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.orchestrator import router
+from services.reasoning_engine import ReasoningEngine
 
 
 # ============================================================================
@@ -68,6 +70,20 @@ logger = logging.getLogger("orchestrator.main")
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     logger.info("Starting Orchestrator Service...")
+    
+    # Pre-load the LLM model at startup so it's ready for requests
+    # This prevents cold-start delays during test execution
+    logger.info("Pre-loading LLM model (this may take a few minutes for large models)...")
+    try:
+        reasoning_engine = ReasoningEngine()
+        success = await reasoning_engine.warmup_model()
+        if success:
+            logger.info("✓ LLM model pre-loaded successfully")
+        else:
+            logger.warning("⚠ LLM model pre-load returned false (may still work)")
+    except Exception as e:
+        logger.warning(f"⚠ LLM model pre-load failed (non-blocking): {e}")
+    
     logger.info("✓ Orchestrator ready on port 8004")
     yield
     logger.info("Shutting down Orchestrator Service...")

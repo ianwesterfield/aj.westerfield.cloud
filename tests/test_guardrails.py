@@ -29,6 +29,7 @@ class WorkspaceState:
     read_files: Set[str] = field(default_factory=set)
     completed_steps: List[CompletedStep] = field(default_factory=list)
     user_info: Dict[str, str] = field(default_factory=dict)
+    discovered_agents: Dict[str, Any] = field(default_factory=dict)  # FunnelCloud agents
     
     def update_from_step(self, tool: str, params: Dict[str, Any], output: str, success: bool) -> None:
         step_id = f"S{len(self.completed_steps) + 1:03d}"
@@ -389,6 +390,164 @@ class TestGuardrailIntegration:
         
         assert too_many_steps is True
         assert repeated_failures is True
+
+
+class TestRemoteExecutionHallucinationGuardrail:
+    """
+    Test guardrails that prevent hallucinated results when no FunnelCloud agents are available.
+    
+    Critical scenario from production:
+    - User asks: "Which 10 files take up the most space on ian-r16?"
+    - list_agents returns: "No FunnelCloud agents discovered"
+    - BAD: Model hallucinates fake file list like "/home/user/largefile1.bin 4.5G"
+    - GOOD: Model returns error "No agents available, cannot access remote machine"
+    """
+    
+    def test_detects_hallucination_after_empty_list_agents(self):
+        """Should detect when model hallucinates results after list_agents returns empty."""
+        state = WorkspaceState()
+        state.discovered_agents = {}  # No agents discovered
+        
+        # Simulate list_agents being called (empty result)
+        state.completed_steps.append(CompletedStep(
+            step_id="S001",
+            tool="list_agents",
+            params={},
+            output_summary="No FunnelCloud agents discovered",
+            success=True,
+        ))
+        
+        # Model tries to complete with fake results
+        fake_answer = """Here are the top 10 largest files on ian-r16:
+/home/user/largefile1.bin    4.5G
+/home/user/video_collection/bigmovie.mp4   3.2G
+/home/user/backups/backup_2023-12-01.tar.gz  2.8G"""
+        
+        # Check for hallucination indicators
+        hallucination_indicators = [
+            "here are the",
+            "top 10",
+            "largest files",
+            "scanned",
+            "/home/",
+            "/user/",
+            ".bin",
+            ".tar",
+            ".iso",
+        ]
+        
+        recent_steps = state.completed_steps[-3:]
+        last_was_list_agents = any(s.tool == "list_agents" for s in recent_steps)
+        is_hallucinating = any(ind in fake_answer.lower() for ind in hallucination_indicators)
+        
+        assert last_was_list_agents is True
+        assert state.discovered_agents == {}
+        assert is_hallucinating is True
+    
+    def test_allows_legitimate_completion_with_error(self):
+        """Should allow completion that honestly reports no agents available."""
+        state = WorkspaceState()
+        state.discovered_agents = {}
+        
+        state.completed_steps.append(CompletedStep(
+            step_id="S001",
+            tool="list_agents",
+            params={},
+            output_summary="No FunnelCloud agents discovered",
+            success=True,
+        ))
+        
+        # Legitimate error response
+        honest_answer = "No FunnelCloud agents are available. I cannot access remote machines without an agent running."
+        
+        hallucination_indicators = [
+            "here are the",
+            "top 10",
+            "largest files",
+            "/home/",
+            ".bin",
+            ".tar",
+        ]
+        
+        is_hallucinating = any(ind in honest_answer.lower() for ind in hallucination_indicators)
+        
+        assert is_hallucinating is False
+    
+    def test_allows_results_when_agent_discovered(self):
+        """Should allow results when an agent was actually discovered."""
+        state = WorkspaceState()
+        state.discovered_agents = {"ian-r16": {"name": "ian-r16", "host": "192.168.1.100"}}
+        
+        state.completed_steps.append(CompletedStep(
+            step_id="S001",
+            tool="list_agents",
+            params={},
+            output_summary="Found 1 agent: ian-r16",
+            success=True,
+        ))
+        
+        state.completed_steps.append(CompletedStep(
+            step_id="S002",
+            tool="remote_execute",
+            params={"agent_id": "ian-r16", "command": "Get-ChildItem -Recurse | Sort-Object Length -Descending | Select-Object -First 10"},
+            output_summary="Got 10 file entries",
+            success=True,
+        ))
+        
+        # With agent discovered AND remote_execute done, results are legitimate
+        did_remote_work = any(s.tool == "remote_execute" for s in state.completed_steps)
+        has_agent = len(state.discovered_agents) > 0
+        
+        assert has_agent is True
+        assert did_remote_work is True
+    
+    def test_blocks_lazy_completion_after_discovering_agents(self):
+        """Should block completion without remote work when agents ARE available."""
+        state = WorkspaceState()
+        state.discovered_agents = {"ian-r16": {"name": "ian-r16"}}
+        
+        state.completed_steps.append(CompletedStep(
+            step_id="S001",
+            tool="list_agents",
+            params={},
+            output_summary="Found 1 agent: ian-r16",
+            success=True,
+        ))
+        
+        # Model tries to complete without calling remote_execute
+        recent_steps = state.completed_steps[-3:]
+        last_was_list_agents = any(s.tool == "list_agents" for s in recent_steps)
+        did_remote_work = any(s.tool == "remote_execute" for s in state.completed_steps)
+        has_agents = len(state.discovered_agents) > 0
+        
+        # Guardrail should trigger
+        should_block = last_was_list_agents and not did_remote_work and has_agents
+        
+        assert should_block is True
+    
+    def test_repeated_list_agents_without_progress(self):
+        """Should detect when model keeps calling list_agents without making progress."""
+        state = WorkspaceState()
+        state.discovered_agents = {}
+        
+        # Model calls list_agents multiple times
+        for i in range(3):
+            state.completed_steps.append(CompletedStep(
+                step_id=f"S{i:03d}",
+                tool="list_agents",
+                params={},
+                output_summary="No FunnelCloud agents discovered",
+                success=True,
+            ))
+        
+        # Count list_agents calls in recent steps
+        recent_list_agents = sum(
+            1 for s in state.completed_steps[-5:]
+            if s.tool == "list_agents"
+        )
+        
+        # Should be flagged as loop
+        assert recent_list_agents >= 2
 
 
 if __name__ == "__main__":
