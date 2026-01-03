@@ -726,6 +726,14 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
     except Exception as e:
         logger.warning(f"Model warmup failed (non-blocking): {e}")
     
+    # === INTENT CLASSIFICATION PHASE ===
+    # Determine if this is a conversational question or an actionable task
+    # Conversational questions skip the OODA loop entirely
+    yield f"data: {json.dumps({'event_type': 'status', 'status': '🎯 Classifying intent...', 'done': False})}\n\n"
+    
+    intent_result = await reasoning_engine.classify_intent(request.task)
+    logger.info(f"Intent classification: {intent_result}")
+    
     # === MEMORY CONTEXT PHASE ===
     # Query memory for workspace/user context BEFORE planning
     # This implements the OODA loop's "Learn" phase - recall what we already know
@@ -749,7 +757,24 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
         logger.warning(f"Memory context retrieval failed (non-blocking): {e}")
         relevant_patterns = []
     
-    # === PLANNING PHASE ===
+    # === CONVERSATIONAL SHORTCUT ===
+    # If intent is conversational, skip OODA loop entirely
+    if intent_result.get("intent") == "conversational":
+        logger.info("Conversational intent detected - skipping OODA loop")
+        yield f"data: {json.dumps({'event_type': 'status', 'status': '💬 Answering...', 'done': False})}\n\n"
+        
+        # Get direct answer from LLM with memory context
+        answer = await reasoning_engine.answer_conversational(
+            task=request.task,
+            memory_context=relevant_patterns
+        )
+        
+        # Stream the answer
+        yield f"data: {json.dumps({'event_type': 'content', 'content': answer})}\n\n"
+        yield f"data: {json.dumps({'event_type': 'status', 'status': '✅ Done', 'done': True, 'content': answer})}\n\n"
+        return
+    
+    # === PLANNING PHASE (Task intent only) ===
     # Generate task plan BEFORE execution to show user what will happen
     yield f"data: {json.dumps({'event_type': 'status', 'status': '📋 Planning...', 'done': False})}\n\n"
     

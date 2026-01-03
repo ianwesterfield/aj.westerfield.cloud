@@ -218,6 +218,28 @@ be called again and the plan will show Step 3 as → NOW.
 4. **Show the new plan to the user** in your thinking so they understand your strategy shift
 5. **Attempt a different approach** - Fix the underlying issue, not just the surface problem
 
+⛔ CRITICAL: IT IS OK TO FAIL GRACEFULLY ⛔
+
+**If you CANNOT complete a task due to missing requirements, you MUST:**
+1. **Report the failure clearly** - Don't make up results!
+2. **Explain what's missing** - What does the user need to do?
+3. **NEVER HALLUCINATE** - Do NOT invent file listings, scan results, or other data
+
+**Examples of graceful failure:**
+
+- **If list_agents finds NO agents:**
+  ❌ WRONG: Make up a fake file listing to "help" the user
+  ❌ WRONG: Pretend you scanned files and list made-up results
+  ✅ RIGHT: {"tool": "complete", "params": {"error": "No FunnelCloud agents are available. Please start the agent on your target machine and try again."}}
+
+- **If remote machine is unreachable:**
+  ❌ WRONG: Invent plausible-looking results (e.g., "C:\\Windows\\explorer.exe - 2.5 MB")
+  ✅ RIGHT: Report that you cannot reach the machine and suggest troubleshooting steps
+
+**YOUR INTEGRITY IS MORE IMPORTANT THAN "COMPLETING" THE TASK**
+Users trust your output. If you make up data, you destroy that trust.
+It is ALWAYS better to say "I cannot complete this" than to hallucinate results.
+
 **Examples of adaptive responses to common failures:**
 
 - **If remote_execute fails with "missing string terminator" on PowerShell:**
@@ -673,6 +695,141 @@ class ReasoningEngine:
         # Default estimate for unknown models
         return 15
     
+    async def classify_intent(self, task: str) -> dict:
+        """
+        Classify user intent BEFORE the OODA loop to determine if planning is needed.
+        
+        Intent Types:
+        - "conversational": Questions about concepts, explanations, how things work
+          → Route directly to memory + LLM, skip OODA planning
+        - "task": File operations, remote execution, workspace changes
+          → Full OODA loop with planning
+        
+        Returns:
+            dict with:
+            - intent: "conversational" or "task"
+            - confidence: float 0-1
+            - reason: brief explanation
+        """
+        # Fast heuristic checks first (avoid LLM call for obvious cases)
+        task_lower = task.lower().strip()
+        
+        # Strong task indicators - file paths, remote operations, actions
+        task_patterns = [
+            r'[A-Z]:\\',                    # Windows paths like C:\, S:\
+            r'/[a-z]+/',                    # Unix paths like /home/
+            r'\.\w{2,4}$|\.\w{2,4}\b',      # File extensions (.txt, .py, .json, etc.)
+            r'\b(create|read|edit|write|delete|modify|update|add|remove|change|open)\b.*\b(file|folder|dir)',
+            r'\b(scan|index|list)\b.*\b(files|folders|directories|drive)',
+            r'\b(run|execute|start|stop)\b',
+            r'\bworkspace\b',
+            r'\bagent\b.*\b(execute|run|command)',
+            r'\bremote\b',
+        ]
+        
+        for pattern in task_patterns:
+            if re.search(pattern, task_lower):
+                logger.info(f"Intent classified as TASK by pattern: {pattern}")
+                return {"intent": "task", "confidence": 0.9, "reason": f"Matched task pattern: {pattern}"}
+        
+        # Strong conversational indicators
+        conversational_patterns = [
+            r'^(what|who|why|how|when|where|which)\s+(is|are|was|were|does|do|did|can|could|would|should)\b',
+            r'^(explain|describe|tell me about|what\'s)\b',
+            r'^(can you|could you)\s+(explain|describe|tell)',
+            r'\b(mean|definition|concept|purpose|role|work)\b',
+            r'^(hi|hello|hey|thanks|thank you)\b',
+        ]
+        
+        for pattern in conversational_patterns:
+            if re.search(pattern, task_lower):
+                logger.info(f"Intent classified as CONVERSATIONAL by pattern: {pattern}")
+                return {"intent": "conversational", "confidence": 0.85, "reason": f"Matched conversational pattern: {pattern}"}
+        
+        # Ambiguous - use LLM for classification (fast, low-token call)
+        try:
+            url = f"{self.base_url}/api/chat"
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": """Classify user intent as either:
+- "task": Requires file operations, code execution, workspace changes, or remote machine access
+- "conversational": Questions about concepts, explanations, chit-chat, or asking how things work
+
+Respond with ONLY one word: task OR conversational"""},
+                    {"role": "user", "content": task},
+                ],
+                "stream": False,
+                "options": {"temperature": 0.1, "num_predict": 10},  # Very constrained
+            }
+            
+            response = await self.client.post(url, json=payload, timeout=10.0)
+            response.raise_for_status()
+            
+            content = response.json().get("message", {}).get("content", "").strip().lower()
+            
+            if "task" in content:
+                return {"intent": "task", "confidence": 0.7, "reason": "LLM classification"}
+            elif "conversational" in content:
+                return {"intent": "conversational", "confidence": 0.7, "reason": "LLM classification"}
+            else:
+                # Default to task for safety (won't miss important operations)
+                return {"intent": "task", "confidence": 0.5, "reason": "Ambiguous, defaulting to task"}
+                
+        except Exception as e:
+            logger.warning(f"Intent classification LLM call failed: {e}")
+            # Default to task on error (safer)
+            return {"intent": "task", "confidence": 0.5, "reason": f"Classification failed: {e}"}
+    
+    async def answer_conversational(self, task: str, memory_context: List[dict] = None) -> str:
+        """
+        Answer a conversational question directly without OODA planning.
+        
+        Uses memory context and LLM to provide a direct response.
+        """
+        # Build context from memory
+        context_parts = []
+        if memory_context:
+            for item in memory_context[:5]:
+                facts = item.get('facts')
+                if facts and isinstance(facts, dict):
+                    for fact_type, fact_value in facts.items():
+                        context_parts.append(f"- {fact_type}: {fact_value}")
+                else:
+                    text = item.get('user_text', '') or item.get('text', '')
+                    if text:
+                        context_parts.append(f"- {text}")
+        
+        system_prompt = """You are AJ, a helpful AI assistant. Answer the user's question directly and concisely.
+
+If you have relevant context from memory, use it to personalize your response.
+If you don't know something, say so honestly.
+Keep responses focused and informative."""
+        
+        if context_parts:
+            system_prompt += f"\n\nRelevant context from memory:\n" + "\n".join(context_parts)
+        
+        try:
+            url = f"{self.base_url}/api/chat"
+            payload = {
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": task},
+                ],
+                "stream": False,
+                "options": {"temperature": 0.7},
+            }
+            
+            response = await self.client.post(url, json=payload, timeout=60.0)
+            response.raise_for_status()
+            
+            return response.json().get("message", {}).get("content", "I'm not sure how to answer that.")
+            
+        except Exception as e:
+            logger.error(f"Conversational answer failed: {e}")
+            return f"I encountered an error trying to answer: {e}"
+
     async def generate_task_plan(self, task: str) -> List[str]:
         """
         Generate a task plan (numbered list of steps) before execution begins.
@@ -1401,6 +1558,7 @@ Now create a plan for:
             if last_was_list_agents and not workspace_state.discovered_agents:
                 answer_text = step.params.get("answer", "")
                 # Detect if model is trying to provide fake results (hallucination)
+                # Include both Unix and Windows path patterns
                 hallucination_indicators = [
                     "here are the",
                     "top 10",
@@ -1411,8 +1569,33 @@ Now create a plan for:
                     ".bin",
                     ".tar",
                     ".iso",
+                    # Windows-specific hallucination patterns
+                    "explorer.exe",
+                    "notepad.exe",
+                    "system32",
+                    "c:\\windows",
+                    "c:\\program",
+                    "c:\\users",
+                    ".dll",
+                    # Made-up file size patterns
+                    " kb",
+                    " mb",
+                    " gb",
+                    " bytes",
+                    # Directory listing patterns
+                    "directory listing",
+                    "file listing",
+                    "| name |",
+                    "filename",
                 ]
                 is_hallucinating = any(ind in answer_text.lower() for ind in hallucination_indicators)
+                
+                # Also check for Windows path regex patterns (C:\Something\file.ext)
+                if not is_hallucinating and answer_text:
+                    windows_path_pattern = re.search(r'[A-Z]:\\[A-Za-z0-9_\\]+\.[a-z]{2,4}', answer_text)
+                    if windows_path_pattern:
+                        is_hallucinating = True
+                        logger.warning(f"GUARDRAIL: Detected Windows path hallucination: {windows_path_pattern.group()}")
                 
                 if is_hallucinating:
                     logger.warning(f"GUARDRAIL: Blocking hallucinated results - no agents available")
@@ -1421,6 +1604,17 @@ Now create a plan for:
                         tool="complete",
                         params={"error": "No FunnelCloud agents are available. I cannot access remote machines without an agent running. Please start the FunnelCloud agent on the target machine and try again."},
                         reasoning="Blocked hallucination - list_agents returned empty but model tried to provide fake results",
+                    )
+                
+                # Even if not obviously hallucinating, if no agents and trying to complete with an "answer"
+                # (not an "error"), it's suspicious - force a proper error response
+                if answer_text and len(answer_text) > 50:
+                    logger.warning(f"GUARDRAIL: Blocking completion with answer when no agents - should be error")
+                    return Step(
+                        step_id="guardrail_force_error_no_agents",
+                        tool="complete",
+                        params={"error": "No FunnelCloud agents are available. I cannot access your remote machine to perform this task. Please ensure the FunnelCloud agent is running on the target machine."},
+                        reasoning="Forced error completion - no agents available but model tried to provide answer",
                     )
             
             if last_was_list_agents and not did_remote_work and workspace_state.discovered_agents:

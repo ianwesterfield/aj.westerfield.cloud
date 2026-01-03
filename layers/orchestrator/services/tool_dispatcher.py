@@ -108,10 +108,18 @@ async def dispatch_tool(
     
     # Completion signal
     if tool == "complete":
+        error_msg = params.get("error")
+        # If there's an error, surface it as the output too (for visibility)
+        if error_msg:
+            return {
+                "success": False,
+                "output": f"⚠️ {error_msg}",
+                "error": error_msg,
+            }
         return {
             "success": True,
             "output": params.get("message", "Task completed"),
-            "error": params.get("error"),
+            "error": None,
         }
     
     # Dump workspace state for debugging/inspection
