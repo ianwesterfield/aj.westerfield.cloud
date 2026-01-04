@@ -43,3 +43,6 @@ obj/
 secrets/
 Thumbs.db
 venv/
+output/
+checkpoints/
+training/**/data/

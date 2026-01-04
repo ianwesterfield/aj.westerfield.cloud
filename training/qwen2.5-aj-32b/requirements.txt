@@ -1,0 +1,26 @@
+# Training dependencies for Qwen 2.5 AJ 32B
+# Install with: pip install -r requirements.txt
+
+# PyTorch (install separately with CUDA support)
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Unsloth for efficient QLoRA training
+unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git
+
+# Core training libraries
+transformers>=4.36.0
+datasets>=2.15.0
+accelerate>=0.25.0
+peft>=0.7.0
+trl>=0.7.0
+bitsandbytes>=0.41.0
+
+# Utilities
+scipy
+sentencepiece
+protobuf
+pyyaml
+tqdm
+
+# For GGUF conversion (optional, can use llama.cpp instead)
+# gguf

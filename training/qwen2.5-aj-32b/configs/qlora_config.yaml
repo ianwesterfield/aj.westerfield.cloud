@@ -1,0 +1,70 @@
+# QLoRA Fine-tuning Configuration for Qwen 2.5 AJ 32B
+# Optimized for agent workloads: tool calling, intent classification, planning
+
+model:
+  base_model: "Qwen/Qwen2.5-32B-Instruct"
+  quantization: "4bit"  # QLoRA uses 4-bit base
+  max_seq_length: 4096
+  dtype: "bfloat16"
+
+lora:
+  r: 64                    # LoRA rank - higher for complex tasks
+  lora_alpha: 128          # Scaling factor
+  lora_dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+  bias: "none"
+  task_type: "CAUSAL_LM"
+
+training:
+  output_dir: "./checkpoints"
+  num_train_epochs: 3
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 8
+  learning_rate: 2.0e-4
+  weight_decay: 0.01
+  warmup_ratio: 0.03
+  lr_scheduler_type: "cosine"
+  logging_steps: 10
+  save_steps: 100
+  eval_steps: 100
+  save_total_limit: 3
+  fp16: false
+  bf16: true
+  gradient_checkpointing: true
+  optim: "paged_adamw_8bit"
+  max_grad_norm: 0.3
+  group_by_length: true
+  report_to: "none"
+
+data:
+  train_files:
+    - "data/intent_classification.jsonl"
+    - "data/tool_selection.jsonl"
+    - "data/task_planning.jsonl"
+    - "data/guardrails.jsonl"
+    - "data/architecture_qa.jsonl"
+  eval_split: 0.1
+  shuffle: true
+  seed: 42
+
+# Dataset format (ChatML style for Qwen)
+prompt_template: |
+  <|im_start|>system
+  {system}<|im_end|>
+  <|im_start|>user
+  {instruction}<|im_end|>
+  <|im_start|>assistant
+  {response}<|im_end|>
+
+export:
+  output_dir: "./output"
+  merge_weights: true
+  quantize_to: "Q4_K_M"
+  ollama_model_name: "qwen2.5-aj:32b-q4"

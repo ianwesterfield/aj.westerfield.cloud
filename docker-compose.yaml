@@ -68,9 +68,9 @@ services:
       - INDEX_NAME=user_memory_collection
       - EMBEDDING_PROVIDER=sentence_transformers # Keep ST for embeddings (768-dim, fast)
       - OLLAMA_BASE_URL=http://ollama:11434
-      - OLLAMA_MODEL=qwen2.5:14b # Qwen 2.5 14B: Good balance of speed and reasoning
+      - OLLAMA_MODEL=qwen2.5:14b # This needs to be synced to orchestrator_api so only the one model is loaded
       - SUMMARY_MODEL=sshleifer/distilbart-cnn-12-6
-      - SUMMARY_DEVICE=0 # Use cpu for summarizer (or 0 for GPU)
+      - SUMMARY_DEVICE=0
       - HF_HOME=/models
       - FILTERS_PATH=/filters
     volumes:

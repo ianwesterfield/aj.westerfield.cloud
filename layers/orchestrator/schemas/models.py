@@ -220,3 +220,42 @@ class BatchResult(BaseModel):
             f"**Failures:**\n{failures}\n\n"
             f"Continuing with next step using successful results..."
         )
+
+
+# ============================================================================
+# Training Data Capture
+# ============================================================================
+
+class TrainingType(str, Enum):
+    """Type of training example."""
+    GOOD_EXAMPLE = "good_example"
+    EDGE_CASE = "edge_case"
+    HARD_NEGATIVE = "hard_negative"
+    KNOWLEDGE_GRAPH = "knowledge_graph"
+    FEEDBACK = "feedback"
+
+
+class TrainingCaptureRequest(BaseModel):
+    """Request to capture training data."""
+    session_id: str = Field(..., description="Chat session ID")
+    message_id: str = Field(default="", description="Message ID")
+    timestamp: str = Field(default="", description="ISO timestamp")
+    user_prompt: str = Field(..., description="User's input prompt")
+    model_response: str = Field(..., description="Model's response")
+    rating: int = Field(default=3, ge=1, le=5, description="User rating 1-5")
+    training_type: str = Field(default="feedback", description="Type of training example")
+    tags: List[str] = Field(default_factory=list, description="User-provided tags")
+    model_id: str = Field(default="", description="Model that generated response")
+    user_id: str = Field(default="", description="User who captured this")
+    # Orchestrator will add these
+    tools_used: List[str] = Field(default_factory=list, description="Tools used in this interaction")
+    guardrails_triggered: List[str] = Field(default_factory=list, description="Guardrails that fired")
+    errors: List[str] = Field(default_factory=list, description="Errors encountered")
+    workspace_state: Optional[Dict[str, Any]] = Field(default=None, description="Workspace state snapshot")
+
+
+class TrainingCaptureResponse(BaseModel):
+    """Response from training capture."""
+    success: bool = Field(..., description="Whether capture succeeded")
+    vector_id: str = Field(default="", description="Qdrant vector ID")
+    message: str = Field(default="", description="Status message")

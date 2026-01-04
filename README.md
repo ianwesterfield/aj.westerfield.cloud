@@ -473,34 +473,46 @@ docker compose up -d --build pragmatics_api
 
 ## Roadmap
 
-### Phase 1: Foundation ✅ (Current)
+### Phase 1: Foundation ✅
 
 - [x] Logging infrastructure
-- [x] Intent classification (DistilBERT)
-- [x] Tool dispatcher
-- [x] Semantic memory (Qdrant)
+- [x] Intent classification (DistilBERT 4-class)
+- [x] Tool dispatcher (unified routing)
+- [x] Semantic memory (Qdrant vectors)
 - [x] Orchestrator reasoning engine
+- [x] Multi-step task planning
+- [x] Workspace state tracking (ground truth)
 
-### Phase 2: FunnelCloud Agents 🔄
+### Phase 2: FunnelCloud Agents 🔄 (In Progress)
 
-- [ ] Agent discovery protocol
-- [ ] mTLS credential management
-- [ ] Multi-agent orchestration
-- [ ] Capability advertisement
+- [x] Agent discovery protocol (UDP broadcast)
+- [x] mTLS credential management (CA + agent certs)
+- [x] Certificate pinning (SHA256 fingerprint)
+- [x] gRPC service definition (task_service.proto)
+- [ ] Multi-agent orchestration (parallel execution)
+- [ ] Capability advertisement (agent skills registry)
 
-### Phase 3: Knowledge Graph 📅
+### Phase 3: Model Fine-Tuning 🔄 (In Progress)
 
-- [ ] Entity extraction
+- [x] Training data generation (38 generators, 3,790 examples)
+- [x] QLoRA training pipeline (PEFT/TRL)
+- [x] Training capture system (live data collection)
+- [ ] Model export to Ollama
+- [ ] A/B testing framework
+
+### Phase 4: Knowledge Graph 📅
+
+- [ ] Entity extraction from conversations
 - [ ] Relationship mapping
-- [ ] Temporal reasoning
-- [ ] Pattern detection
+- [ ] Temporal reasoning (time-aware recall)
+- [ ] Pattern detection (workflow learning)
 
-### Phase 4: Advanced Reasoning 📅
+### Phase 5: Advanced Features 📅
 
-- [ ] Multi-step task planning
-- [ ] Adaptive tool selection
+- [ ] Adaptive tool selection (learning from outcomes)
 - [ ] Error recovery strategies
 - [ ] Performance optimization
+- [ ] Multi-user isolation
 
 ---
 
@@ -570,17 +582,18 @@ We believe AI should:
 
 ---
 
-## Learn More
+## Training & Fine-Tuning
 
-For detailed technical documentation:
+Mesosync includes tooling for fine-tuning LLMs on workspace-specific knowledge:
 
-- **[.github/AI_SCRATCH.md](.github/AI_SCRATCH.md)** - Complete developer reference
-- **[.github/ARCHITECTURE.md](.github/ARCHITECTURE.md)** - Detailed service architecture
-- **[.github/FunnelCloud-Design.md](.github/FunnelCloud-Design.md)** - Distributed agents design
-- **[.github/LOGGING_CENTRALIZATION.md](.github/LOGGING_CENTRALIZATION.md)** - Logging patterns
+- **3,790 training examples** across 38+ domains
+- **QLoRA fine-tuning** with 4-bit quantization
+- **Export to Ollama** for local inference
+
+See [training/qwen2.5-aj-32b/README.md](training/qwen2.5-aj-32b/README.md) for details.
 
 ---
 
 **Mesosync**: Knowledge-centric AI infrastructure for the workspace.
 
-_Last Updated: January 2, 2026_
+_Last Updated: January 4, 2026_

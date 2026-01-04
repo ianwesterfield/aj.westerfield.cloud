@@ -29,6 +29,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.orchestrator import router
+from api.training import router as training_router
 from services.reasoning_engine import ReasoningEngine
 
 
@@ -127,6 +128,7 @@ app.add_middleware(
 # ============================================================================
 
 app.include_router(router, prefix="/api/orchestrate")
+app.include_router(training_router)  # Training capture endpoints at /api/training/*
 
 
 # ============================================================================
