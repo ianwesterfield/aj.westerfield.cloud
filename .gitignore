@@ -12,6 +12,7 @@ __pycache__/
 .Python
 .settings/
 .venv
+.vs/
 .vscode/
 *.egg
 *.egg-info/
@@ -33,6 +34,7 @@ bin/
 build/
 certificates/
 certs/
+checkpoints/
 Desktop.ini
 dist/
 docker-compose.override.yml
@@ -40,9 +42,8 @@ env/
 ENV/
 logs/
 obj/
+output/
 secrets/
 Thumbs.db
-venv/
-output/
-checkpoints/
 training/**/data/
+venv/

@@ -1,19 +1,29 @@
-# Qwen 2.5 AJ 32B Training
+# AJ Fine-Tuned Models
 
-Fine-tuning Qwen 2.5 32B-Instruct for AJ/Mesosync agent workloads using QLoRA (4-bit quantization).
+Fine-tuned LLMs for AJ agent workloads using QLoRA (4-bit quantization).
+
+## Available Models
+
+| Model             | Base                         | Purpose                       | Ollama Name         |
+| ----------------- | ---------------------------- | ----------------------------- | ------------------- |
+| **R1-Distill-AJ** | DeepSeek-R1-Distill-Qwen-32B | Reasoning with `<think>` tags | `r1-distill-aj:32b` |
+| **Qwen2.5-AJ**    | Qwen2.5-32B-Instruct         | Direct answers, fast          | `qwen2.5-aj:32b`    |
+
+Each model has context window variants: `-2k`, `-4k`, `-8k`, and default (32k).
+
+**Default model**: `r1-distill-aj:32b-4k` — reasoning + balanced context
 
 ## Overview
 
-- **Base Model**: Qwen/Qwen2.5-32B-Instruct (33.3B parameters)
 - **Training Method**: QLoRA with 4-bit quantization (~537M trainable params, 1.6%)
 - **Total Examples**: 3,790 across 38+ domains
-- **Hardware**: NVIDIA RTX 4090 (24GB) or equivalent; ~7GB system RAM overflow expected
-- **Training Time**: ~7 days on RTX 4090, ~4-6 hours on A100, ~2-3 hours on H100
+- **Hardware**: Vast.ai A100-SXM4-80GB (recommended) or RTX 4090 (slower)
+- **Training Time**: ~4 hours on A100, ~7 days on RTX 4090
 
 ## Directory Structure
 
 ```
-training/qwen2.5-aj-32b/
+training/
 ├── data/                    # Training datasets (45 JSONL files)
 │   ├── all_training_data.jsonl    # Combined dataset (3,790 examples)
 │   ├── dataset_stats.json         # Statistics by domain
@@ -21,16 +31,15 @@ training/qwen2.5-aj-32b/
 ├── scripts/                 # Training & generation scripts
 │   ├── generate_all.py            # Master generator (runs all)
 │   ├── generate_*.py              # 38+ domain generators
-│   ├── train_standard.py          # QLoRA training (PEFT/TRL)
-│   ├── train_qlora.py             # Alternative Unsloth trainer
-│   └── export_ollama.py           # Export to Ollama format
+│   ├── train_qlora.py             # QLoRA training (PEFT/TRL)
+│   └── merge_and_export.py        # Merge LoRA + export
 ├── configs/                 # Training configurations
 │   └── qlora_config.yaml
 ├── checkpoints/             # Training checkpoints (auto-saved)
-├── output/                  # Final model artifacts
-├── Modelfile               # Ollama model definition
-└── Dockerfile              # Container for training
+└── output/                  # Final model artifacts
 ```
+
+**Note**: GGUF conversion requires llama.cpp (build on training server or use pre-built binaries).
 
 ## Training Data Domains (38 Generators, 3,790 Examples)
 
@@ -74,21 +83,27 @@ python scripts/generate_docker_data.py
 ### Run Training
 
 ```bash
-# Standard training with PEFT/TRL (recommended for Windows)
-python scripts/train_standard.py
-
-# Alternative: Unsloth trainer (Linux only, faster)
-python scripts/train_qlora.py
+# QLoRA training with config
+python scripts/train_qlora.py --config configs/qlora_config.yaml
 ```
 
 ### Export to Ollama
 
-```bash
-# After training completes
-python scripts/export_ollama.py
+GGUF conversion requires llama.cpp. On a cloud GPU instance:
 
-# Test the model
-ollama run qwen2.5-aj:32b-q4
+```bash
+# 1. Merge LoRA with base model
+python scripts/merge_and_export.py
+
+# 2. Convert to GGUF (requires llama.cpp)
+python /path/to/llama.cpp/convert_hf_to_gguf.py ./merged-model --outfile model.bf16.gguf --outtype bf16
+
+# 3. Quantize to Q4_K_M (~19GB)
+/path/to/llama.cpp/build/bin/llama-quantize model.bf16.gguf model-q4_k_m.gguf Q4_K_M
+
+# 4. Download and import to Ollama
+scp model-q4_k_m.gguf local:/path/to/ollama/
+ollama create model-name:32b -f Modelfile
 ```
 
 ## Training Configuration

@@ -1304,6 +1304,7 @@ class Filter:
         Format response text for better markdown rendering.
         
         - Remove leaked tool call syntax (LLM hallucinations)
+        - Remove raw JSON tool calls that leaked through
         - Wrap file/folder names in backticks
         - Wrap code references in backticks
         - Ensure code blocks are fenced
@@ -1313,6 +1314,15 @@ class Filter:
         # Skip if empty
         if not text:
             return text
+        
+        # SANITIZATION: Remove raw JSON tool calls that leaked through
+        # Pattern matches {"tool": "...", ...} or {"action": "...", ...} JSON objects
+        json_tool_pattern = r'\{\s*"(?:tool|action)":\s*"[^"]+"\s*,\s*(?:"[^"]+"\s*:\s*(?:"[^"]*"|[^,}]+)\s*,?\s*)+\}'
+        if '"tool":' in text or '"action":' in text:
+            text = re.sub(json_tool_pattern, '', text, flags=re.DOTALL)
+            # Clean up multiple newlines
+            text = re.sub(r'\n{3,}', '\n\n', text)
+            text = text.strip()
         
         # SANITIZATION: Remove any leaked tool call syntax
         # Some models output [TOOL_CALLS] when they shouldn't

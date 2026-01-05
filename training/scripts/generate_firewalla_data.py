@@ -1260,7 +1260,7 @@ ERROR_SCENARIOS = [
                 "ISP blocking the port (common for 80, 25, 445)"
             ],
             "solutions": [
-                "Test from external network (mobile data)",
+                "Test from external network (cellular data)",
                 "Verify service is running: check device firewall",
                 "If double NAT, forward port on upstream router too",
                 "Try alternative port if ISP blocks standard ones",

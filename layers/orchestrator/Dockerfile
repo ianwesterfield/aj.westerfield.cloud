@@ -20,7 +20,7 @@ COPY shared /app/shared
 COPY orchestrator .
 
 # Set Ollama model - Nous-Hermes 2 34B provides Claude-like reasoning with better efficiency
-ENV OLLAMA_MODEL=nous-hermes2:34b
+ENV OLLAMA_MODEL=qwen2.5-aj:32b
 
 # Expose port
 EXPOSE 8004

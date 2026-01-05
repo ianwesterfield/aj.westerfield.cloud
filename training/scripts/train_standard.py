@@ -9,6 +9,7 @@ Requires ~24GB VRAM with gradient checkpointing.
 import os
 import json
 import yaml
+import argparse
 from pathlib import Path
 from typing import Dict, List, Any
 from datetime import datetime
@@ -28,14 +29,18 @@ from transformers import (
     BitsAndBytesConfig,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from trl import SFTTrainer
+from trl import SFTTrainer, SFTConfig
 from datasets import Dataset
 
-# Paths
+# Paths (can be overridden by command line)
 SCRIPT_DIR = Path(__file__).parent
 PROJECT_DIR = SCRIPT_DIR.parent
-CONFIG_PATH = PROJECT_DIR / "configs" / "qlora_config.yaml"
-DATA_DIR = PROJECT_DIR / "data"
+DEFAULT_CONFIG_PATH = PROJECT_DIR / "configs" / "qlora_config.yaml"
+DEFAULT_DATA_DIR = PROJECT_DIR / "data"
+
+# Global config path (set by args)
+CONFIG_PATH = None
+DATA_PATH = None
 
 
 def load_config() -> Dict[str, Any]:
@@ -46,7 +51,7 @@ def load_config() -> Dict[str, Any]:
 
 def load_training_data() -> Dataset:
     """Load the combined training data."""
-    data_file = DATA_DIR / "all_training_data.jsonl"
+    data_file = Path(DATA_PATH)
     
     if not data_file.exists():
         raise FileNotFoundError(
@@ -84,14 +89,28 @@ def format_for_qwen(example: Dict, tokenizer) -> Dict:
 
 def main():
     """Main training pipeline."""
-    print("=" * 60)
-    print("Qwen 2.5 AJ 32B - QLoRA Fine-tuning (Standard)")
-    print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 60)
+    global CONFIG_PATH, DATA_PATH
     
-    # Load config
+    # Parse arguments
+    parser = argparse.ArgumentParser(description="QLoRA Fine-tuning")
+    parser.add_argument("--config", type=str, default=str(DEFAULT_CONFIG_PATH), help="Path to config YAML")
+    parser.add_argument("--data", type=str, default=str(DEFAULT_DATA_DIR / "all_training_data.jsonl"), help="Path to training data")
+    args = parser.parse_args()
+    
+    CONFIG_PATH = Path(args.config)
+    DATA_PATH = Path(args.data)
+    
+    # Load config first to get model name
     print("\n1. Loading configuration...")
     config = load_config()
+    model_name = config["model"]["base_model"]
+    
+    print("=" * 60)
+    print(f"Fine-tuning: {model_name.split('/')[-1]}")
+    print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 60)
+    print(f"Config: {CONFIG_PATH}")
+    print(f"Data: {DATA_PATH}")
     
     # 4-bit quantization config
     print("\n2. Setting up 4-bit quantization...")
@@ -169,7 +188,7 @@ def main():
     
     # Training arguments
     print("\n7. Configuring training...")
-    training_args = TrainingArguments(
+    training_args = SFTConfig(
         output_dir=str(output_dir),
         num_train_epochs=config["training"]["num_train_epochs"],
         per_device_train_batch_size=config["training"]["per_device_train_batch_size"],
@@ -194,16 +213,16 @@ def main():
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",
         greater_is_better=False,
+        dataset_text_field="text",
     )
     
     # Trainer
     trainer = SFTTrainer(
         model=model,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,  # trl 0.26+ uses processing_class instead of tokenizer
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         args=training_args,
-        max_seq_length=config["model"]["max_seq_length"],
     )
     
     # Train!

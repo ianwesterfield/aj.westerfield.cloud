@@ -1,11 +1,7 @@
 # Qwen 2.5 AJ 32B - Fine-tuned for AJ Agent Workloads
 # 
-# This is a template Modelfile. The GGUF path will be updated automatically after training and export.
-#
-# For now, you can use the base model to test:
-#   FROM qwen2.5:32b-instruct-q4_K_M
-
-FROM ./output/gguf/qwen2.5-aj-32b-q4_k_m.gguf
+# GGUF path - download from Vast.ai after merge+quantize
+FROM ./output/gguf/qwen2.5-32b-aj-q4_k_m.gguf
 
 # Model parameters optimized for agent tasks
 PARAMETER temperature 0.7

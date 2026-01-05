@@ -1,14 +1,14 @@
-# Mesosync: Knowledge-Centric AI Infrastructure
+# AJ: Knowledge-Centric AI Infrastructure
 
-> **Mesosync** is an intelligent platform that combines local AI agents, semantic memory, and dynamic reasoning to transform Open-WebUI into a knowledge-centric workspace assistant. Built with privacy, autonomy, and knowledge accumulation in mind.
+> **AJ** is an intelligent platform that combines local AI agents, semantic memory, and dynamic reasoning to transform Open-WebUI into a knowledge-centric workspace assistant. Built with privacy, autonomy, and knowledge accumulation in mind.
 
 ---
 
-## What is Mesosync?
+## What is AJ?
 
-Mesosync solves a critical problem with AI assistants: **they forget everything**. Each conversation starts from scratch with no understanding of your workspace, your patterns, or your history.
+AJ solves a critical problem with AI assistants: **they forget everything**. Each conversation starts from scratch with no understanding of your workspace, your patterns, or your history.
 
-Mesosync changes this by:
+AJ changes this by:
 
 1. **Planning** intelligently based on your workspace and history
 2. **Showing Progress** as it works through multi-step tasks
@@ -70,7 +70,7 @@ graph TB
 | **Memory API**       | Semantic knowledge storage & recall    | Qdrant vectors + embeddings | 8000  |
 | **Extractor API**    | Media processing (PDF, images, audio)  | LLaVA + Whisper             | 8002  |
 | **Qdrant**           | Vector database for semantic search    | Qdrant (in-memory)          | 6333  |
-| **Ollama**           | Local LLM inference                    | Ollama (nous-hermes2:34b)   | 11434 |
+| **Ollama**           | Local LLM inference                    | r1-distill-aj:32b-4k        | 11434 |
 
 ---
 
@@ -128,7 +128,7 @@ This is **agentic reasoning**: not just executing, but thinking, adapting, and l
 
 ### ⚡ **Workspace-Aware Reasoning**
 
-Mesosync maintains **external ground truth** about your workspace:
+AJ maintains **external ground truth** about your workspace:
 
 ```mermaid
 graph TB
@@ -139,17 +139,17 @@ graph TB
         A1 --> B1 --> C1
     end
 
-    subgraph mesosync ["Mesosync Approach"]
+    subgraph aj ["AJ Approach"]
         A2["User: What files?"]
         B2["Orchestrator: Scans filesystem"]
         C2["State: 47 files, 3 dirs"]
         D2["LLM: Based on ground truth"]
-        E2["✅ Accurate, current info"]
+        E2["✅ **Accurate**, current info"]
         A2 --> B2 --> C2 --> D2 --> E2
     end
 
     style traditional fill:#ffebee
-    style mesosync fill:#e8f5e9
+    style aj fill:#e8f5e9
     style C1 fill:#f44336,color:#fff
     style E2 fill:#4caf50,color:#fff
 ```
@@ -188,7 +188,7 @@ FunnelCloud agents extend beyond Docker containers:
 
 ```mermaid
 graph LR
-    M["Mesosync<br/>(Orchestrator)"]
+    M["AJ<br/>(Orchestrator)"]
     D["Docker<br/>(Local Tasks)"]
     W1["Windows<br/>Machine"]
     L1["Linux<br/>Workstation"]
@@ -303,9 +303,9 @@ Ollama:         http://localhost:11434
 
 ## Key Concepts
 
-### The "AJ" Persona
+### The "AJ" Name
 
-"AJ" is the user-facing name for Mesosync. It's an acronym that stands for:
+"AJ" stands for:
 
 - **A**gent
 - **J**ournalist (learns and reports)
@@ -418,7 +418,7 @@ filters/
 └── aj.filter.py         # Open-WebUI entry point (1364 lines)
 ```
 
-### Extending Mesosync
+### Extending AJ
 
 **Add a new tool:**
 
@@ -560,40 +560,38 @@ Invoke-RestMethod http://localhost:6333/collections
 
 This is a private research project. For research partnerships or questions, contact the team.
 
-### Philosophy
-
-We believe AI should:
-
-- **Plan before executing** (show the plan, get feedback)
-- **Show progress transparently** (you see each step as it happens)
-- **Adapt based on feedback** (real-time reasoning, not rigid execution)
-- **Stop and ask** when uncertain (don't guess, ask the human)
-- **Understand your workspace** (not hallucinate about it)
-- **Remember what it learns** (not start fresh each time)
-- **Execute locally** (under your control)
-- **Specialize** (small model for small job beats big model for everything)
-- **Reason transparently** (you see the thinking process, not just results)
-
 ---
 
 ## License
 
-[See LICENSE file]
+MIT License — use it, fork it, learn from it. Built with AI assistance.
 
 ---
 
 ## Training & Fine-Tuning
 
-Mesosync includes tooling for fine-tuning LLMs on workspace-specific knowledge:
+AJ includes **two custom fine-tuned models** trained on workspace-specific knowledge:
+
+### Available Models
+
+| Model               | Base                         | Purpose                       | Context      |
+| ------------------- | ---------------------------- | ----------------------------- | ------------ |
+| `r1-distill-aj:32b` | DeepSeek-R1-Distill-Qwen-32B | Reasoning with `<think>` tags | 2k/4k/8k/32k |
+| `qwen2.5-aj:32b`    | Qwen2.5-32B-Instruct         | Direct answers                | 2k/4k/8k/32k |
+
+**Default model**: `r1-distill-aj:32b-4k` (reasoning + balanced context)
+
+### Training Data
 
 - **3,790 training examples** across 38+ domains
-- **QLoRA fine-tuning** with 4-bit quantization
-- **Export to Ollama** for local inference
+- Docker, Kubernetes, Git, VS Code, PowerShell, Cloud/DevOps
+- QLoRA fine-tuning with 4-bit quantization
+- Trained on Vast.ai A100-SXM4-80GB
 
-See [training/qwen2.5-aj-32b/README.md](training/qwen2.5-aj-32b/README.md) for details.
+See [training/README.md](training/README.md) for details.
 
 ---
 
-**Mesosync**: Knowledge-centric AI infrastructure for the workspace.
+**AJ**: Knowledge-centric AI infrastructure for the workspace.
 
 _Last Updated: January 4, 2026_
