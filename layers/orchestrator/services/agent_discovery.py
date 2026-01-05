@@ -141,7 +141,7 @@ class AgentDiscoveryService:
             sock.setblocking(False)
             sock.settimeout(DISCOVERY_TIMEOUT)
             
-            # Resolve hostname if needed
+            # Resolve hostname if needed for sending
             try:
                 resolved_ip = socket.gethostbyname(host_address)
                 logger.debug("Resolved %s to %s", host_address, resolved_ip)
@@ -161,8 +161,11 @@ class AgentDiscoveryService:
                 )
                 
                 response = json.loads(data.decode("utf-8"))
-                agent = AgentCapabilities.from_dict(response, ip_address=resolved_ip)
-                logger.info("Direct discovery found agent: %s at %s", agent.agent_id, resolved_ip)
+                # IMPORTANT: Use the original host_address (e.g., host.docker.internal) 
+                # for gRPC connection, NOT the resolved IP. Docker's DNS handles routing.
+                agent = AgentCapabilities.from_dict(response, ip_address=host_address)
+                logger.info("Direct discovery found agent: %s at %s (resolved from %s)", 
+                           agent.agent_id, host_address, resolved_ip)
                 return agent
                 
             except asyncio.TimeoutError:

@@ -163,6 +163,7 @@ class RunTaskRequest(BaseModel):
     memory_context: Optional[List[Dict[str, Any]]] = Field(None, description="User context from memory")
     max_steps: int = Field(default=100, description="Maximum steps before forced completion")
     preserve_state: bool = Field(default=False, description="If True, don't reset workspace state (for follow-up questions)")
+    model: Optional[str] = Field(None, description="Ollama model to use (from Open-WebUI selection)")
 
 
 class TaskEvent(BaseModel):

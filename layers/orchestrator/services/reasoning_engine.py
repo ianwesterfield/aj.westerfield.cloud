@@ -26,7 +26,7 @@ logger = logging.getLogger("orchestrator.reasoning")
 
 # Ollama configuration
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "r1-distill-aj:32b-4k")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5-aj:32b-4k")
 
 
 class ThinkingStreamParser:
@@ -166,6 +166,11 @@ class ReasoningEngine:
             "llama3.2:3b": 2.0,
             "llama3.2": 2.0,
             "qwen2.5-aj:32b": 20.0,  # Fine-tuned Qwen2.5-32B - primary model
+            "qwen2.5-aj:32b-4k": 20.0,
+            "qwen2.5-aj:32b-8k": 20.0,
+            "r1-distill-aj:32b": 20.0,  # Fine-tuned R1-Distill - reasoning model
+            "r1-distill-aj:32b-4k": 20.0,
+            "r1-distill-aj:32b-8k": 20.0,
             "nous-hermes2:34b": 22.0,
             "llama3.1:8b": 4.7,
             "llama3.1": 4.7,
@@ -182,6 +187,18 @@ class ReasoningEngine:
         # Estimate load speed - very conservative (0.2 GB/sec accounts for disk I/O)
         self._load_speed_gb_per_sec = 0.2
         self._model_preloaded = False
+    
+    def set_model(self, model: str) -> None:
+        """
+        Set the model to use for reasoning.
+        
+        This allows dynamic model selection based on Open-WebUI user choice.
+        If the model changes, reset the preloaded flag to force a warmup.
+        """
+        if model and model != self.model:
+            logger.info(f"Switching model: {self.model} -> {model}")
+            self.model = model
+            self._model_preloaded = False  # Force warmup with new model
     
     async def warmup_model(self) -> bool:
         """
@@ -245,50 +262,23 @@ class ReasoningEngine:
             - confidence: float 0-1
             - reason: brief explanation
         """
-        # Fast heuristic checks first (avoid LLM call for obvious cases)
-        task_lower = task.lower().strip()
-        
-        # Strong task indicators - file paths, remote operations, actions
-        task_patterns = [
-            r'[A-Z]:\\',                    # Windows paths like C:\, S:\
-            r'/[a-z]+/',                    # Unix paths like /home/
-            r'\.\w{2,4}$|\.\w{2,4}\b',      # File extensions (.txt, .py, .json, etc.)
-            r'\b(create|read|edit|write|delete|modify|update|add|remove|change|open)\b.*\b(file|folder|dir)',
-            r'\b(scan|index|list)\b.*\b(files|folders|directories|drive)',
-            r'\b(run|execute|start|stop)\b',
-            r'\bworkspace\b',
-            r'\bagent\b.*\b(execute|run|command)',
-            r'\bremote\b',
-        ]
-        
-        for pattern in task_patterns:
-            if re.search(pattern, task_lower):
-                logger.info(f"Intent classified as TASK by pattern: {pattern}")
-                return {"intent": "task", "confidence": 0.9, "reason": f"Matched task pattern: {pattern}"}
-        
-        # Strong conversational indicators
-        conversational_patterns = [
-            r'^(what|who|why|how|when|where|which)\s+(is|are|was|were|does|do|did|can|could|would|should)\b',
-            r'^(explain|describe|tell me about|what\'s)\b',
-            r'^(can you|could you)\s+(explain|describe|tell)',
-            r'\b(mean|definition|concept|purpose|role|work)\b',
-            r'^(hi|hello|hey|thanks|thank you)\b',
-        ]
-        
-        for pattern in conversational_patterns:
-            if re.search(pattern, task_lower):
-                logger.info(f"Intent classified as CONVERSATIONAL by pattern: {pattern}")
-                return {"intent": "conversational", "confidence": 0.85, "reason": f"Matched conversational pattern: {pattern}"}
-        
-        # Ambiguous - use LLM for classification (fast, low-token call)
+        # Always use LLM for intent classification - pattern matching is too brittle
         try:
             url = f"{self.base_url}/api/chat"
             payload = {
                 "model": self.model,
                 "messages": [
                     {"role": "system", "content": """Classify user intent as either:
-- "task": Requires file operations, code execution, workspace changes, or remote machine access
-- "conversational": Questions about concepts, explanations, chit-chat, or asking how things work
+- "task": Requires file operations, code execution, workspace changes, remote machine access, finding/listing files, checking disk space, running commands on agents
+- "conversational": Questions about concepts, explanations, definitions, chit-chat, asking how things work in general
+
+Examples:
+- "What are the largest files on my machine?" → task (requires scanning files)
+- "What is a file system?" → conversational (conceptual question)
+- "List files in C:\\Code" → task (requires file listing)
+- "How does FunnelCloud work?" → conversational (explanation)
+- "Find agents" → task (requires discovery)
+- "What can you do?" → conversational (capabilities question)
 
 Respond with ONLY one word: task OR conversational"""},
                     {"role": "user", "content": task},
@@ -301,13 +291,15 @@ Respond with ONLY one word: task OR conversational"""},
             response.raise_for_status()
             
             content = response.json().get("message", {}).get("content", "").strip().lower()
+            logger.info(f"Intent LLM response: {content}")
             
             if "task" in content:
-                return {"intent": "task", "confidence": 0.7, "reason": "LLM classification"}
+                return {"intent": "task", "confidence": 0.85, "reason": "LLM classification"}
             elif "conversational" in content:
-                return {"intent": "conversational", "confidence": 0.7, "reason": "LLM classification"}
+                return {"intent": "conversational", "confidence": 0.85, "reason": "LLM classification"}
             else:
                 # Default to task for safety (won't miss important operations)
+                logger.warning(f"Ambiguous intent response: {content}, defaulting to task")
                 return {"intent": "task", "confidence": 0.5, "reason": "Ambiguous, defaulting to task"}
                 
         except Exception as e:
@@ -420,20 +412,23 @@ Now create a plan for:
             payload = {
                 "model": self.model,
                 "messages": [
-                    {"role": "system", "content": "You are a task planner. Output ONLY a numbered list (1. 2. 3.) with 2-5 steps. No other text."},
+                    {"role": "system", "content": "You are a task planner. Output ONLY a numbered list (1. 2. 3.) with 2-5 steps. NO JSON. NO explanations. Just numbered steps."},
                     {"role": "user", "content": planning_prompt + task},
                 ],
                 "stream": False,
-                "options": {"temperature": 0.3},  # Low temp for consistent planning
+                "options": {"temperature": 0.3, "num_predict": 256},  # Low temp for consistent planning, limited output
             }
             
             response = await self.client.post(url, json=payload, timeout=30.0)
             response.raise_for_status()
             
             content = response.json().get("message", {}).get("content", "")
+            logger.debug(f"Task plan raw response: {content[:500]}")
             
             # Parse numbered list
             steps = []
+            
+            # First try: numbered list format (1. Step or - Step)
             for line in content.split("\n"):
                 line = line.strip()
                 # Match lines starting with number + period/paren
@@ -443,6 +438,28 @@ Now create a plan for:
                     cleaned = re.sub(r'^[-*]\s*', '', cleaned)
                     if cleaned:
                         steps.append(cleaned)
+            
+            # Second try: JSON format (fine-tuned model may output JSON)
+            if not steps:
+                try:
+                    # Try to parse as JSON - model might output structured format
+                    json_data = json.loads(content)
+                    if isinstance(json_data, dict):
+                        # Check for steps/plan array
+                        if "steps" in json_data and isinstance(json_data["steps"], list):
+                            steps = [str(s) for s in json_data["steps"]]
+                        elif "plan" in json_data and isinstance(json_data["plan"], list):
+                            steps = [str(s) for s in json_data["plan"]]
+                        # Check for action/response format (single-step)
+                        elif "action" in json_data:
+                            action = json_data.get("action", "")
+                            if action and action != "casual":
+                                steps = [f"{action}: {json_data.get('response', 'Execute task')[:100]}"]
+                    elif isinstance(json_data, list):
+                        # Direct array of steps
+                        steps = [str(s) for s in json_data if s]
+                except (json.JSONDecodeError, ValueError):
+                    pass  # Not JSON, stick with empty steps
             
             logger.info(f"Generated task plan with {len(steps)} steps: {steps}")
             return steps if steps else ["Execute task"]

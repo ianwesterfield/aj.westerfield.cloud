@@ -210,6 +210,16 @@ graph LR
 - **mTLS + fingerprint pinning** (cryptographic identity)
 - **Lazy re-discovery** on agent failure
 - **Try-then-elevate** permission model
+- **One-click deployment** to Windows machines
+
+**Deploy an agent:**
+
+```powershell
+# From the target machine (run as Administrator)
+.\Deploy-FunnelCloudAgent.ps1 -BuildServer "your-build-server"
+```
+
+See [FunnelCloud/README.md](FunnelCloud/README.md) for full setup guide.
 
 ---
 
@@ -414,6 +424,16 @@ layers/
 ├── pragmatics/          # Intent classification
 └── extractor/           # Media processing
 
+FunnelCloud/
+├── certs/               # Certificate Authority + agent certs
+├── FunnelCloud.Agent/   # .NET 8 gRPC agent service
+├── FunnelCloud.Shared/  # Shared contracts
+└── scripts/             # Deployment automation
+    ├── New-CACertificate.ps1
+    ├── New-AgentCertificate.ps1
+    ├── Setup-FunnelCloudClient.ps1
+    └── Deploy-FunnelCloudAgent.ps1
+
 filters/
 └── aj.filter.py         # Open-WebUI entry point (1364 lines)
 ```
@@ -483,14 +503,18 @@ docker compose up -d --build pragmatics_api
 - [x] Multi-step task planning
 - [x] Workspace state tracking (ground truth)
 
-### Phase 2: FunnelCloud Agents 🔄 (In Progress)
+### Phase 2: FunnelCloud Agents ✅
 
 - [x] Agent discovery protocol (UDP broadcast)
 - [x] mTLS credential management (CA + agent certs)
 - [x] Certificate pinning (SHA256 fingerprint)
 - [x] gRPC service definition (task_service.proto)
+- [x] Windows service installation (NSSM)
+- [x] One-click deployment scripts
 - [ ] Multi-agent orchestration (parallel execution)
 - [ ] Capability advertisement (agent skills registry)
+
+See [FunnelCloud/README.md](FunnelCloud/README.md) for detailed deployment instructions.
 
 ### Phase 3: Model Fine-Tuning 🔄 (In Progress)
 
@@ -553,6 +577,44 @@ Invoke-RestMethod http://localhost:6333/health
 # View collections
 Invoke-RestMethod http://localhost:6333/collections
 ```
+
+### FunnelCloud agent not discovered?
+
+```powershell
+# Check agent service is running
+Get-Service FunnelCloudAgent
+
+# View agent logs
+Get-Content "C:\FunnelCloud\Agent\logs\stdout.log" -Tail 50
+
+# Test UDP discovery manually (from orchestrator container)
+docker exec -it orchestrator_api python -c "
+import socket
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+sock.settimeout(5)
+sock.sendto(b'FUNNEL_DISCOVER', ('255.255.255.255', 41234))
+print(sock.recvfrom(1024))
+"
+
+# Check firewall allows UDP 41234 and TCP 41235
+netsh advfirewall firewall show rule name=all | findstr "41234 41235"
+```
+
+### FunnelCloud deployment fails?
+
+```powershell
+# Test PowerShell Remoting to build server
+Test-WSMan -ComputerName BUILD_SERVER_NAME
+
+# Check TrustedHosts configuration
+Get-Item WSMan:\localhost\Client\TrustedHosts
+
+# Verify certificates exist on build server
+Test-Path "C:\Code\aj.westerfield.cloud\FunnelCloud\certs\ca\ca.crt"
+```
+
+See [FunnelCloud/README.md](FunnelCloud/README.md) for detailed troubleshooting.
 
 ---
 

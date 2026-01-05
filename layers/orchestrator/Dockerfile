@@ -19,8 +19,8 @@ COPY shared /app/shared
 # Copy application code
 COPY orchestrator .
 
-# Set Ollama model - Nous-Hermes 2 34B provides Claude-like reasoning with better efficiency
-ENV OLLAMA_MODEL=qwen2.5-aj:32b
+# Default model fallback (overridden by Open-WebUI selection)
+ENV OLLAMA_MODEL=qwen2.5-aj:32b-4k
 
 # Expose port
 EXPOSE 8004

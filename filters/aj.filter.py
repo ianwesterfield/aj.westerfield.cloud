@@ -395,12 +395,69 @@ def _build_task_description(messages: List[dict]) -> str:
     return user_text
 
 
+def _is_json_plan_content(content: str) -> bool:
+    """
+    Detect if content is raw JSON planning output that should be formatted.
+    
+    Returns True for:
+    - JSON plan arrays with "step" and "action" fields
+    - JSON objects with "requires_confirmation"
+    - "Follow up" suggestion blocks
+    """
+    if not content:
+        return False
+    
+    # Check for plan step patterns
+    if '"step":' in content and '"action":' in content:
+        return True
+    
+    # Check for confirmation patterns
+    if '"requires_confirmation":' in content:
+        return True
+    
+    # Check for follow-up blocks
+    if content.strip().startswith('Follow up'):
+        return True
+    
+    return False
+
+
+def _format_json_plan_as_blockquote(content: str) -> str:
+    """
+    Convert raw JSON plan output into readable blockquote format.
+    
+    Input: {"step": 1, "action": "..."}, {"step": 2, "action": "..."}
+    Output: > 1. First action
+            > 2. Second action
+    """
+    import re
+    
+    # Try to extract steps from JSON
+    steps = []
+    
+    # Pattern to match {"step": N, "action": "text"}
+    step_pattern = r'\{\s*"step"\s*:\s*(\d+)\s*,\s*"action"\s*:\s*"([^"]+)"\s*\}'
+    matches = re.findall(step_pattern, content)
+    
+    if matches:
+        for step_num, action in matches:
+            steps.append(f"> {step_num}. {action}")
+    
+    if steps:
+        # Return formatted blockquote
+        return "\n".join(steps) + "\n"
+    
+    # If no steps found, return empty (will be filtered)
+    return ""
+
+
 async def _orchestrate_task(
     user_id: str,
     messages: List[dict],
     workspace_root: Optional[str],
     __event_emitter__,
     memory_context: Optional[List[dict]] = None,
+    model: Optional[str] = None,
 ) -> Tuple[Optional[str], str]:
     """
     Handle task intents via orchestrator streaming endpoint.
@@ -440,9 +497,11 @@ async def _orchestrate_task(
                     "memory_context": memory_context,
                     "max_steps": 100,
                     "preserve_state": True,  # Always preserve state for multi-turn conversations
+                    "model": model,  # Pass selected model from Open-WebUI
                 },
             ) as response:
                 final_context = None
+                plan_shown = False  # Track if we already showed the plan
                 
                 async for line in response.aiter_lines():
                     if not line.startswith("data: "):
@@ -463,10 +522,45 @@ async def _orchestrate_task(
                             create_status_dict(status, LogCategory.FILTER, LogLevel.RUNNING, done=done)
                         )
                     
+                    elif event_type == "plan":
+                        # Stream formatted plan as blockquote (only once)
+                        content = event.get("content", "")
+                        if content and not plan_shown:
+                            # Content already has "📋 Task Plan:" header from orchestrator
+                            # Just wrap in blockquote without adding another header
+                            lines = [f"> {line}" for line in content.split("\n") if line.strip()]
+                            plan_block = "\n".join(lines) + "\n\n"
+                            streamed_content += plan_block
+                            await __event_emitter__({
+                                "type": "message",
+                                "data": {"content": plan_block}
+                            })
+                            plan_shown = True
+                    
                     elif event_type == "thinking":
                         # Stream thinking content to the message AND accumulate
                         content = event.get("content", "")
                         if content:
+                            # Skip if this is the plan content (already shown via plan event)
+                            if plan_shown and ("Task Plan" in content or "📋" in content):
+                                continue
+                            
+                            # Check for JSON plan output - format it nicely instead of raw JSON
+                            if _is_json_plan_content(content):
+                                formatted = _format_json_plan_as_blockquote(content)
+                                if formatted:
+                                    streamed_content += formatted
+                                    await __event_emitter__({
+                                        "type": "message",
+                                        "data": {"content": formatted}
+                                    })
+                                # Skip raw JSON that couldn't be formatted
+                                continue
+                            
+                            # Skip orphaned blockquote prefixes from orchestrator
+                            if content.strip() in ("> 💭", "> 💭 ", "💭"):
+                                continue
+                            
                             streamed_content += content
                             await __event_emitter__({
                                 "type": "message",
@@ -1204,6 +1298,7 @@ class Filter:
                         self.user_valves.workspace_root if self.user_valves.workspace_root else None,
                         __event_emitter__,
                         memory_context=context,  # Pass user context (name, preferences)
+                        model=model,  # Pass selected model from Open-WebUI
                     )
                     # Store streamed content to prepend to LLM response in outlet
                     self._streamed_content = streamed
@@ -1273,6 +1368,7 @@ class Filter:
         Post-response hook. Formats assistant responses for consistency.
         
         Ensures:
+        - JSON structured responses are extracted to just the "response" field
         - Streamed thinking/results are preserved before LLM response
         - File/folder names are in `backticks`
         - Code references are in `backticks`
@@ -1282,15 +1378,21 @@ class Filter:
         if not messages:
             return body
         
-        # Find last assistant message and prepend streamed content
+        # Find last assistant message and process it
         for i in range(len(messages) - 1, -1, -1):
             if messages[i].get("role") == "assistant":
                 content = messages[i].get("content", "")
                 if isinstance(content, str):
+                    # FIRST: Extract response from JSON structured output
+                    content = self._extract_json_response(content)
+                    
                     # Prepend any streamed thinking/results from orchestrator
                     if self._streamed_content:
-                        # Add separator between streamed content and LLM response
-                        content = self._streamed_content + "\n\n---\n\n" + content
+                        # Clean streamed content - remove raw JSON planning output
+                        cleaned_streamed = self._clean_streamed_content(self._streamed_content)
+                        if cleaned_streamed.strip():
+                            # Add separator between streamed content and LLM response
+                            content = cleaned_streamed + "\n\n---\n\n" + content
                         # Clear for next request
                         self._streamed_content = ""
                     messages[i]["content"] = self._format_response(content)
@@ -1298,6 +1400,113 @@ class Filter:
         
         body["messages"] = messages
         return body
+    
+    def _clean_streamed_content(self, text: str) -> str:
+        """
+        Clean streamed content from orchestrator, formatting raw JSON plans.
+        
+        Keeps:
+        - Tool output in code blocks
+        - Natural language thinking
+        - Formatted plans (converted from JSON)
+        
+        Converts:
+        - Raw JSON plan objects → numbered blockquote steps
+        
+        Removes:
+        - Follow-up suggestion blocks
+        - Orphaned JSON fragments
+        """
+        import re
+        
+        if not text:
+            return text
+        
+        # First, try to extract and format any JSON plans
+        # Pattern to match {"step": N, "action": "text"}
+        step_pattern = r'\{\s*"step"\s*:\s*(\d+)\s*,\s*"action"\s*:\s*"([^"]+)"\s*\}'
+        matches = re.findall(step_pattern, text)
+        
+        if matches:
+            # Format matched steps into blockquotes
+            formatted_steps = []
+            for step_num, action in matches:
+                formatted_steps.append(f"> {step_num}. {action}")
+            
+            # Remove the raw JSON and add formatted version
+            text = re.sub(r'\{\s*"step"\s*:\s*\d+\s*,\s*"action"\s*:\s*"[^"]*"\s*\}[,\s]*', '', text)
+            
+            # If we had steps, prepend the formatted plan
+            if formatted_steps and not any(f"> {s[0]}." in text for s in matches):
+                text = "> 💭 **Plan:**\n" + "\n".join(formatted_steps) + "\n\n" + text
+        
+        # Remove plan arrays (already extracted content above)
+        plan_array_pattern = r'\[\s*\{\s*"step"\s*:.*?\}\s*\]'
+        text = re.sub(plan_array_pattern, '', text, flags=re.DOTALL)
+        
+        # Remove "requires_confirmation" JSON fragments
+        text = re.sub(r'"requires_confirmation"\s*:\s*(true|false)\s*\}?', '', text)
+        
+        # Remove "Follow up" sections with suggestions
+        text = re.sub(r'Follow up\s*\n.*?(?=\n\n|\Z)', '', text, flags=re.DOTALL)
+        
+        # Remove orphaned JSON-like fragments
+        text = re.sub(r'\{\s*\}', '', text)  # Empty braces
+        text = re.sub(r'\[\s*\]', '', text)  # Empty brackets
+        text = re.sub(r'^\s*\],?\s*$', '', text, flags=re.MULTILINE)  # Orphaned array close
+        text = re.sub(r'^\s*\},?\s*$', '', text, flags=re.MULTILINE)  # Orphaned object close
+        text = re.sub(r'"action"\s*:\s*"[^"]*"', '', text)  # Orphaned action fields
+        
+        # Clean up excessive whitespace
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        text = text.strip()
+        
+        return text
+    
+    def _extract_json_response(self, text: str) -> str:
+        """
+        Extract the 'response' field from JSON structured output.
+        
+        If the LLM outputs structured JSON like:
+        {"action": "casual", "response": "Hi there!", "guardrail_context": "..."}
+        
+        This extracts just the "response" field value.
+        """
+        import re
+        
+        # Skip if empty or doesn't look like JSON
+        if not text or not text.strip().startswith('{'):
+            return text
+        
+        try:
+            # Try to parse as JSON
+            data = json.loads(text.strip())
+            
+            # Check if it has a response field
+            if isinstance(data, dict) and "response" in data:
+                response = data["response"]
+                
+                # Optionally show guardrail context as a status-like prefix
+                # (commented out for now - just return the response)
+                # guardrail = data.get("guardrail_context", "")
+                
+                return response
+            
+            # Not our structured format, return as-is
+            return text
+            
+        except json.JSONDecodeError:
+            # Not valid JSON, might be partial or mixed content
+            # Try to extract response field with regex as fallback
+            match = re.search(r'"response"\s*:\s*"((?:[^"\\]|\\.)*)"\s*[,}]', text)
+            if match:
+                # Unescape the JSON string
+                try:
+                    return json.loads('"' + match.group(1) + '"')
+                except:
+                    return match.group(1)
+            
+            return text
     
     def _format_response(self, text: str) -> str:
         """

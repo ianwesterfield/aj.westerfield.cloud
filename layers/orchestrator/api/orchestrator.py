@@ -670,6 +670,11 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
     reasoning_engine = _get_reasoning_engine()
     workspace_state = get_workspace_state()
     
+    # Set model from request if provided (dynamic model selection from Open-WebUI)
+    if request.model:
+        reasoning_engine.set_model(request.model)
+        logger.info(f"Using model from request: {request.model}")
+    
     # Determine if we should preserve state from previous task
     # Preserve if: explicit flag OR workspace already has files indexed
     # (we've already scanned something in a recent request)
