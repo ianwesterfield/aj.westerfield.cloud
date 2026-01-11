@@ -1,0 +1,56 @@
+# DPO Training Configuration
+# Run AFTER SFT phase completes
+
+base_model: "./checkpoints/aj-agentic-32b-sft"  # From SFT phase
+output_dir: "./checkpoints/aj-agentic-32b-dpo"
+
+# Training approach
+training_type: "dpo"
+precision: "bf16"
+
+# DPO specific
+dpo:
+  beta: 0.1                  # KL penalty coefficient
+  loss_type: "sigmoid"       # sigmoid or hinge
+  label_smoothing: 0.0
+  reference_free: false      # Use reference model
+
+# Data configuration
+data:
+  preferences:
+    path: "data/preferences/"
+    format: "preference_pairs"  # prompt, chosen, rejected
+
+# Training hyperparameters  
+training:
+  epochs: 1                  # DPO typically needs fewer epochs
+  batch_size: 64
+  micro_batch_size: 1
+  gradient_accumulation: 8
+  
+  learning_rate: 5.0e-7      # Lower LR for DPO
+  lr_scheduler: "cosine"
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  
+  max_seq_length: 4096
+  max_prompt_length: 1024
+  
+  gradient_checkpointing: true
+  flash_attention: true
+  fsdp: true
+
+# Evaluation
+eval:
+  eval_steps: 100
+  metrics:
+    - "loss"
+    - "chosen_rewards"
+    - "rejected_rewards"
+    - "reward_margin"
+
+# Hardware expectations
+hardware:
+  expected_gpus: 8
+  expected_vram_per_gpu: 80
+  estimated_time_hours: 24   # ~1 day

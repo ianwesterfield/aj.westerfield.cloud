@@ -16,23 +16,31 @@ Each model has context window variants: `-2k`, `-4k`, `-8k`, and default (32k).
 ## Overview
 
 - **Training Method**: QLoRA with 4-bit quantization (~537M trainable params, 1.6%)
-- **Total Examples**: 3,790 across 38+ domains
+- **Total Examples**: 5,205 across 43 domains
 - **Hardware**: Vast.ai A100-SXM4-80GB (recommended) or RTX 4090 (slower)
 - **Training Time**: ~4 hours on A100, ~7 days on RTX 4090
+- **Next Phase**: Agentic training with trajectory format (see [agentic/README.md](agentic/README.md))
 
 ## Directory Structure
 
 ```
 training/
 ├── data/                    # Training datasets (45 JSONL files)
-│   ├── all_training_data.jsonl    # Combined dataset (3,790 examples)
+│   ├── all_training_data.jsonl    # Combined dataset (5,205 examples)
 │   ├── dataset_stats.json         # Statistics by domain
 │   └── [domain].jsonl             # Individual domain files
 ├── scripts/                 # Training & generation scripts
 │   ├── generate_all.py            # Master generator (runs all)
-│   ├── generate_*.py              # 38+ domain generators
+│   ├── generate_*.py              # 43 domain generators
+│   ├── bulk_expand.py             # Expand domains to target count
 │   ├── train_qlora.py             # QLoRA training (PEFT/TRL)
 │   └── merge_and_export.py        # Merge LoRA + export
+├── agentic/                 # Agentic training (trajectory format)
+│   ├── schemas/                   # JSON schemas for trajectories
+│   ├── generators/                # Trajectory & preference generators
+│   ├── converters/                # Convert existing data
+│   ├── configs/                   # SFT + DPO training configs
+│   └── tasks/                     # Task prompts for generation
 ├── configs/                 # Training configurations
 │   └── qlora_config.yaml
 ├── checkpoints/             # Training checkpoints (auto-saved)
@@ -41,39 +49,42 @@ training/
 
 **Note**: GGUF conversion requires llama.cpp (build on training server or use pre-built binaries).
 
-## Training Data Domains (38 Generators, 3,790 Examples)
+## Training Data Domains (43 Generators, 5,205 Examples)
 
 | Domain              | Examples | Description                                |
 | ------------------- | -------- | ------------------------------------------ |
 | Git Version Control | 302      | Git operations, workflows, troubleshooting |
+| Windows Admin       | 275      | PowerShell, system admin, WSL              |
 | VS Code IDE         | 242      | Editor workflows, extensions, settings     |
-| Windows Admin       | 225      | PowerShell, system admin, WSL              |
 | Cloud/DevOps        | 196      | AWS, Azure, GCP, Terraform                 |
 | Linux Admin         | 179      | System administration, services            |
 | Python Development  | 168      | Libraries, debugging, best practices       |
+| Angular             | 151      | Components, services, RxJS                 |
 | Docker              | 139      | Containers, compose, orchestration         |
 | Database/SQL        | 131      | PostgreSQL, MySQL, query optimization      |
 | Networking          | 129      | TCP/IP, DNS, troubleshooting               |
 | Node.js             | 127      | Express, npm, async patterns               |
 | Security            | 110      | Authentication, encryption, hardening      |
 | AI/ML/LLM           | 107      | Model training, inference, RAG             |
-| Angular             | 101      | Components, services, RxJS                 |
-| Multistep Workflows | 99       | Complex task orchestration                 |
-| TypeScript          | 97       | Types, generics, patterns                  |
-| React               | 96       | Hooks, state, components                   |
-| Firewalla/Storage   | 94       | Network security appliance                 |
-| .NET/C#             | 92       | ASP.NET, Entity Framework                  |
-| API Development     | 89       | REST, GraphQL, OpenAPI                     |
-| Memory/Qdrant       | 78       | Vector storage, semantic search            |
-| And 18 more...      | ~600     | See `data/dataset_stats.json`              |
+| Firewalla/Storage   | 100      | Network security appliance                 |
+| Multistep Workflows | 100      | Complex task orchestration                 |
+| TypeScript          | 100      | Types, generics, patterns                  |
+| .NET/C#             | 100      | ASP.NET, Entity Framework                  |
+| API Development     | 100      | REST, GraphQL, OpenAPI                     |
+| And 25 more...      | ~2,500   | See `data/dataset_stats.json`              |
+
+All domains now have 100+ examples for balanced training coverage.
 
 ## Quick Start
 
 ### Generate Training Data
 
 ```bash
-# Generate all training data (runs 38+ generators)
+# Generate all training data (runs 43 generators)
 python scripts/generate_all.py
+
+# Expand all domains to 100+ examples
+python scripts/bulk_expand.py
 
 # Or run individual generators
 python scripts/generate_python_data.py

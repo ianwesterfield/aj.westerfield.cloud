@@ -20,14 +20,26 @@ public static class TrustConfig
   public const string DefaultCertPassword = "funnelcloud";
 
   /// <summary>
-  /// UDP port for agent discovery broadcasts.
+  /// UDP port for agent discovery.
   /// </summary>
-  public const int DiscoveryPort = 41234;
+  public const int DiscoveryPort = 41420;
+
+  /// <summary>
+  /// Multicast group address for discovery.
+  /// 239.255.77.77 is in the organization-local scope (239.0.0.0/8).
+  /// Can be routed across VLANs with proper IGMP snooping/PIM configuration.
+  /// </summary>
+  public const string MulticastGroup = "239.255.77.77";
 
   /// <summary>
   /// gRPC port for task execution (mTLS).
   /// </summary>
   public const int GrpcPort = 41235;
+
+  /// <summary>
+  /// HTTP API port for health checks and peer discovery proxy.
+  /// </summary>
+  public const int HttpApiPort = 41421;
 
   /// <summary>
   /// Magic string for discovery protocol identification.

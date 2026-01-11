@@ -33,7 +33,6 @@ GENERATORS = [
     "generate_dotnet_data.py",
     "generate_nodejs_data.py",
     "generate_angular_data.py",
-    "generate_react_data.py",
     "generate_networking_data.py",
     "generate_storage_data.py",
     "generate_memory_data.py",
@@ -44,6 +43,7 @@ GENERATORS = [
     "generate_web_data.py",
     "generate_programming_data.py",
     "generate_ubiquiti_data.py",
+    "generate_firewalla_data.py",  # Firewalla Gold Plus network security
     "generate_mesosync_data.py",  # Workspace-specific knowledge
     "generate_qdrant_data.py",  # Vector database knowledge
     "generate_network_integration_data.py",  # Firewalla + UniFi cross-domain

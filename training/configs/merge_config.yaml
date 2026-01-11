@@ -1,0 +1,24 @@
+# Adapter Merge Configuration for AJ
+# Combines agentic (tool/reasoning) and conversational (personality/chat) adapters
+
+base_model: "Qwen/Qwen2.5-32B-Instruct"
+
+adapters:
+  # Agentic adapter - tool selection, JSON reasoning, OODA loops
+  - path: "./checkpoints"       # From qlora_config.yaml training
+    weight: 1.0                 # Full strength - this is core functionality
+  
+  # Conversational adapter - personality, grounding, natural dialogue
+  - path: "./checkpoints-chat"  # From qlora_config_chat.yaml training
+    weight: 0.7                 # Softer influence - supplement, don't override
+
+# Merge strategy
+method: "linear"    # "linear" or "ties"
+# ties_density: 0.5  # Only used if method=ties
+
+# Output
+output: "./output/qwen2.5-aj-merged"
+
+# Post-merge conversion
+convert_to_gguf: true
+gguf_quantization: "Q4_K_M"  # Options: Q4_0, Q4_K_M, Q5_K_M, Q8_0, f16

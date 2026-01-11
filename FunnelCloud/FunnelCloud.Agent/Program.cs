@@ -27,6 +27,12 @@ public class Program
 
     var builder = Host.CreateApplicationBuilder(args);
 
+    // Enable Windows Service support
+    builder.Services.AddWindowsService(options =>
+    {
+      options.ServiceName = "FunnelCloud Agent";
+    });
+
     // Configure logging
     builder.Logging.AddConsole();
     builder.Logging.SetMinimumLevel(LogLevel.Debug);
@@ -41,11 +47,25 @@ public class Program
             sp.GetRequiredService<ILogger<TaskExecutor>>(),
             capabilities.AgentId));
 
-    // Add discovery listener as hosted service
+    // Peer discovery service (used by HTTP API to discover other agents)
+    builder.Services.AddSingleton<PeerDiscoveryService>(sp =>
+        new PeerDiscoveryService(
+            sp.GetRequiredService<ILogger<PeerDiscoveryService>>(),
+            sp.GetRequiredService<AgentCapabilities>()));
+
+    // Add discovery listener as hosted service (responds to multicast)
     builder.Services.AddHostedService<DiscoveryListener>(sp =>
         new DiscoveryListener(
             sp.GetRequiredService<ILogger<DiscoveryListener>>(),
-            sp.GetRequiredService<AgentCapabilities>()));
+            sp.GetRequiredService<AgentCapabilities>(),
+            sp.GetRequiredService<PeerDiscoveryService>()));
+
+    // Add HTTP API server (health checks, peer discovery proxy)
+    builder.Services.AddHostedService<HttpApiHost>(sp =>
+        new HttpApiHost(
+            sp.GetRequiredService<ILogger<HttpApiHost>>(),
+            sp.GetRequiredService<AgentCapabilities>(),
+            sp.GetRequiredService<PeerDiscoveryService>()));
 
     // Add gRPC server for task execution (mTLS secured)
     builder.Services.AddHostedService<GrpcServerHost>(sp =>
@@ -62,8 +82,8 @@ public class Program
     logger.LogInformation("Platform: {Platform}", capabilities.Platform);
     logger.LogInformation("Capabilities: {Capabilities}", string.Join(", ", capabilities.Capabilities));
     logger.LogInformation("Workspace Roots: {WorkspaceRoots}", string.Join(", ", capabilities.WorkspaceRoots));
-    logger.LogInformation("Discovery Port: {DiscoveryPort}, gRPC Port: {GrpcPort}",
-        TrustConfig.DiscoveryPort, TrustConfig.GrpcPort);
+    logger.LogInformation("Discovery Port: {DiscoveryPort}, gRPC Port: {GrpcPort}, HTTP API Port: {HttpApiPort}",
+        TrustConfig.DiscoveryPort, TrustConfig.GrpcPort, TrustConfig.HttpApiPort);
 
     await host.RunAsync();
   }

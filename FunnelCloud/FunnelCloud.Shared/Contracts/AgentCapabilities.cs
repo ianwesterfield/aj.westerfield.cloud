@@ -41,7 +41,7 @@ public record AgentCapabilities
   /// <summary>
   /// UDP port the agent is listening on for discovery.
   /// </summary>
-  public int DiscoveryPort { get; init; } = 41234;
+  public int DiscoveryPort { get; init; } = 41420;
 
   /// <summary>
   /// gRPC port for task execution after mTLS handshake.

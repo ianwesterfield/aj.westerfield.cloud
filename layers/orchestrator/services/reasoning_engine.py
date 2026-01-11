@@ -1173,8 +1173,18 @@ Now create a plan for:
                 error_text = step.params.get("error", "")
                 answer_text = step.params.get("answer", "")
                 
+                # EXCEPTION: If the task was just asking about agents, list_agents IS the answer
+                # Don't force remote work for agent status/count queries
+                task_lower = workspace_state.original_task.lower() if workspace_state.original_task else ""
+                is_agent_query = any(phrase in task_lower for phrase in [
+                    "how many agent", "agents online", "agents available", "agents connected",
+                    "list agent", "show agent", "what agent", "which agent", "agent status",
+                    "funnel cloud agent", "funnelcloud agent"
+                ])
+                
                 # Only block if this looks like a lazy completion (hallucinated answer)
-                if answer_text and "scan" not in answer_text.lower() and "error" not in answer_text.lower():
+                # AND it's not just an agent query
+                if not is_agent_query and answer_text and "scan" not in answer_text.lower() and "error" not in answer_text.lower():
                     logger.warning(f"GUARDRAIL: Blocking lazy completion after list_agents - no remote work done")
                     return Step(
                         step_id="guardrail_require_remote_work",
@@ -1248,12 +1258,16 @@ Now create a plan for:
                 recent_tools = [s.tool for s in workspace_state.completed_steps[-5:]]
                 if step.tool in recent_tools:
                     repeat_count = recent_tools.count(step.tool)
-                    if repeat_count >= 2:
+                    # Tools that should never be called twice
+                    once_only_tools = {"list_agents", "scan_workspace", "dump_state"}
+                    threshold = 1 if step.tool in once_only_tools else 2
+                    
+                    if repeat_count >= threshold:
                         logger.warning(f"GUARDRAIL: Loop detected - {step.tool} called {repeat_count}x in last 5 steps")
                         return Step(
                             step_id="guardrail_loop_break",
                             tool="complete",
-                            params={"error": f"Loop detected: {step.tool} was already called {repeat_count} times"},
+                            params={"error": f"Loop detected: {step.tool} was already called {repeat_count} times"} if threshold > 1 else {},
                             reasoning=f"Forced completion to break {step.tool} loop",
                         )
         

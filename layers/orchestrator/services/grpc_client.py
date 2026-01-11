@@ -2,7 +2,7 @@
 FunnelCloud gRPC Client - Secure task execution to remote agents.
 
 Uses mTLS with CA-pinned certificates to connect to FunnelCloud agents
-discovered via UDP broadcast.
+discovered via UDP multicast.
 
 Usage:
     client = AgentGrpcClient()

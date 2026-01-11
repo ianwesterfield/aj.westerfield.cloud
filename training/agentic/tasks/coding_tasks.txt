@@ -1,0 +1,72 @@
+# Coding tasks for trajectory generation
+# One task per line - these will be solved by the oracle model
+
+# Debugging tasks
+Fix the null pointer exception in the authentication middleware
+Debug why the API endpoint returns 500 for valid requests
+Investigate the memory leak in the image processing service
+Fix the race condition in the concurrent file writer
+Resolve the deadlock in the database connection pool
+
+# Feature implementation
+Add pagination to the search results endpoint
+Implement rate limiting for the public API
+Add WebSocket support for real-time notifications
+Create a caching layer for database queries
+Implement retry logic with exponential backoff
+
+# Refactoring tasks
+Extract the validation logic into a reusable middleware
+Convert callbacks to async/await in the legacy module
+Split the monolithic service into smaller modules
+Add TypeScript types to the JavaScript codebase
+Implement the repository pattern for data access
+
+# DevOps tasks
+Set up GitHub Actions CI/CD pipeline
+Containerize the application with multi-stage Docker build
+Configure Kubernetes deployment with health checks
+Add Prometheus metrics to the service
+Set up log aggregation with structured logging
+
+# Testing tasks
+Add unit tests for the user service
+Create integration tests for the payment flow
+Add E2E tests for the checkout process
+Fix the flaky test in the notification module
+Increase test coverage for error handling paths
+
+# Code review fixes
+Address the security vulnerability in user input handling
+Fix the SQL injection risk in the search query
+Resolve the XSS vulnerability in the comment display
+Update dependencies with known vulnerabilities
+Add proper error handling to async operations
+
+# Performance optimization
+Optimize the slow database query in the reports module
+Add indexes to improve query performance
+Implement lazy loading for the dashboard components
+Reduce bundle size by code splitting
+Add caching headers for static assets
+
+# Documentation
+Add JSDoc comments to the public API
+Create README for the new microservice
+Document the deployment process
+Add inline comments for complex algorithms
+Create API documentation with examples
+
+# Architecture tasks
+Design the data model for the new feature
+Create the service interface for external integrations
+Plan the migration strategy for the database schema
+Design the event-driven architecture for notifications
+Implement the circuit breaker pattern for external calls
+
+# Bug fixes from production
+Fix the timezone handling in date calculations
+Resolve the encoding issue in file uploads
+Fix the pagination offset bug in search results
+Address the memory spike during report generation
+Fix the session expiry handling in authentication

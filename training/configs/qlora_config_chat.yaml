@@ -1,0 +1,57 @@
+# QLoRA Fine-tuning Configuration for AJ Conversational Track
+# Optimized for: natural dialogue, personality, grounding, casual chat
+
+model:
+  base_model: "Qwen/Qwen2.5-32B-Instruct"
+  quantization: "4bit"
+  max_seq_length: 4096
+  dtype: "bfloat16"
+
+lora:
+  r: 32                    # Lower rank - conversational is simpler than agentic
+  lora_alpha: 64
+  lora_dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "k_proj" 
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+  bias: "none"
+  task_type: "CAUSAL_LM"
+
+training:
+  output_dir: "./checkpoints-chat"
+  num_train_epochs: 2      # Less epochs - don't want to overfit personality
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 8
+  learning_rate: 1.0e-4    # Lower LR for softer adaptation
+  weight_decay: 0.01
+  warmup_ratio: 0.05
+  lr_scheduler_type: "cosine"
+  logging_steps: 10
+  save_steps: 100
+  eval_steps: 100
+  save_total_limit: 3
+  fp16: false
+  bf16: true
+  gradient_checkpointing: true
+  optim: "paged_adamw_8bit"
+  max_grad_norm: 0.3
+  group_by_length: true
+  report_to: "none"
+
+data:
+  train_files:
+    - "data/conversational.jsonl"
+    - "data/personality.jsonl"
+    - "data/grounding.jsonl"
+    - "data/casual_chat.jsonl"
+  eval_split: 0.1
+  shuffle: true
+  seed: 42
+
+# Adapter output name (for merging)
+adapter_name: "aj-chat"

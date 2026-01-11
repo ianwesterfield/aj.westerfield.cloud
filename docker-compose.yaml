@@ -9,16 +9,14 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
-    runtime: nvidia
+    network_mode: host
     environment:
       - OLLAMA_HOST=0.0.0.0
       - OLLAMA_KEEP_ALIVE=24h # Keep models loaded for 24 hours (ensures persistent loading)
       - OLLAMA_NUM_PARALLEL=1 # CRITICAL: Only 1 concurrent request to prevent double-loads
       - OLLAMA_MAX_LOADED_MODELS=1 # CRITICAL: Maximum 1 model loaded at a time
-    ports:
-      - "11434:11434"
     volumes:
-      - C:\\docker-data\\ollama\\.ollama:/root/.ollama
+      - /mnt/c/docker-data/ollama/.ollama:/root/.ollama
     deploy:
       resources:
         reservations:
@@ -28,8 +26,6 @@ services:
               capabilities: [gpu]
     shm_size: 2g
     restart: unless-stopped
-    networks:
-      - webtools_network
 
   # -------------------------------------------------
   # Qdrant
@@ -37,20 +33,16 @@ services:
   qdrant:
     image: qdrant/qdrant:latest
     container_name: qdrant
+    network_mode: host
     environment:
       - QDRANT__LOG_LEVEL=DEBUG
       # Flush WAL more frequently to reduce corruption risk on shutdown
       - QDRANT__STORAGE__OPTIMIZERS__FLUSH_INTERVAL_SEC=1
-    ports:
-      - "5100:5100" # Dashboard UI
-      - "6333:6333" # HTTP API
     volumes:
-      - C:/docker-data/qdrant/storage:/qdrant/storage
+      - /mnt/c/docker-data/qdrant/storage:/qdrant/storage
     restart: unless-stopped
     # Give Qdrant time to flush WAL and close cleanly
     stop_grace_period: 30s
-    networks:
-      - webtools_network
 
   # -------------------------------------------------
   # Memory API (Memory + Agent Core)
@@ -62,27 +54,24 @@ services:
       args:
         BASE_REGISTRY: ${BASE_REGISTRY:-ianwesterfield}
     container_name: memory_api
+    network_mode: host
     environment:
-      - QDRANT_HOST=qdrant
+      - QDRANT_HOST=localhost
       - QDRANT_PORT=6333
       - INDEX_NAME=user_memory_collection
       - EMBEDDING_PROVIDER=sentence_transformers # Keep ST for embeddings (768-dim, fast)
-      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_BASE_URL=http://localhost:11434
       # OLLAMA_MODEL is now passed dynamically from Open-WebUI selection
       - SUMMARY_MODEL=sshleifer/distilbart-cnn-12-6
       - SUMMARY_DEVICE=0
       - HF_HOME=/models
       - FILTERS_PATH=/filters
     volumes:
-      - C:/docker-data/models:/models
+      - /mnt/c/docker-data/models:/models
       - ./filters:/filters:ro
-    ports:
-      - "8000:8000"
     depends_on:
       - qdrant
     restart: unless-stopped
-    networks:
-      - webtools_network
 
   # -------------------------------------------------
   # Pragmatics API (Intent Classification)
@@ -94,8 +83,7 @@ services:
       args:
         BASE_REGISTRY: ${BASE_REGISTRY:-ianwesterfield}
     container_name: pragmatics_api
-    ports:
-      - "8001:8001"
+    network_mode: host
     environment:
       # Use 4-class intent model (casual/save/recall/task)
       # Fallback to distilbert_memory if distilbert_intent not found
@@ -104,8 +92,6 @@ services:
     depends_on:
       - memory_api
     restart: unless-stopped
-    networks:
-      - webtools_network
 
   # -------------------------------------------------
   # Extractor API (Media -> Text)
@@ -117,14 +103,13 @@ services:
       args:
         BASE_REGISTRY: ${BASE_REGISTRY:-ianwesterfield}
     container_name: extractor_api
-    ports:
-      - "8002:8002"
+    network_mode: host
     environment:
       - WHISPER_MODEL=large-v3
       - IMAGE_MODEL=llava # Options: llava-4bit (~4GB), llava (~14GB), florence (~4GB)
       - HF_HOME=/models
     volumes:
-      - C:/docker-data/models:/models
+      - /mnt/c/docker-data/models:/models
     deploy:
       resources:
         reservations:
@@ -133,8 +118,6 @@ services:
               count: 1
               capabilities: [gpu]
     restart: unless-stopped
-    networks:
-      - webtools_network
 
   # -------------------------------------------------
   # Orchestrator API (Agentic Reasoning + Execution Engine)
@@ -144,48 +127,50 @@ services:
       context: ./layers
       dockerfile: orchestrator/Dockerfile
     container_name: orchestrator_api
-    ports:
-      - "8004:8004"
+    network_mode: host
     environment:
-      - OLLAMA_HOST=http://ollama:11434
-      # OLLAMA_MODEL is now passed dynamically from Open-WebUI selection
-      - MEMORY_API_URL=http://memory_api:8000
+      # Use localhost since we're on host network (Linux in WSL)
+      - OLLAMA_BASE_URL=http://localhost:11434
+      - MEMORY_API_URL=http://localhost:8000
       - MAX_PARALLEL_TASKS=5
       - WORKSPACE_ROOT=/workspace
-      - HOST_WORKSPACE_PATH=${HOST_WORKSPACE_PATH:-C:/Code}
+      - HOST_WORKSPACE_PATH=${HOST_WORKSPACE_PATH:-/mnt/c/Code}
 
       # Executor settings (now local)
       - DEFAULT_TIMEOUT=30
       - MAX_TIMEOUT=120
 
-      # FunnelCloud agent discovery (for host machine execution)
-      - FUNNEL_HOST_ADDRESS=host.docker.internal
-      - FUNNEL_DISCOVERY_PORT=41234
+      # FunnelCloud agent discovery
+      # Local agent host for discovery proxy (UDP on same port as discovery)
+      # This is the ONLY known address - the local agent does multicast on the physical LAN
+      - FUNNEL_LOCAL_AGENT_HOST=${FUNNEL_LOCAL_AGENT_HOST:-}
+      - FUNNEL_DISCOVERY_PORT=41420
       - FUNNEL_GRPC_PORT=41235
       - FUNNEL_DISCOVERY_TIMEOUT=3.0
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      # Seed agents - direct UDP discovery for agents on other subnets
+      # Comma-separated list of IPs (multicast can't cross subnets)
+      - FUNNEL_SEED_AGENTS=${FUNNEL_SEED_AGENTS:-}
     volumes:
-      - ${HOST_WORKSPACE_PATH:-C:/Code}:/workspace:rw
+      - ${HOST_WORKSPACE_PATH:-/mnt/c/Code}:/workspace:rw
     depends_on:
       - ollama
       - memory_api
     restart: unless-stopped
-    networks:
-      - webtools_network
 
   # -------------------------------------------------
   # Open-WebUI
   # -------------------------------------------------
   open-webui:
-    image: ghcr.io/open-webui/open-webui:latest
+    image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
     depends_on:
       - ollama
     environment:
       - USER_AGENT=WesterfieldCloud-OpenWebUI/1.0
       - GLOBAL_LOG_LEVEL=DEBUG
-      - OLLAMA_BASE_URL=http://ollama:11434
+      # All backend services are on host network - use Docker bridge gateway (172.17.0.1)
+      # Note: host.docker.internal doesn't route to WSL2 host network in this setup
+      - OLLAMA_BASE_URL=http://172.17.0.1:11434
       - ENABLE_API_KEY=true # Allow API key authentication
       - RAG_EMBEDDING_ENGINE=ollama
       - EMBEDDING_MODEL=BAAI/bge-large-en-v1.5
@@ -193,12 +178,18 @@ services:
       - MEMORY_SHORT_TERM_MEMORY_DEPTH=15
       - TOOLS_FUNCTION_CALLING_ENABLED=true
       - TOOLS_FUNCTION_CALLING_LLMS=ollama
-      - MEMORY_API_URL=http://memory_api:8000
-      - TOOLS_DISCOVERY_URL=http://memory_api:8000/api/tools
+      - MEMORY_API_URL=http://172.17.0.1:8000
+      - TOOLS_DISCOVERY_URL=http://172.17.0.1:8000/api/tools
+      # Orchestrator for AJ filter task execution
+      - ORCHESTRATOR_API_URL=http://172.17.0.1:8004
+      # Pragmatics for AJ filter intent classification
+      - PRAGMATICS_API_URL=http://172.17.0.1:8001
+      # Extractor for AJ filter media extraction
+      - EXTRACTOR_API_URL=http://172.17.0.1:8002
     ports:
       - "8180:8080" # Host 8180 -> Container 8080 (8080 often reserved by Windows/Hyper-V)
     volumes:
-      - c:/docker-data/open-webui/data:/app/backend/data
+      - /mnt/c/docker-data/open-webui/data:/app/backend/data
     deploy:
       resources:
         limits:

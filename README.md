@@ -297,6 +297,31 @@ docker compose ps
 ./scripts/deploy-filter.ps1
 ```
 
+### Auto-Start on Windows Boot
+
+To automatically start AJ services when Windows boots (using WSL2 + Docker), create a scheduled task:
+
+```powershell
+# Run as Administrator
+$Action = New-ScheduledTaskAction -Execute "wsl.exe" -Argument "-d Ubuntu -u root -- bash -c 'service docker start && cd /mnt/c/Code/aj.westerfield.cloud && docker compose up -d'"
+$Trigger = New-ScheduledTaskTrigger -AtStartup
+$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RunOnlyIfNetworkAvailable
+$Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+Register-ScheduledTask -TaskName "AJ-Westerfield-Services" -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Description "Starts AJ services in WSL at system boot"
+```
+
+**Verify the task:**
+
+```powershell
+Get-ScheduledTask -TaskName "AJ-Westerfield-Services" | Get-ScheduledTaskInfo
+```
+
+**Remove the task (if needed):**
+
+```powershell
+Unregister-ScheduledTask -TaskName "AJ-Westerfield-Services" -Confirm:$false
+```
+
 ### Service Ports
 
 ```
@@ -518,11 +543,13 @@ See [FunnelCloud/README.md](FunnelCloud/README.md) for detailed deployment instr
 
 ### Phase 3: Model Fine-Tuning 🔄 (In Progress)
 
-- [x] Training data generation (38 generators, 3,790 examples)
+- [x] Training data generation (43 generators, 5,205 examples)
 - [x] QLoRA training pipeline (PEFT/TRL)
 - [x] Training capture system (live data collection)
+- [x] Agentic training infrastructure (trajectory format)
 - [ ] Model export to Ollama
 - [ ] A/B testing framework
+- [ ] Distillation pipeline (72B → 7B/14B for deployment)
 
 ### Phase 4: Knowledge Graph 📅
 
@@ -593,12 +620,12 @@ import socket
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 sock.settimeout(5)
-sock.sendto(b'FUNNEL_DISCOVER', ('255.255.255.255', 41234))
+sock.sendto(b'FUNNEL_DISCOVER', ('255.255.255.255', 41420))
 print(sock.recvfrom(1024))
 "
 
-# Check firewall allows UDP 41234 and TCP 41235
-netsh advfirewall firewall show rule name=all | findstr "41234 41235"
+# Check firewall allows UDP 41420 and TCP 41235
+netsh advfirewall firewall show rule name=all | findstr "41420 41235"
 ```
 
 ### FunnelCloud deployment fails?
@@ -645,15 +672,21 @@ AJ includes **two custom fine-tuned models** trained on workspace-specific knowl
 
 ### Training Data
 
-- **3,790 training examples** across 38+ domains
+- **5,205 training examples** across 43+ domains
 - Docker, Kubernetes, Git, VS Code, PowerShell, Cloud/DevOps
 - QLoRA fine-tuning with 4-bit quantization
 - Trained on Vast.ai A100-SXM4-80GB
 
-See [training/README.md](training/README.md) for details.
+### Agentic Training (Next Phase)
+
+Traditional instruction-response training teaches knowledge but **OODA loop reasoning** was lost in the initial training. AJ's next phase rethinks the corpus to maintain (and indeed expand) the domain knowledge, then adds:
+
+- **Trajectory format**: `thought → action → observation` chains
+- **Open datasets**: AgentInstruct (1.8M), SWE-bench (2.3K), ToolBench (16K)
+- **DPO alignment**: UltraFeedback, CodeUltraFeedback, HH-RLHF
+- **Full fine-tune target**: Qwen2.5-72B on 8x B200 192GB
+- **Deployment path**: Distill to 7B/14B for 24GB 4090
+
+See [training/README.md](training/README.md) and [training/agentic/README.md](training/agentic/README.md) for details.
 
 ---
-
-**AJ**: Knowledge-centric AI infrastructure for the workspace.
-
-_Last Updated: January 4, 2026_

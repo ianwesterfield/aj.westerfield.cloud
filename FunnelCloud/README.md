@@ -26,7 +26,7 @@ FunnelCloud extends AJ's capabilities beyond Docker containers to any machine on
 
 ### Key Features
 
-- **UDP Discovery**: Agents announce themselves on the network (port 41234)
+- **UDP Discovery**: Agents announce themselves on the network (port 41420)
 - **gRPC Task Execution**: Secure RPC for task submission and results (port 41235)
 - **mTLS Security**: Certificate-based mutual authentication
 - **Windows Service**: Runs as a background service with auto-start
@@ -47,7 +47,7 @@ FunnelCloud extends AJ's capabilities beyond Docker containers to any machine on
 
 | Port  | Protocol | Purpose                      |
 | ----- | -------- | ---------------------------- |
-| 41234 | UDP      | Discovery broadcast/response |
+| 41420 | UDP      | Discovery broadcast/response |
 | 41235 | TCP      | gRPC task execution (mTLS)   |
 
 ### Security Model
@@ -308,7 +308,7 @@ $env:FUNNEL_INSECURE = "true"
 
 ### Agent not discovered?
 
-1. Check firewall allows UDP 41234 and TCP 41235
+1. Check firewall allows UDP 41420 and TCP 41235
 2. Verify agent is running: `Get-Service FunnelCloudAgent`
 3. Check logs: `Get-Content "C:\FunnelCloud\Agent\logs\stderr.log" -Tail 50`
 
@@ -393,7 +393,7 @@ The orchestrator discovers and communicates with agents automatically:
 # layers/orchestrator/services/agent_discovery.py
 async def discover_agents() -> List[AgentInfo]:
     """Discover all FunnelCloud agents on the network."""
-    # UDP broadcast on port 41234
+    # UDP broadcast on port 41420
     # Returns list of agents with capabilities
 ```
 

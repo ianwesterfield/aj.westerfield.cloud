@@ -314,14 +314,16 @@ try {
         }
     }
     
-    # Remove existing service if present
+    # Remove existing service if present - temporarily disable error handling for NSSM
     $existingSvc = Get-Service FunnelCloudAgent -ErrorAction SilentlyContinue
     if ($existingSvc) {
         Write-Warn "Removing existing service..."
-        & nssm stop FunnelCloudAgent 2>$null
+        $ErrorActionPreference = "SilentlyContinue"
+        & nssm stop FunnelCloudAgent 2>&1 | Out-Null
         Start-Sleep -Seconds 2
-        & nssm remove FunnelCloudAgent confirm 2>$null
+        & nssm remove FunnelCloudAgent confirm 2>&1 | Out-Null
         Start-Sleep -Seconds 1
+        $ErrorActionPreference = "Stop"
     }
     
     # Install service
@@ -340,27 +342,27 @@ try {
         throw "NSSM failed to create service: $installResult"
     }
     
-    # Configure service
-    & nssm set FunnelCloudAgent AppDirectory $InstallPath
+    # Configure service (suppress NSSM output)
+    $null = & nssm set FunnelCloudAgent AppDirectory $InstallPath 2>&1
     
     # Configure logging
     $logsPath = Join-Path $InstallPath "logs"
     New-Item -ItemType Directory -Path $logsPath -Force | Out-Null
-    & nssm set FunnelCloudAgent AppStdout (Join-Path $logsPath "stdout.log")
-    & nssm set FunnelCloudAgent AppStderr (Join-Path $logsPath "stderr.log")
-    & nssm set FunnelCloudAgent AppRotateFiles 1
-    & nssm set FunnelCloudAgent AppRotateBytes 1048576
+    $null = & nssm set FunnelCloudAgent AppStdout (Join-Path $logsPath "stdout.log") 2>&1
+    $null = & nssm set FunnelCloudAgent AppStderr (Join-Path $logsPath "stderr.log") 2>&1
+    $null = & nssm set FunnelCloudAgent AppRotateFiles 1 2>&1
+    $null = & nssm set FunnelCloudAgent AppRotateBytes 1048576 2>&1
     
     # Set environment for certificates (unless insecure)
     if (-not $Insecure) {
         $certPath = Join-Path $InstallPath "Certificates\agent.pfx"
-        & nssm set FunnelCloudAgent AppEnvironmentExtra "FUNNEL_CERT_PATH=$certPath" "FUNNEL_CERT_PASSWORD=funnelcloud"
+        $null = & nssm set FunnelCloudAgent AppEnvironmentExtra "FUNNEL_CERT_PATH=$certPath" "FUNNEL_CERT_PASSWORD=funnelcloud" 2>&1
     }
     
     # Auto-start and metadata
-    & nssm set FunnelCloudAgent Start SERVICE_AUTO_START
-    & nssm set FunnelCloudAgent DisplayName "FunnelCloud Agent"
-    & nssm set FunnelCloudAgent Description "FunnelCloud remote task execution agent"
+    $null = & nssm set FunnelCloudAgent Start SERVICE_AUTO_START 2>&1
+    $null = & nssm set FunnelCloudAgent DisplayName "FunnelCloud Agent" 2>&1
+    $null = & nssm set FunnelCloudAgent Description "FunnelCloud remote task execution agent" 2>&1
     
     Write-Ok "Service installed"
 }
@@ -375,7 +377,7 @@ catch {
 Write-Step "Starting FunnelCloud Agent service"
 
 try {
-    & nssm start FunnelCloudAgent
+    $null = & nssm start FunnelCloudAgent 2>&1
     Start-Sleep -Seconds 3
     
     $service = Get-Service FunnelCloudAgent -ErrorAction SilentlyContinue
