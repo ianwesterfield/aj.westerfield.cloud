@@ -92,7 +92,7 @@ if (-not $isAdmin) {
 }
 
 # Build paths
-$buildRoot = "C:\Code\aj.westerfield.cloud\FunnelCloud"
+$buildRoot = "C:\Code\aj.westerfield.cloud\layers\agents\FunnelCloud"
 $packageName = "FunnelCloud-Agent-$AgentId.zip"
 $tempPath = Join-Path $env:TEMP $packageName
 $certsPath = Join-Path $InstallPath "Certificates"

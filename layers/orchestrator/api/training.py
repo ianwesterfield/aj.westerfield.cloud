@@ -17,7 +17,7 @@ from qdrant_client.models import Distance, VectorParams, PointStruct
 from sentence_transformers import SentenceTransformer
 
 from schemas.models import TrainingCaptureRequest, TrainingCaptureResponse
-from services.workspace_state import get_workspace_state
+from services.session_state import get_session_state
 
 logger = logging.getLogger("orchestrator.training")
 router = APIRouter(prefix="/api/training", tags=["training"])
@@ -92,20 +92,42 @@ async def capture_training_data(request: TrainingCaptureRequest) -> TrainingCapt
         embedding_text = f"User: {request.user_prompt}\n\nAssistant: {request.model_response}"
         embedding = _create_embedding(embedding_text)
         
-        # Get current workspace state if available
-        workspace_state = None
+        # Get session state for this session (or global fallback)
+        session_state = None
         try:
-            ws_state = get_workspace_state()
+            # Try to get session-specific state first, fall back to global
+            ws_state = get_session_state(session_id=request.session_id) if request.session_id else get_session_state()
             if ws_state:
-                workspace_state = {
-                    "root": ws_state.root,
-                    "current_dir": ws_state.current_dir,
-                    "file_count": len(ws_state.recent_files) if ws_state.recent_files else 0,
-                    "recent_tools": ws_state.recent_tools[-5:] if ws_state.recent_tools else [],
-                    "recent_errors": ws_state.recent_errors[-3:] if ws_state.recent_errors else [],
+                # Extract recent tools from completed_steps
+                recent_tools = []
+                if ws_state.completed_steps:
+                    recent_tools = [step.tool for step in ws_state.completed_steps[-5:]]
+                
+                # Extract recent errors from completed_steps
+                recent_errors = []
+                if ws_state.completed_steps:
+                    recent_errors = [
+                        step.error_message for step in ws_state.completed_steps[-10:]
+                        if not step.success and step.error_message
+                    ][-3:]
+                
+                # Get scanned paths as roots
+                roots = list(ws_state.scanned_paths) if ws_state.scanned_paths else []
+                
+                session_state = {
+                    "roots": roots,
+                    "file_count": len(ws_state.files) if ws_state.files else 0,
+                    "dir_count": len(ws_state.dirs) if ws_state.dirs else 0,
+                    "edited_files": list(ws_state.edited_files)[-10:] if ws_state.edited_files else [],
+                    "read_files": list(ws_state.read_files)[-10:] if ws_state.read_files else [],
+                    "recent_tools": recent_tools,
+                    "recent_errors": recent_errors,
+                    "user_info": ws_state.user_info if ws_state.user_info else {},
+                    "agents_verified": ws_state.agents_verified,
+                    "discovered_agents": ws_state.discovered_agents if ws_state.discovered_agents else [],
                 }
         except Exception as e:
-            logger.warning(f"Could not capture workspace state: {e}")
+            logger.warning(f"Could not capture session state: {e}")
         
         # Build payload
         payload = {
@@ -135,7 +157,7 @@ async def capture_training_data(request: TrainingCaptureRequest) -> TrainingCapt
             "tools_used": request.tools_used or [],
             "guardrails_triggered": request.guardrails_triggered or [],
             "errors": request.errors or [],
-            "workspace_state": workspace_state,
+            "session_state": session_state,
             
             # Extraction tracking
             "extracted": False,

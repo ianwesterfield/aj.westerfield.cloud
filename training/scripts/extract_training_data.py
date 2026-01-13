@@ -761,7 +761,7 @@ GUARDRAIL_EXAMPLES: List[Tuple[str, dict]] = [
     ),
     (
         "Context: You've called scan_workspace four times in this session already.\nTask: Scan the workspace to find Python files",
-        {"action": "use_cached", "response": "I've already scanned the workspace multiple times in this session. Using the cached workspace state instead of rescanning.", "guardrail": "loop_detection"}
+        {"action": "use_cached", "response": "I've already scanned the workspace multiple times in this session. Using the cached session state instead of rescanning.", "guardrail": "loop_detection"}
     ),
     # Agent scenarios
     (
@@ -1084,13 +1084,13 @@ ARCHITECTURE_QA: List[Tuple[str, str]] = [
      "AJ has multiple testing approaches:\n\n1. **Unit tests**: `pytest tests/` for individual functions\n2. **Integration tests**: `test_e2e_ooda_loop.py` for full flow\n3. **Manual testing**: Use OpenWebUI interface\n4. **Load testing**: Simulate concurrent requests\n5. **Guardrail tests**: `test_guardrails.py` for safety checks\n\nRun all tests: `pytest tests/ -v`"),
     
     ("What is the execution context?",
-     "Execution context tracks state through the OODA loop:\n\n1. **Step number**: Current position in the loop\n2. **History**: Previous tool calls and results\n3. **Workspace state**: Files read, modified, created\n4. **Agent state**: Discovered agents and their status\n5. **Guardrail state**: Violations and warnings\n6. **User context**: Preferences and conversation history\n\nContext is passed between steps to enable informed decisions."),
+     "Execution context tracks state through the OODA loop:\n\n1. **Step number**: Current position in the loop\n2. **History**: Previous tool calls and results\n3. **session state**: Files read, modified, created\n4. **Agent state**: Discovered agents and their status\n5. **Guardrail state**: Violations and warnings\n6. **User context**: Preferences and conversation history\n\nContext is passed between steps to enable informed decisions."),
     
     ("How does streaming work in AJ?",
      "AJ supports streaming responses:\n\n1. **LLM streaming**: Token-by-token generation to OpenWebUI\n2. **gRPC streaming**: FunnelCloud command output\n3. **SSE**: Server-sent events for long operations\n4. **Chunked transfer**: Large file operations\n\nStreaming provides real-time feedback during long-running tasks."),
     
-    ("What is the workspace state?",
-     "Workspace state tracks the current project:\n\n1. **File index**: List of all files with metadata\n2. **Recent changes**: Files modified in current session\n3. **Content cache**: Recently read file contents\n4. **Git state**: Branch, status, recent commits\n5. **Dependencies**: Detected package.json, requirements.txt\n\nState is refreshed via `scan_workspace` and cached for efficiency."),
+    ("What is the session state?",
+     "session state tracks the current project:\n\n1. **File index**: List of all files with metadata\n2. **Recent changes**: Files modified in current session\n3. **Content cache**: Recently read file contents\n4. **Git state**: Branch, status, recent commits\n5. **Dependencies**: Detected package.json, requirements.txt\n\nState is refreshed via `scan_workspace` and cached for efficiency."),
     
     ("How does AJ handle concurrent requests?",
      "AJ handles concurrent requests through:\n\n1. **Async processing**: FastAPI's async handlers for all endpoints\n2. **Request isolation**: Each request has its own execution context\n3. **Shared state**: Memory service accessed with proper locking\n4. **Rate limiting**: Prevents resource exhaustion\n5. **Queue management**: Long tasks queued with priority\n\nMultiple users can interact simultaneously without interference."),

@@ -162,7 +162,7 @@ class RunTaskRequest(BaseModel):
     user_id: Optional[str] = Field(None, description="User ID")
     memory_context: Optional[List[Dict[str, Any]]] = Field(None, description="User context from memory")
     max_steps: int = Field(default=100, description="Maximum steps before forced completion")
-    preserve_state: bool = Field(default=False, description="If True, don't reset workspace state (for follow-up questions)")
+    preserve_state: bool = Field(default=False, description="If True, don't reset session state (for follow-up questions)")
     model: Optional[str] = Field(None, description="Ollama model to use (from Open-WebUI selection)")
 
 
@@ -252,7 +252,7 @@ class TrainingCaptureRequest(BaseModel):
     tools_used: List[str] = Field(default_factory=list, description="Tools used in this interaction")
     guardrails_triggered: List[str] = Field(default_factory=list, description="Guardrails that fired")
     errors: List[str] = Field(default_factory=list, description="Errors encountered")
-    workspace_state: Optional[Dict[str, Any]] = Field(default=None, description="Workspace state snapshot")
+    session_state: Optional[Dict[str, Any]] = Field(default=None, description="Session state snapshot")
 
 
 class TrainingCaptureResponse(BaseModel):

@@ -143,15 +143,28 @@ services:
       # FunnelCloud agent discovery
       # Local agent host for discovery proxy (UDP on same port as discovery)
       # This is the ONLY known address - the local agent does multicast on the physical LAN
+      # All other agents are discovered dynamically via gossip (no hardcoding needed)
       - FUNNEL_LOCAL_AGENT_HOST=${FUNNEL_LOCAL_AGENT_HOST:-}
       - FUNNEL_DISCOVERY_PORT=41420
       - FUNNEL_GRPC_PORT=41235
       - FUNNEL_DISCOVERY_TIMEOUT=3.0
-      # Seed agents - direct UDP discovery for agents on other subnets
-      # Comma-separated list of IPs (multicast can't cross subnets)
-      - FUNNEL_SEED_AGENTS=${FUNNEL_SEED_AGENTS:-}
+      # HTTP port for agent REST API (used for gossip peer discovery)
+      - FUNNEL_AGENT_HTTP_PORT=41421
+      # Gossip config - how many rounds to expand peer discovery
+      - FUNNEL_GOSSIP_MAX_ROUNDS=3
+      - FUNNEL_GOSSIP_TIMEOUT=2.0
+      # Gossip seed - ONE reachable agent IP to bootstrap cross-subnet discovery
+      # (only needed when local agent can't multicast to other subnets)
+      - FUNNEL_GOSSIP_SEED_HOST=${FUNNEL_GOSSIP_SEED_HOST:-}
+      # mTLS certificates for FunnelCloud gRPC
+      - ORCHESTRATOR_CERT_PATH=/app/certs/agents/orchestrator/agent.crt
+      - ORCHESTRATOR_KEY_PATH=/app/certs/agents/orchestrator/agent.key
+      - CA_CERT_PATH=/app/certs/ca/ca.crt
+      # Set to 'true' to skip mTLS (when agents don't have certs configured)
+      - FUNNEL_INSECURE=${FUNNEL_INSECURE:-true}
     volumes:
       - ${HOST_WORKSPACE_PATH:-/mnt/c/Code}:/workspace:rw
+      - ./FunnelCloud/certs:/app/certs:ro
     depends_on:
       - ollama
       - memory_api

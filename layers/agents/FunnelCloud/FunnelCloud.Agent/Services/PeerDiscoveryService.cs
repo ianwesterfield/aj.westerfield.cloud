@@ -119,10 +119,12 @@ public class PeerDiscoveryService
 
             if (agent != null && !seenIds.Contains(agent.AgentId))
             {
-              seenIds.Add(agent.AgentId);
-              agents.Add(agent);
+              // Create a new agent with the IP address from the UDP response
+              var agentWithIp = agent with { IpAddress = result.RemoteEndPoint.Address.ToString() };
+              seenIds.Add(agentWithIp.AgentId);
+              agents.Add(agentWithIp);
               _logger.LogInformation("Discovered peer: {AgentId} at {IP} ({Platform})",
-                  agent.AgentId, result.RemoteEndPoint.Address, agent.Platform);
+                  agentWithIp.AgentId, agentWithIp.IpAddress, agentWithIp.Platform);
             }
           }
           catch (JsonException ex)
@@ -142,14 +144,57 @@ public class PeerDiscoveryService
       _logger.LogError(ex, "Peer discovery failed");
     }
 
-    // Always include self in the results
+    // Always include self in the results with our local IP
     if (!seenIds.Contains(_selfCapabilities.AgentId))
     {
-      agents.Add(_selfCapabilities);
-      _logger.LogDebug("Added self to discovery results: {AgentId}", _selfCapabilities.AgentId);
+      // Get our best local IP for other agents to reach us
+      var selfIp = GetLocalIpAddress();
+      var selfWithIp = _selfCapabilities with { IpAddress = selfIp };
+      agents.Add(selfWithIp);
+      _logger.LogDebug("Added self to discovery results: {AgentId} at {IP}",
+          _selfCapabilities.AgentId, selfIp);
     }
 
     _logger.LogInformation("Peer discovery complete: found {Count} agent(s)", agents.Count);
     return agents;
+  }
+
+  /// <summary>
+  /// Get the best local IP address for external connections.
+  /// Prefers non-loopback IPv4 addresses that other hosts can reach.
+  /// </summary>
+  private string GetLocalIpAddress()
+  {
+    try
+    {
+      // Get all IPv4 addresses, prefer non-loopback
+      var addresses = Dns.GetHostAddresses(Dns.GetHostName())
+          .Where(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+          .Where(a => !IPAddress.IsLoopback(a))
+          .ToList();
+
+      // If we have multiple addresses, prefer ones that look like LAN addresses
+      // (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+      var lanAddress = addresses.FirstOrDefault(a =>
+      {
+        var bytes = a.GetAddressBytes();
+        return bytes[0] == 192 && bytes[1] == 168  // 192.168.x.x
+            || bytes[0] == 10                       // 10.x.x.x
+            || (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31);  // 172.16-31.x.x
+      });
+
+      if (lanAddress != null)
+        return lanAddress.ToString();
+
+      // Fall back to first non-loopback address
+      if (addresses.Any())
+        return addresses.First().ToString();
+
+      return "127.0.0.1";
+    }
+    catch
+    {
+      return "127.0.0.1";
+    }
   }
 }

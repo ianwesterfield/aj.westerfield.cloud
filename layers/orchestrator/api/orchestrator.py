@@ -7,7 +7,7 @@ Core endpoints for the agentic reasoning engine:
   - /next-step: Generate single next step (may detect parallelization)
   - /run-task: Execute full task with SSE streaming (agentic loop)
   - /execute-batch: Execute parallel batch; continue on individual failures
-  - /update-state: Update workspace state after tool execution
+  - /update-state: Update session state after tool execution
   - /reset-state: Reset state for new task
 """
 
@@ -40,7 +40,7 @@ from services.reasoning_engine import ReasoningEngine
 from services.task_planner import TaskPlanner
 from services.parallel_executor import ParallelExecutor
 from services.memory_connector import MemoryConnector
-from services.workspace_state import WorkspaceState, get_workspace_state, reset_workspace_state
+from services.session_state import SessionState, get_session_state, reset_session_state
 from services.tool_dispatcher import dispatch_tool
 from services.agent_discovery import get_discovery_service, AgentCapabilities
 from utils.workspace_context import WorkspaceContextManager
@@ -267,7 +267,7 @@ async def next_step(request: NextStepRequest) -> NextStepResponse:
     """
     Generate the next reasoning step for a task.
     
-    Uses external WorkspaceState for ground-truth tracking (not LLM memory).
+    Uses external SessionState for ground-truth tracking (not LLM memory).
     The state is injected into the prompt so LLM doesn't need to track it.
     
     The response includes:
@@ -282,8 +282,8 @@ async def next_step(request: NextStepRequest) -> NextStepResponse:
     task_planner = _get_task_planner()
     memory_connector = _get_memory_connector()
     
-    # Get or create workspace state
-    workspace_state = get_workspace_state()
+    # Get or create session state
+    session_state = get_session_state()
     
     # 1. Retrieve relevant patterns from memory
     memory_context = []
@@ -300,9 +300,9 @@ async def next_step(request: NextStepRequest) -> NextStepResponse:
             if payload.get("facts"):
                 facts = payload["facts"]
                 if facts.get("names"):
-                    workspace_state.user_info["name"] = facts["names"][0]
+                    session_state.user_info["name"] = facts["names"][0]
                 if facts.get("emails"):
-                    workspace_state.user_info["email"] = facts["emails"][0]
+                    session_state.user_info["email"] = facts["emails"][0]
     
     # 2. Generate next step using reasoning engine with external state
     step = await reasoning_engine.generate_next_step(
@@ -310,7 +310,7 @@ async def next_step(request: NextStepRequest) -> NextStepResponse:
         history=request.history or [],
         memory_context=memory_context,
         workspace_context=request.workspace_context,
-        workspace_state=workspace_state,  # Pass external state
+        session_state=session_state,  # Pass external state
     )
     
     # 3. Check if step can be parallelized
@@ -379,7 +379,7 @@ from typing import Dict, Any
 
 
 class UpdateStateRequest(BaseModel):
-    """Request to update workspace state after tool execution."""
+    """Request to update session state after tool execution."""
     tool: str = Field(..., description="Tool that was executed")
     params: Dict[str, Any] = Field(default_factory=dict, description="Tool parameters")
     output: str = Field(default="", description="Tool output")
@@ -387,7 +387,7 @@ class UpdateStateRequest(BaseModel):
 
 
 class StateResponse(BaseModel):
-    """Response with current workspace state summary."""
+    """Response with current session state summary."""
     scanned_paths: list
     total_files: int
     total_dirs: int
@@ -399,12 +399,12 @@ class StateResponse(BaseModel):
 @router.post("/update-state", response_model=StateResponse)
 async def update_state(request: UpdateStateRequest) -> StateResponse:
     """
-    Update workspace state after a tool execution.
+    Update session state after a tool execution.
     
     Called by the filter after each tool is executed to keep
     the external state in sync with reality.
     """
-    state = get_workspace_state()
+    state = get_session_state()
     
     # Update state based on tool result
     state.update_from_step(
@@ -429,14 +429,14 @@ async def update_state(request: UpdateStateRequest) -> StateResponse:
 @router.post("/reset-state", response_model=StateResponse)
 async def reset_state() -> StateResponse:
     """
-    Reset workspace state for a new task.
+    Reset session state for a new task.
     
     Called at the start of a new task to clear previous state.
     User info is preserved across resets.
     """
-    state = reset_workspace_state()
+    state = reset_session_state()
     
-    logger.info("Workspace state reset")
+    logger.info("session state reset")
     
     return StateResponse(
         scanned_paths=[],
@@ -451,11 +451,11 @@ async def reset_state() -> StateResponse:
 @router.get("/state", response_model=StateResponse)
 async def get_state() -> StateResponse:
     """
-    Get current workspace state.
+    Get current session state.
     
     Returns the current external state for debugging/inspection.
     """
-    state = get_workspace_state()
+    state = get_session_state()
     
     return StateResponse(
         scanned_paths=list(state.scanned_paths),
@@ -468,7 +468,7 @@ async def get_state() -> StateResponse:
 
 
 class SetUserInfoRequest(BaseModel):
-    """Request to set user info in workspace state."""
+    """Request to set user info in session state."""
     name: str = Field(None, description="User's name").__str__()
     email: str = Field(None, description="User's email").__str__()
 
@@ -476,11 +476,11 @@ class SetUserInfoRequest(BaseModel):
 @router.post("/set-user-info")
 async def set_user_info(request: SetUserInfoRequest) -> Dict[str, str]:
     """
-    Set user info directly in workspace state.
+    Set user info directly in session state.
     
     Called when user info is extracted from the task or conversation.
     """
-    state = get_workspace_state()
+    state = get_session_state()
     
     if request.name:
         state.user_info["name"] = request.name
@@ -668,7 +668,7 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
     This is the agentic loop moved from the filter to the orchestrator.
     """
     reasoning_engine = _get_reasoning_engine()
-    workspace_state = get_workspace_state()
+    session_state = get_session_state()
     
     # Set model from request if provided (dynamic model selection from Open-WebUI)
     if request.model:
@@ -679,21 +679,21 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
     # Preserve if: explicit flag OR workspace already has files indexed
     # (we've already scanned something in a recent request)
     should_preserve = request.preserve_state or (
-        len(workspace_state.files) > 0 or len(workspace_state.dirs) > 0
+        len(session_state.files) > 0 or len(session_state.dirs) > 0
     )
     
     if not should_preserve:
         # Reset state for new task
-        logger.info("Resetting workspace state (no prior scan)")
-        reset_workspace_state()
-        workspace_state = get_workspace_state()
+        logger.info("Resetting session state (no prior scan)")
+        reset_session_state()
+        session_state = get_session_state()
     else:
         # Preserve scan results but clear completed steps for new task
-        workspace_state.completed_steps.clear()
-        logger.info(f"Preserving workspace state: {len(workspace_state.files)} files, {len(workspace_state.dirs)} dirs indexed")
+        session_state.completed_steps.clear()
+        logger.info(f"Preserving session state: {len(session_state.files)} files, {len(session_state.dirs)} dirs indexed")
     
     # Log user request to the conversation ledger
-    workspace_state.add_user_request(request.task)
+    session_state.add_user_request(request.task)
     
     # Build task with memory context
     user_text = request.task
@@ -785,12 +785,12 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
     
     plan_steps = await reasoning_engine.generate_task_plan(request.task)
     
-    # Create TaskPlan and store in workspace state
-    from services.workspace_state import TaskPlan
+    # Create TaskPlan and store in session state
+    from services.session_state import TaskPlan
     task_plan = TaskPlan(original_task=request.task)
     for step_desc in plan_steps:
         task_plan.add_item(step_desc)
-    workspace_state.set_task_plan(task_plan)
+    session_state.set_task_plan(task_plan)
     
     # Stream the plan to user as markdown
     plan_markdown = task_plan.format_for_display()
@@ -828,10 +828,10 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
                 # Create generator for this step
                 gen = reasoning_engine.generate_next_step_streaming(
                     task=user_text,
-                    history=[],  # History is now in workspace_state
+                    history=[],  # History is now in session_state
                     memory_context=relevant_patterns,  # Pass memory patterns from search above
                     workspace_context=None,
-                    workspace_state=workspace_state,
+                    session_state=session_state,
                     status_callback=on_model_status,
                 )
                 
@@ -963,8 +963,8 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
             output = result.get("output")
             error = result.get("error")
             
-            # Update workspace state
-            workspace_state.update_from_step(
+            # Update session state
+            session_state.update_from_step(
                 tool=tool,
                 params={k: v for k, v in params.items() if k not in ("content", "text", "new_text")},
                 output=output[:500000] if output else "",  # DEV MODE: 500KB limit
@@ -972,8 +972,8 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
             )
             
             # Advance task plan on successful steps
-            if success and workspace_state.task_plan:
-                workspace_state.advance_plan()
+            if success and session_state.task_plan:
+                session_state.advance_plan()
             
             # Record step
             step_history.append({
@@ -1042,7 +1042,7 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
   then list only TOP-LEVEL items (not full paths). Example: "filters/, layers/, README.md, etc."
 - Do NOT list every single file path - that's what the raw output is for
 - Keep your summary to 2-3 sentences max for simple queries
-- NEVER mention internal terms like "workspace state", "scan_workspace", "LARGEST FILES section", etc.
+- NEVER mention internal terms like "session state", "scan_workspace", "LARGEST FILES section", etc.
 - Speak naturally: "I found..." or "The largest files are..." NOT "The state shows..."
 """
         elif file_ops > 0:
@@ -1054,7 +1054,7 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
 - Use past tense: "I added...", "I created...", "I updated..."
 - Keep it concise - 1-2 sentences per file operation
 - Do NOT dump the entire file content in your response
-- NEVER mention internal terms like "workspace state", tool names, or section headers
+- NEVER mention internal terms like "session state", tool names, or section headers
 """
         else:
             # Generic - read operations, shell commands, etc.
@@ -1065,7 +1065,7 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
 - If they asked for specific info, provide just that info
 - Do NOT dump raw command output - summarize the key findings
 - Keep your response brief and helpful
-- NEVER mention internal terms like "workspace state", tool names, or section headers
+- NEVER mention internal terms like "session state", tool names, or section headers
 - Speak naturally as if you personally explored the files
 """
         

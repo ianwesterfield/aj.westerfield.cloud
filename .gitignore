@@ -25,6 +25,7 @@ __pycache__/
 *.spec
 *.swo
 *.swp
+*.zip
 **/checkpoint-*/
 **/distilbert_*/
 *~
@@ -43,8 +44,8 @@ ENV/
 logs/
 obj/
 output/
+publish/
 secrets/
 Thumbs.db
 training/**/data/
 venv/
-publish/

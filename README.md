@@ -1,12 +1,12 @@
 # AJ: Knowledge-Centric AI Infrastructure
 
-> **AJ** is an intelligent platform that combines local AI agents, semantic memory, and dynamic reasoning to transform Open-WebUI into a knowledge-centric workspace assistant. Built with privacy, autonomy, and knowledge accumulation in mind.
+> **AJ** is a knowledge-centric environment assistant. Built with privacy, autonomy, and extended context management in mind.
 
 ---
 
 ## What is AJ?
 
-AJ solves a critical problem with AI assistants: **they forget everything**. Each conversation starts from scratch with no understanding of your workspace, your patterns, or your history.
+AJ solves a critical problem with AI assistants: **they forget everything**. Each conversation starts from scratch with no understanding of your environment, your patterns, or your history.
 
 AJ changes this by:
 
@@ -20,18 +20,70 @@ AJ changes this by:
 
 ---
 
+## How AJ Fits the Landscape
+
+The AI tooling ecosystem is crowded. Here's where AJ sits — and why it exists.
+
+### The "All You Need is Bash" Philosophy
+
+At its core, AJ embraces a simple truth: most tasks eventually reduce to `exec(command)`. Files, shell, code execution, remote calls—it's all just commands on machines. The trick isn't _what_ to execute, it's _knowing when_ to execute it.
+
+That's where AJ differs from pure tool-exposure protocols.
+
+### Protocol vs. Brain
+
+[Model Context Protocol (MCP)](https://modelcontextprotocol.io/) is a specification for exposing tools to LLMs—think of it as a standard interface. It defines how to describe tools, transport requests, and return results. Clean, standard, interoperable.
+
+AJ's backend services are tools (REST APIs) that an orchestrator invokes. Today they're custom REST; tomorrow they could speak MCP natively. But AJ adds the part MCP doesn't provide: **a reasoning layer that decides what to call**.
+
+```
+MCP:  User → Client decides → "Call tool X" → Result
+AJ:   User → Intent Classifier → Orchestrator decides → "Call tool → Result
+```
+
+With MCP alone, the host application (or LLM) makes all the decisions about which tools to invoke. With AJ, specialized models route and reason—intent classification happens in 50ms with a fine-tuned DistilBERT, not a general-purpose LLM inference. The orchestrator _reasons_ about which tools make sense given session state, history, and available agents.
+
+**AJ = reasoning layer + tool execution. MCP = how tools get exposed. Complementary, not competing.**
+
+### Defined Sequence vs. Adaptive Reasoning
+
+Visual workflow builders like [n8n](https://github.com/n8n-io/n8n) are fantastic for deterministic automation: "When X happens, do Y, then Z." You define the sequence, and execution follows that exact path. Every time.
+
+AJ is more like giving directions to a driver. You say where you want to go; it figures out the route:
+
+| Paradigm       | Workflow Builder       | AJ                           |
+| -------------- | ---------------------- | ---------------------------- |
+| **You define** | The exact sequence     | The goal                     |
+| **Execution**  | Deterministic (A→B→C)  | Adaptive (LLM chooses steps) |
+| **State**      | Workflow variables     | Semantic memory (persistent) |
+| **Best for**   | Repeatable automations | Adaptive problem-solving     |
+
+Want "every hour, sync CRM to Sheets"? Use a workflow builder—it's the right tool. Want "help me deploy this to whichever server makes sense"? That requires reasoning, context, and the ability to discover available agents on the fly.
+
+They're complementary. AJ could _be called by_ a workflow builder as an automation step. Or AJ could _call_ external automations when the reasoning engine decides that's the right move.
+
+### Ground Truth, Not Hallucination
+
+Traditional LLMs guess based on training data. Ask "what files are in my project?" and you get a confident-sounding hallucination.
+
+AJ maintains **external ground truth**. The orchestrator scans the actual filesystem, queries actual state, and feeds that to the LLM as authoritative context. The model reasons _about_ reality, not _instead of_ reality.
+
+No LLM drift. Session state is the source of truth—always.
+
+---
+
 ## Architecture Overview
 
 ### High-Level System Flow
 
 ```mermaid
 graph TB
-    A["🤖 User<br/>(Open-WebUI)"]
-    B["AJ Filter<br/>(Intent Router)"]
-    C["Pragmatics<br/>(4-Class Intent)"]
-    D["Orchestrator<br/>(Reasoning Engine)"]
-    E["Knowledge<br/>(Semantic Memory)"]
-    F["Tool Execution<br/>(Files, Shell, Code)"]
+    A(["🤖 User<br/>(Open-WebUI)"])
+    B[["AJ Filter<br/>(Intent Router)"]]
+    C[/"Pragmatics<br/>(4-Class Intent)"/]
+    D{{"Orchestrator<br/>(Reasoning Engine)"}}
+    E[("Knowledge<br/>(Semantic Memory)")]
+    F>"Tool Execution<br/>(Files, Shell, Code)"]
     G["FunnelCloud<br/>(Remote Agents)"]
 
     A -->|"Message"| B
@@ -50,27 +102,19 @@ graph TB
 
     D -->|"Store Insights"| E
     D -->|"Stream Results"| A
-
-    style A fill:#4CAF50,color:#fff
-    style B fill:#2196F3,color:#fff
-    style C fill:#FF9800,color:#fff
-    style D fill:#9C27B0,color:#fff
-    style E fill:#F44336,color:#fff
-    style F fill:#00BCD4,color:#fff
-    style G fill:#FFEB3B,color:#000
 ```
 
 ### System Components
 
-| Component            | Purpose                                | Technology                  | Port  |
-| -------------------- | -------------------------------------- | --------------------------- | ----- |
-| **AJ Filter**        | Intent routing & LLM coordination      | Open-WebUI Python filter    | N/A   |
-| **Pragmatics API**   | Fast intent classification (4 classes) | DistilBERT + FastAPI        | 8001  |
-| **Orchestrator API** | Reasoning engine + tool dispatch       | Python/FastAPI + Ollama     | 8004  |
-| **Memory API**       | Semantic knowledge storage & recall    | Qdrant vectors + embeddings | 8000  |
-| **Extractor API**    | Media processing (PDF, images, audio)  | LLaVA + Whisper             | 8002  |
-| **Qdrant**           | Vector database for semantic search    | Qdrant (in-memory)          | 6333  |
-| **Ollama**           | Local LLM inference                    | r1-distill-aj:32b-4k        | 11434 |
+| Component            | Purpose                                | Technology                                                                                                    | Port  |
+| -------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ----- |
+| **AJ Filter**        | Intent routing & LLM coordination      | [Open-WebUI](https://github.com/open-webui/open-webui) Python filter                                          | N/A   |
+| **Pragmatics API**   | Fast intent classification (4 classes) | [DistilBERT](https://huggingface.co/distilbert-base-uncased) + [FastAPI](https://github.com/tiangolo/fastapi) | 8001  |
+| **Orchestrator API** | Reasoning engine + tool dispatch       | Python/FastAPI + [Ollama](https://github.com/ollama/ollama)                                                   | 8004  |
+| **Memory API**       | Semantic knowledge storage & recall    | [Qdrant](https://github.com/qdrant/qdrant) vectors + embeddings                                               | 8000  |
+| **Extractor API**    | Media processing (PDF, images, audio)  | [LLaVA](https://github.com/haotian-liu/LLaVA) + [Whisper](https://github.com/openai/whisper)                  | 8002  |
+| **Qdrant**           | Vector database for semantic search    | [Qdrant](https://github.com/qdrant/qdrant) (in-memory)                                                        | 6333  |
+| **Ollama**           | Local LLM inference                    | r1-distill-aj:32b-4k                                                                                          | 11434 |
 
 ---
 
@@ -80,21 +124,13 @@ Every task follows the same intelligent pattern:
 
 ```mermaid
 graph TD
-    A["User Task"] --> B["UNDERSTAND<br/>Retrieve history & context<br/>Analyze workspace state"]
-    B --> C["PLAN<br/>Generate step-by-step plan<br/>Show & get approval"]
-    C --> D["EXECUTE WITH PROGRESS<br/>Run each step<br/>Show real-time updates"]
-    D --> E["RECONSIDER & ADAPT<br/>Check results vs plan<br/>Update if needed"]
-    E --> F["LEARN<br/>Store insights & patterns<br/>Get smarter next time"]
-    F --> G["Complete"]
+    A(["1. User Task"]) --> B["2. UNDERSTAND<br/>Retrieve history & context<br/>Analyze session state"]
+    B --> C{{"3. PLAN<br/>Generate step-by-step plan<br/>Show & get approval"}}
+    C --> D>"4. EXECUTE WITH PROGRESS<br/>Run each step<br/>Show real-time updates"]
+    D --> E[/"5. RECONSIDER & ADAPT<br/>Check results vs plan<br/>Update if needed"/]
+    E --> F[("6. LEARN<br/>Store insights & patterns<br/>Get smarter next time")]
+    F --> G(["7. Complete"])
     E -.->|Feedback| C
-
-    style A fill:#4CAF50,color:#fff
-    style B fill:#2196F3,color:#fff
-    style C fill:#9C27B0,color:#fff
-    style D fill:#FF9800,color:#fff
-    style E fill:#F44336,color:#fff
-    style F fill:#FFEB3B,color:#000
-    style G fill:#4CAF50,color:#fff
 ```
 
 This is **agentic reasoning**: not just executing, but thinking, adapting, and learning. You're not talking to a lookup table—you're working with an agent that reasons in real-time.
@@ -116,55 +152,66 @@ This is **agentic reasoning**: not just executing, but thinking, adapting, and l
   - Responsible for one job only: classify user intent
   - 50-100ms latency vs. 500ms-2s for generic models
   - 95%+ accuracy on 4 intent classes
-- **Dedicated reasoning engine** (Llama 7B-70B)
+- **Dedicated reasoning engine** (DeepSeek R1 Distill / Qwen2.5, 7B-72B)
 
   - Focused on complex task orchestration
-  - Access to local workspace state as ground truth
+  - Access to local session state as ground truth
   - Can update its understanding as it works
 
 - **vs. Single Unified Model**:
-  - ❌ Llama70B for everything = 40GB VRAM, 14x cost per token, single point of failure
-  - ✅ DistilBERT + Llama = specialized tools for each job
+  - ❌ 70B for everything = 40GB+ VRAM, high cost per token, single point of failure
+  - ✅ DistilBERT + specialized LLM = right-sized models for each job
 
 ### ⚡ **Workspace-Aware Reasoning**
-
-AJ maintains **external ground truth** about your workspace:
 
 ```mermaid
 graph TB
     subgraph traditional ["Traditional LLM Approach"]
         A1["User: What files?"]
         B1["LLM: Guesses from training data"]
-        C1["❌ Hallucinated/outdated info"]
+        C1(["❌ Hallucinated/outdated info"])
         A1 --> B1 --> C1
     end
 
     subgraph aj ["AJ Approach"]
         A2["User: What files?"]
-        B2["Orchestrator: Scans filesystem"]
-        C2["State: 47 files, 3 dirs"]
+        B2{{"Orchestrator: Scans filesystem"}}
+        C2[("State: 47 files, 3 dirs")]
         D2["LLM: Based on ground truth"]
-        E2["✅ **Accurate**, current info"]
+        E2(["✅ Accurate, current info"])
         A2 --> B2 --> C2 --> D2 --> E2
     end
-
-    style traditional fill:#ffebee
-    style aj fill:#e8f5e9
-    style C1 fill:#f44336,color:#fff
-    style E2 fill:#4caf50,color:#fff
 ```
 
-**No LLM drift.** Workspace state is authoritative, not the model's guess.
+Session state is the source of truth—the LLM reasons _about_ it, not _instead of_ it.
 
 ### 📚 **Knowledge Accumulation**
 
 Every interaction builds a semantic knowledge graph:
 
-- LLM asks: "What is the project structure?"
-- Orchestrator scans and learns
-- Knowledge stored: `{project_structure: [semantic_vectors]}`
-- Next request: LLM recalls without re-scanning
-- Over time: AI understands your patterns, preferences, architecture
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant O as Orchestrator
+    participant S as Session State
+    participant Q as Qdrant
+
+    U->>O: "What is the project structure?"
+    O->>S: Scan filesystem
+    S-->>O: 47 files, 3 directories
+    O->>Q: Store as semantic vectors
+    Q-->>O: Indexed
+    O-->>U: Here's your structure...
+
+    Note over Q: Knowledge persists
+
+    U->>O: "Remind me of the structure"
+    O->>Q: Semantic search
+    Q-->>O: Retrieved vectors
+    O-->>U: (No re-scan needed)
+```
+
+Over time: AI understands your patterns, preferences, architecture.
 
 ### 🚀 **Intelligent Tool Dispatch**
 
@@ -178,9 +225,36 @@ Single tool dispatcher knows:
 No hardcoded if/then rules. The reasoning engine decides _which_ tools to use based on:
 
 - Task intent
-- Current workspace state
+- Current session state
 - Historical performance
 - Available agents
+
+**End-to-End Task Flow:**
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant F as AJ Filter
+    participant P as Pragmatics
+    participant O as Orchestrator
+    participant T as Tool Dispatcher
+    participant H as Handler
+
+    U->>F: "Find all Python files"
+    F->>P: Classify intent
+    P-->>F: TASK (0.94)
+    F->>O: Execute task
+
+    O->>O: Plan: [scan_dir, filter_ext]
+    O->>T: dispatch("scan_directory")
+    T->>H: FileHandler.execute()
+    H-->>T: [file1.py, file2.py, ...]
+    T-->>O: Results
+
+    O->>O: Reason about results
+    O-->>F: Stream response (SSE)
+    F-->>U: "Found 12 Python files..."
+```
 
 ### 💪 **Scale to Your Infrastructure**
 
@@ -188,27 +262,47 @@ FunnelCloud agents extend beyond Docker containers:
 
 ```mermaid
 graph LR
-    M["AJ<br/>(Orchestrator)"]
-    D["Docker<br/>(Local Tasks)"]
-    W1["Windows<br/>Machine"]
-    L1["Linux<br/>Workstation"]
-    S1["Server<br/>Farm"]
+    M{{"AJ<br/>(Orchestrator)"}}
+    D>"Docker<br/>(Local Tasks)"]
+    W1(["Windows<br/>Machine"])
+    L1(["Linux<br/>Workstation"])
+    S1(["Server<br/>Farm"])
 
-    M -->|"mTLS Pinned"| D
-    M -->|"Discover & Execute"| W1
-    M -->|"Discover & Execute"| L1
-    M -->|"Discover & Execute"| S1
-
-    style M fill:#9C27B0,color:#fff
-    style D fill:#00BCD4,color:#fff
-    style W1 fill:#4CAF50,color:#fff
-    style L1 fill:#4CAF50,color:#fff
-    style S1 fill:#4CAF50,color:#fff
+    M ==>|"mTLS Pinned"| D
+    M -.->|"Discover & Execute"| W1
+    M -.->|"Discover & Execute"| L1
+    M -.->|"Discover & Execute"| S1
 ```
 
-- **Per-conversation discovery** (UDP broadcast)
+**Agent Discovery Sequence:**
+
+```mermaid
+sequenceDiagram
+    participant O as Orchestrator
+    participant N as Network (UDP)
+    participant A1 as Agent 1
+    participant A2 as Agent 2
+
+    Note over O: Conversation starts
+    O->>N: UDP Broadcast "FUNNEL_DISCOVER"
+    N-->>A1: Discovery packet
+    N-->>A2: Discovery packet
+    A1-->>O: "I'm here" + capabilities
+    A2-->>O: "I'm here" + capabilities
+    O->>O: Cache discovered agents
+
+    Note over O: Task execution
+    O->>A1: gRPC task (mTLS)
+    A1-->>O: Result
+
+    Note over O,A1: Agent fails mid-session
+    O-xA1: Connection lost
+    O->>N: Re-discover (lazy)
+    A2-->>O: Available
+    O->>A2: Retry task
+```
+
 - **mTLS + fingerprint pinning** (cryptographic identity)
-- **Lazy re-discovery** on agent failure
 - **Try-then-elevate** permission model
 - **One-click deployment** to Windows machines
 
@@ -219,7 +313,7 @@ graph LR
 .\Deploy-FunnelCloudAgent.ps1 -BuildServer "your-build-server"
 ```
 
-See [FunnelCloud/README.md](FunnelCloud/README.md) for full setup guide.
+See [FunnelCloud/README.md](layers/agents/FunnelCloud/README.md) for full setup guide.
 
 ---
 
@@ -229,27 +323,16 @@ All user input flows through a 4-class intent classifier:
 
 ```mermaid
 graph TB
-    A["User Input<br/>'Save this'"] --> B["DistilBERT<br/>Intent Classifier"]
+    A(["User Input<br/>'Save this'"]) --> B{{"DistilBERT<br/>Intent Classifier"}}
     B --> C["Casual<br/>(0.05)"]
-    B --> D["Save<br/>(0.87)"]
+    B --> D[/"Save<br/>(0.87)"/]
     B --> E["Recall<br/>(0.05)"]
     B --> F["Task<br/>(0.03)"]
 
-    C --> C1["Chat Only<br/>LLM responds"]
-    D --> D1["Save to Memory<br/>Store payload"]
-    E --> E1["Search Memory<br/>Semantic recall"]
-    F --> F1["Plan & Execute<br/>Orchestrator task"]
-
-    style A fill:#4CAF50,color:#fff
-    style B fill:#2196F3,color:#fff
-    style C fill:#FF9800,color:#fff
-    style D fill:#FF9800,color:#fff
-    style E fill:#FF9800,color:#fff
-    style F fill:#FF9800,color:#fff
-    style C1 fill:#F44336,color:#fff
-    style D1 fill:#F44336,color:#fff
-    style E1 fill:#F44336,color:#fff
-    style F1 fill:#F44336,color:#fff
+    C --> C1>"Chat Only<br/>LLM responds"]
+    D ==> D1>"Save to Memory<br/>Store payload"]
+    E --> E1>"Search Memory<br/>Semantic recall"]
+    F --> F1>"Plan & Execute<br/>Orchestrator task"]
 ```
 
 **Why this works:**
@@ -352,53 +435,48 @@ The AJ filter lives inside Open-WebUI and coordinates all backend services.
 ```mermaid
 graph LR
     subgraph Q1 ["What files exist?"]
-        I1["Intent: TASK"]
-        A1["Action: Orchestrator scans"]
-        R1["Result: File listing"]
+        I1(["Intent: TASK"])
+        A1{{"Action: Orchestrator scans"}}
+        R1>"Result: File listing"]
         I1 --> A1 --> R1
     end
 
     subgraph Q2 ["Remember: John is lead"]
-        I2["Intent: SAVE"]
-        A2["Action: Extract fact"]
-        R2["Result: Stored in Qdrant"]
+        I2(["Intent: SAVE"])
+        A2{{"Action: Extract fact"}}
+        R2[("Result: Stored in Qdrant")]
         I2 --> A2 --> R2
     end
 
     subgraph Q3 ["Who is the lead?"]
-        I3["Intent: RECALL"]
-        A3["Action: Semantic search"]
-        R3["Result: John"]
+        I3(["Intent: RECALL"])
+        A3{{"Action: Semantic search"}}
+        R3>"Result: John"]
         I3 --> A3 --> R3
     end
 
     subgraph Q4 ["Hello!"]
-        I4["Intent: CASUAL"]
-        A4["Action: LLM responds"]
-        R4["Result: Natural response"]
+        I4(["Intent: CASUAL"])
+        A4{{"Action: LLM responds"}}
+        R4>"Result: Natural response"]
         I4 --> A4 --> R4
     end
-
-    style Q1 fill:#bbdefb
-    style Q2 fill:#c8e6c9
-    style Q3 fill:#ffe0b2
-    style Q4 fill:#f8bbd0
 ```
 
 ### Tool Dispatch Architecture
 
 ```mermaid
 graph TD
-    A["User Task Request"]
-    B["Orchestrator<br/>reasoning_engine.py"]
-    C["Tool Dispatcher<br/>tool_dispatcher.py"]
+    A(["User Task Request"])
+    B{{"Orchestrator<br/>reasoning_engine.py"}}
+    C[["Tool Dispatcher<br/>tool_dispatcher.py"]]
 
-    D["File Handler<br/>(read/write/scan)"]
-    E["Shell Handler<br/>(PowerShell/Bash)"]
-    F["Polyglot Handler<br/>(Python/Node/Go)"]
-    G["gRPC Client<br/>(Remote Agents)"]
+    D[/"File Handler<br/>(read/write/scan)"/]
+    E[/"Shell Handler<br/>(PowerShell/Bash)"/]
+    F[/"Polyglot Handler<br/>(Python/Node/Go)"/]
+    G[/"gRPC Client<br/>(Remote Agents)"/]
 
-    H["Execution Results"]
+    H>"Execution Results"]
 
     A --> B
     B --> C
@@ -410,15 +488,6 @@ graph TD
     E --> H
     F --> H
     G --> H
-
-    style A fill:#4CAF50,color:#fff
-    style B fill:#9C27B0,color:#fff
-    style C fill:#2196F3,color:#fff
-    style D fill:#FF9800,color:#fff
-    style E fill:#FF9800,color:#fff
-    style F fill:#FF9800,color:#fff
-    style G fill:#FF9800,color:#fff
-    style H fill:#F44336,color:#fff
 ```
 
 **One dispatcher, many handlers.** Add a new tool:
@@ -435,7 +504,7 @@ graph TD
 
 - **Knowledge First**: Accumulate and recall what the system learns
 - **Reasoning Owns Tools**: Orchestrator decides what to execute, not hardcoded rules
-- **Ground Truth Outside**: Workspace state is authoritative, not the LLM
+- **Ground Truth Outside**: Session state is authoritative, not the LLM
 - **Verbatim Output**: Tools produce raw output; LLM shows it unchanged
 - **Specialization Over Generalization**: Small models for specific jobs beat big models for everything
 
@@ -448,11 +517,11 @@ layers/
 ├── memory/              # Semantic storage + retrieval
 ├── pragmatics/          # Intent classification
 └── extractor/           # Media processing
-
-FunnelCloud/
-├── certs/               # Certificate Authority + agent certs
-├── FunnelCloud.Agent/   # .NET 8 gRPC agent service
-├── FunnelCloud.Shared/  # Shared contracts
+└── agents/              # Distributed agent network
+    └── FunnelCloud/     # .NET 8 gRPC agent framework
+        ├── certs/       # Certificate Authority + agent certs
+        ├── FunnelCloud.Agent/   # Agent service
+        └── FunnelCloud.Shared/  # Shared contracts
 └── scripts/             # Deployment automation
     ├── New-CACertificate.ps1
     ├── New-AgentCertificate.ps1
@@ -526,7 +595,7 @@ docker compose up -d --build pragmatics_api
 - [x] Semantic memory (Qdrant vectors)
 - [x] Orchestrator reasoning engine
 - [x] Multi-step task planning
-- [x] Workspace state tracking (ground truth)
+- [x] Session state tracking (ground truth)
 
 ### Phase 2: FunnelCloud Agents ✅
 
@@ -539,15 +608,15 @@ docker compose up -d --build pragmatics_api
 - [ ] Multi-agent orchestration (parallel execution)
 - [ ] Capability advertisement (agent skills registry)
 
-See [FunnelCloud/README.md](FunnelCloud/README.md) for detailed deployment instructions.
+See [FunnelCloud/README.md](layers/agents/FunnelCloud/README.md) for detailed deployment instructions.
 
 ### Phase 3: Model Fine-Tuning 🔄 (In Progress)
 
 - [x] Training data generation (43 generators, 5,205 examples)
-- [x] QLoRA training pipeline (PEFT/TRL)
+- [x] [QLoRA](https://github.com/artidoro/qlora) training pipeline ([PEFT](https://github.com/huggingface/peft)/[TRL](https://github.com/huggingface/trl))
 - [x] Training capture system (live data collection)
 - [x] Agentic training infrastructure (trajectory format)
-- [ ] Model export to Ollama
+- [ ] Model export to [Ollama](https://github.com/ollama/ollama)
 - [ ] A/B testing framework
 - [ ] Distillation pipeline (72B → 7B/14B for deployment)
 
@@ -560,6 +629,7 @@ See [FunnelCloud/README.md](FunnelCloud/README.md) for detailed deployment instr
 
 ### Phase 5: Advanced Features 📅
 
+- [ ] **MCP-native tool APIs** (migrate from REST to Model Context Protocol)
 - [ ] Adaptive tool selection (learning from outcomes)
 - [ ] Error recovery strategies
 - [ ] Performance optimization
@@ -638,10 +708,10 @@ Test-WSMan -ComputerName BUILD_SERVER_NAME
 Get-Item WSMan:\localhost\Client\TrustedHosts
 
 # Verify certificates exist on build server
-Test-Path "C:\Code\aj.westerfield.cloud\FunnelCloud\certs\ca\ca.crt"
+Test-Path "C:\Code\aj.westerfield.cloud\layers\agents\FunnelCloud\certs\ca\ca.crt"
 ```
 
-See [FunnelCloud/README.md](FunnelCloud/README.md) for detailed troubleshooting.
+See [FunnelCloud/README.md](layers/agents/FunnelCloud/README.md) for detailed troubleshooting.
 
 ---
 
@@ -663,10 +733,10 @@ AJ includes **two custom fine-tuned models** trained on workspace-specific knowl
 
 ### Available Models
 
-| Model               | Base                         | Purpose                       | Context      |
-| ------------------- | ---------------------------- | ----------------------------- | ------------ |
-| `r1-distill-aj:32b` | DeepSeek-R1-Distill-Qwen-32B | Reasoning with `<think>` tags | 2k/4k/8k/32k |
-| `qwen2.5-aj:32b`    | Qwen2.5-32B-Instruct         | Direct answers                | 2k/4k/8k/32k |
+| Model               | Base                                                                                            | Purpose                       | Context      |
+| ------------------- | ----------------------------------------------------------------------------------------------- | ----------------------------- | ------------ |
+| `r1-distill-aj:32b` | [DeepSeek-R1-Distill-Qwen-32B](https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-32B) | Reasoning with `<think>` tags | 2k/4k/8k/32k |
+| `qwen2.5-aj:32b`    | [Qwen2.5-32B-Instruct](https://huggingface.co/Qwen/Qwen2.5-32B-Instruct)                        | Direct answers                | 2k/4k/8k/32k |
 
 **Default model**: `r1-distill-aj:32b-4k` (reasoning + balanced context)
 
@@ -674,17 +744,38 @@ AJ includes **two custom fine-tuned models** trained on workspace-specific knowl
 
 - **5,205 training examples** across 43+ domains
 - Docker, Kubernetes, Git, VS Code, PowerShell, Cloud/DevOps
-- QLoRA fine-tuning with 4-bit quantization
-- Trained on Vast.ai A100-SXM4-80GB
+- [QLoRA](https://github.com/artidoro/qlora) fine-tuning with 4-bit quantization
+- Trained on [Vast.ai](https://vast.ai/) A100-SXM4-80GB
 
 ### Agentic Training (Next Phase)
 
 Traditional instruction-response training teaches knowledge but **OODA loop reasoning** was lost in the initial training. AJ's next phase rethinks the corpus to maintain (and indeed expand) the domain knowledge, then adds:
 
-- **Trajectory format**: `thought → action → observation` chains
-- **Open datasets**: AgentInstruct (1.8M), SWE-bench (2.3K), ToolBench (16K)
-- **DPO alignment**: UltraFeedback, CodeUltraFeedback, HH-RLHF
-- **Full fine-tune target**: Qwen2.5-72B on 8x B200 192GB
+**Trajectory Format:**
+
+```mermaid
+sequenceDiagram
+    participant M as Model
+    participant E as Environment
+    participant R as Result
+
+    Note over M: OODA Loop
+
+    M->>M: 💭 Thought: "User wants files listed"
+    M->>E: 🎯 Action: scan_directory("/src")
+    E-->>M: 👁 Observation: [file1.py, file2.py]
+
+    M->>M: 💭 Thought: "Found 2 Python files"
+    M->>E: 🎯 Action: read_file("file1.py")
+    E-->>M: 👁 Observation: contents...
+
+    M->>M: 💭 Thought: "Ready to respond"
+    M->>R: Final answer to user
+```
+
+- **Open datasets**: [AgentInstruct](https://huggingface.co/datasets/microsoft/AgentInstruct) (1.8M), [SWE-bench](https://github.com/princeton-nlp/SWE-bench) (2.3K), [ToolBench](https://github.com/OpenBMB/ToolBench) (16K)
+- **DPO alignment**: [UltraFeedback](https://huggingface.co/datasets/openbmb/UltraFeedback), CodeUltraFeedback, [HH-RLHF](https://huggingface.co/datasets/Anthropic/hh-rlhf)
+- **Full fine-tune target**: [Qwen2.5-72B](https://huggingface.co/Qwen/Qwen2.5-72B-Instruct) on 8x B200 192GB
 - **Deployment path**: Distill to 7B/14B for 24GB 4090
 
 See [training/README.md](training/README.md) and [training/agentic/README.md](training/agentic/README.md) for details.

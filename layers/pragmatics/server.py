@@ -3,15 +3,18 @@ Pragmatics Service - Intent Classification & Entity Extraction for AJ
 
 Multi-class intent classification for conversation routing.
 Named entity recognition for extracting user info.
+LLM-based fact extraction for terminology and preferences.
 
 Endpoints:
   POST /api/pragmatics/classify - Full 4-class classification (recommended)
   POST /api/pragmatics/entities - Named entity extraction (names, orgs, dates, emails)
+  POST /api/pragmatics/extract-facts - LLM-based fact extraction (terminology, preferences)
   POST /api/pragmatic - Binary save detection (backward compatible)
 
 Models:
   - Intent: DistilBERT fine-tuned on conversation intents (4-class: casual/save/recall/task)
   - NER: spaCy en_core_web_sm for entity extraction
+  - Facts: Ollama LLM for semantic fact extraction
 """
 
 import logging
@@ -23,6 +26,7 @@ from pydantic import BaseModel, Field
 
 from services.classifier import classify_intent, classify_intent_multiclass, classify_with_context
 from services.entity_extractor import extract_entities_dict, extract_user_info
+from services.fact_extractor import extract_facts_llm, facts_to_storage_format
 
 
 # ============================================================================
@@ -32,7 +36,7 @@ from services.entity_extractor import extract_entities_dict, extract_user_info
 app = FastAPI(
     title="Pragmatics Service",
     description="Multi-class intent classification for AJ (casual/save/recall/task)",
-    version="2.0.0",
+    version="2.1.0",
 )
 
 
@@ -251,7 +255,7 @@ async def extract_user_info_endpoint(request: EntitiesRequest) -> UserInfoRespon
     Extract user-specific info from text.
     
     Convenience endpoint that returns the first name/email/org found.
-    Useful for populating user profile or workspace state.
+    Useful for populating user profile or session state.
     
     Example: "My name is John Doe and I work at Acme Corp"
     → {"name": "John Doe", "email": null, "organization": "Acme Corp"}
@@ -272,8 +276,107 @@ async def extract_user_info_endpoint(request: EntitiesRequest) -> UserInfoRespon
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.get("/health")
-async def health_check() -> Dict[str, str]:
-    """Health check endpoint for orchestration."""
-    return {"status": "healthy", "model": "4-class-intent"}
+# ============================================================================
+# LLM-based Fact Extraction
+# ============================================================================
+
+class FactsRequest(BaseModel):
+    """Request for fact extraction."""
+    text: str = Field(..., min_length=1, max_length=5000)
+
+
+class TerminologyItem(BaseModel):
+    """A terminology definition."""
+    alias: str
+    means: str
+
+
+class RelationshipItem(BaseModel):
+    """A relationship mention."""
+    relation: str
+    name: str
+
+
+class FactsResponse(BaseModel):
+    """Extracted facts from text."""
+    terminology: List[TerminologyItem] = Field(default_factory=list)
+    preferred_name: Optional[str] = None
+    preferences: List[str] = Field(default_factory=list)
+    relationships: List[RelationshipItem] = Field(default_factory=list)
+
+
+class StorageFactsResponse(BaseModel):
+    """Facts formatted for storage."""
+    facts: List[Dict[str, str]] = Field(default_factory=list)
+
+
+@app.post("/api/pragmatics/extract-facts", response_model=FactsResponse)
+async def extract_facts_endpoint(request: FactsRequest) -> FactsResponse:
+    """
+    Extract structured facts from text using LLM.
+    
+    This endpoint uses Ollama to semantically extract:
+      - terminology: Definitions like "when I say X I mean Y"
+      - preferred_name: User's preferred name
+      - preferences: User preferences
+      - relationships: Mentioned people and their relations
+    
+    Example: "When I refer to agents I mean FunnelCloud Agents. Call me Ian."
+    → {
+        "terminology": [{"alias": "agents", "means": "FunnelCloud Agents"}],
+        "preferred_name": "Ian",
+        "preferences": [],
+        "relationships": []
+      }
+    """
+    start_time = time.time()
+    text_preview = request.text[:100] if len(request.text) > 100 else request.text
+    
+    try:
+        facts = await extract_facts_llm(request.text)
+        duration_ms = int((time.time() - start_time) * 1000)
+        
+        fact_counts = {
+            "terms": len(facts.get("terminology", [])),
+            "prefs": len(facts.get("preferences", [])),
+            "rels": len(facts.get("relationships", [])),
+        }
+        if facts.get("preferred_name"):
+            fact_counts["name"] = facts["preferred_name"]
+        
+        logger.info(f"[extract-facts] ms={duration_ms} {fact_counts} text='{text_preview}'")
+        
+        return FactsResponse(**facts)
+    
+    except Exception as exc:
+        logger.error(f"[extract-facts] Error: {exc} | text: {text_preview}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/pragmatics/extract-facts-storage", response_model=StorageFactsResponse)
+async def extract_facts_for_storage(request: FactsRequest) -> StorageFactsResponse:
+    """
+    Extract facts and format for storage.
+    
+    Returns facts as list of {type, value} dicts ready for Qdrant storage.
+    
+    Example: "When I say agents I mean FunnelCloud Agents"
+    → {"facts": [{"type": "terminology", "value": "agents = FunnelCloud Agents"}]}
+    """
+    start_time = time.time()
+    text_preview = request.text[:100] if len(request.text) > 100 else request.text
+    
+    try:
+        facts = await extract_facts_llm(request.text)
+        storage_facts = facts_to_storage_format(facts)
+        duration_ms = int((time.time() - start_time) * 1000)
+        
+        logger.info(f"[extract-facts-storage] ms={duration_ms} count={len(storage_facts)} text='{text_preview}'")
+        
+        return StorageFactsResponse(facts=storage_facts)
+    
+    except Exception as exc:
+        logger.error(f"[extract-facts-storage] Error: {exc} | text: {text_preview}")
+        raise HTTPException(status_code=500, detail=str(exc))
+
 

@@ -47,4 +47,10 @@ public record AgentCapabilities
   /// gRPC port for task execution after mTLS handshake.
   /// </summary>
   public int GrpcPort { get; init; } = 41235;
+
+  /// <summary>
+  /// IP address of the agent (filled in by discovery service from response source).
+  /// This is the address the orchestrator should use to connect to this agent.
+  /// </summary>
+  public string? IpAddress { get; init; }
 }

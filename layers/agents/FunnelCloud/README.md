@@ -55,7 +55,7 @@ FunnelCloud extends AJ's capabilities beyond Docker containers to any machine on
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                     Certificate Authority                     │
-│                    (FunnelCloud/certs/ca/)                   │
+│              (layers/agents/FunnelCloud/certs/ca/)           │
 │                                                              │
 │  ca.crt          - CA public certificate                    │
 │  ca.key          - CA private key (keep secure!)            │
@@ -93,7 +93,7 @@ FunnelCloud extends AJ's capabilities beyond Docker containers to any machine on
 On your build server, create the CA that will sign all agent certificates:
 
 ```powershell
-cd C:\Code\aj.westerfield.cloud\FunnelCloud\scripts
+cd C:\Code\aj.westerfield.cloud\layers\agents\FunnelCloud\scripts
 .\New-CACertificate.ps1
 ```
 
@@ -220,14 +220,14 @@ If you prefer manual installation over the deployment script:
 On the build server:
 
 ```powershell
-cd C:\Code\aj.westerfield.cloud\FunnelCloud\scripts
+cd C:\Code\aj.westerfield.cloud\layers\agents\FunnelCloud\scripts
 .\New-AgentCertificate.ps1 -AgentId "my-machine"
 ```
 
 ### 2. Build Agent
 
 ```powershell
-cd C:\Code\aj.westerfield.cloud\FunnelCloud\FunnelCloud.Agent
+cd C:\Code\aj.westerfield.cloud\layers\agents\FunnelCloud\FunnelCloud.Agent
 dotnet publish -c Release -r win-x64 --self-contained -o C:\FunnelCloud\Agent
 ```
 

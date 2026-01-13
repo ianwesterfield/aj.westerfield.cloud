@@ -981,35 +981,55 @@ async def _save_chunk_to_memory(
 
 async def _search_memory(
     user_id: str,
+    query_text: str,
+    top_k: int = 5,
+) -> List[dict]:
+    """Search memory for relevant context."""
+    try:
+        payload = {
+            "user_id": user_id,
+            "query_text": query_text,
+            "top_k": top_k,
+        }
+        
+        resp = requests.post(f"{MEMORY_API_URL}/api/memory/search", json=payload, timeout=10)
+        
+        if resp.status_code == 404:
+            # No memories found - not an error
+            return []
+        
+        resp.raise_for_status()
+        return resp.json()
+    
+    except Exception as e:
+        print(f"[aj] Search error: {e}")
+        return []
+
+
+async def _save_to_memory(
+    user_id: str,
     messages: List[dict],
-    model: str,
-    metadata: dict,
-    source_type: Optional[str],
-    source_name: Optional[str],
-) -> Tuple[str, List[dict]]:
-    """Search memory and potentially save conversation."""
+    source_type: Optional[str] = None,
+    source_name: Optional[str] = None,
+) -> bool:
+    """Save conversation to memory. Returns True if saved successfully."""
     try:
         payload = {
             "user_id": user_id,
             "messages": messages,
-            "model": model,
-            "metadata": metadata,
             "source_type": source_type,
             "source_name": source_name,
         }
         
-        resp = requests.post(f"{MEMORY_API_URL}/api/memory/save", json=payload, timeout=60)
+        resp = requests.post(f"{MEMORY_API_URL}/api/memory/save", json=payload, timeout=30)
         resp.raise_for_status()
         
         result = resp.json()
-        status = result.get("status", "unknown")
-        existing_context = result.get("existing_context") or []
-        
-        return status, existing_context
+        return result.get("status") == "saved"
     
     except Exception as e:
-        print(f"[aj] Search error: {e}")
-        return "error", []
+        print(f"[aj] Save error: {e}")
+        return False
 
 
 def _extract_user_text_prompt(messages: List[dict]) -> Optional[str]:
@@ -1256,26 +1276,10 @@ class Filter:
                     ):
                         chunks_saved += 1
             
-            # Classify intent
+            # Classify intent FIRST - this determines if we save
             orchestrator_context = None
             intent_result = {"intent": "casual", "confidence": 0.5}
-            
-            # Search memory FIRST - we need user context (name, etc.) for tasks
-            status = "skipped"
-            context = []
-            source_type = "document" if chunks else "prompt"
-            
-            if chunks:
-                source_name = filenames[0] if filenames else "attachment"
-            else:
-                content = messages[-1].get("content", "") if messages else ""
-                source_name = (
-                    (str(content)[:50] + "...") if len(str(content)) > 50 else str(content)
-                )
-            
-            status, context = await _search_memory(
-                user_id, messages, model, metadata, source_type, source_name
-            )
+            intent = "casual"
             
             if user_text:
                 intent_result = _classify_intent(user_text)
@@ -1288,28 +1292,54 @@ class Filter:
                     should_upgrade = _detect_task_continuation(user_text, messages, confidence)
                     if should_upgrade:
                         print(f"[aj] Upgrading intent from casual to task (continuation detected)")
-                        intent = "task"  # Actually upgrade the intent!
-                
-                # For task intents, engage orchestrator (pass memory context for user info)
-                if intent == "task" and self.user_valves.enable_orchestrator:
-                    orchestrator_context, streamed = await _orchestrate_task(
-                        user_id,
-                        messages,
-                        self.user_valves.workspace_root if self.user_valves.workspace_root else None,
-                        __event_emitter__,
-                        memory_context=context,  # Pass user context (name, preferences)
-                        model=model,  # Pass selected model from Open-WebUI
-                    )
-                    # Store streamed content to prepend to LLM response in outlet
-                    self._streamed_content = streamed
+                        intent = "task"
             
-            # Merge immediate image context (memory already searched above)
+            # Search memory for context (needed for tasks and recall)
+            context = []
+            if user_text:
+                search_results = await _search_memory(user_id, user_text)
+                # Convert search results to context format
+                context = [
+                    {
+                        "user_text": r.get("user_text", ""),
+                        "score": r.get("score", 0),
+                        "source_type": r.get("source_type", "prompt"),
+                        "source_name": r.get("source_name"),
+                    }
+                    for r in search_results
+                ]
+            
+            # SAVE based on intent classification
+            saved = False
+            if intent == "save" and user_text:
+                await __event_emitter__(
+                    create_status_dict("Saving to memory...", LogCategory.MEMORY, LogLevel.PROCESSING)
+                )
+                saved = await _save_to_memory(
+                    user_id,
+                    messages,
+                    source_type="prompt",
+                    source_name=user_text[:50] if len(user_text) > 50 else user_text,
+                )
+                if saved:
+                    print(f"[aj] Saved memory for user={user_id}")
+            
+            # For task intents, engage orchestrator (pass memory context for user info)
+            if intent == "task" and self.user_valves.enable_orchestrator:
+                orchestrator_context, streamed = await _orchestrate_task(
+                    user_id,
+                    messages,
+                    self.user_valves.workspace_root if self.user_valves.workspace_root else None,
+                    __event_emitter__,
+                    memory_context=context,  # Pass user context (name, preferences)
+                    model=model,  # Pass selected model from Open-WebUI
+                )
+                # Store streamed content to prepend to LLM response in outlet
+                self._streamed_content = streamed
+            
+            # Merge immediate image context
             if immediate_image_context:
                 context = immediate_image_context + context
-                if status == "skipped":
-                    status = "context_found"
-                elif status == "saved":
-                    status = "saved_with_context"
             
             # Determine if we have context to inject
             has_context = bool(context) or bool(orchestrator_context)
@@ -1336,22 +1366,17 @@ class Filter:
                 
                 body = self._inject_context(body, context or [], orchestrator_context)
             
-            elif status == "saved":
+            elif saved:
                 await __event_emitter__(
                     create_status_dict("Saved", LogCategory.FILTER, LogLevel.SAVED, done=True)
                 )
             
-            elif status == "skipped":
+            else:
                 await __event_emitter__(
                     create_status_dict("Ready", LogCategory.FILTER, LogLevel.READY, done=True, hidden=True)
                 )
             
-            else:
-                await __event_emitter__(
-                    create_status_dict("Ready", LogCategory.FILTER, LogLevel.READY, done=True)
-                )
-            
-            print(f"[aj] user={user_id} intent={intent_result.get('intent')} status={status} context={len(context or [])} chunks={chunks_saved}")
+            print(f"[aj] user={user_id} intent={intent} saved={saved} context={len(context or [])} chunks={chunks_saved}")
             return body
         
         except Exception as e:

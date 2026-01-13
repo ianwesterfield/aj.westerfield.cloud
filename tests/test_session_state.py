@@ -1,7 +1,7 @@
 """
-Tests for WorkspaceState - External State Tracking
+Tests for SessionState - External State Tracking
 
-Tests the workspace state manager that maintains ground-truth state
+Tests the session state manager that maintains ground-truth state
 from actual tool outputs (rather than LLM tracking).
 """
 
@@ -25,7 +25,7 @@ class CompletedStep:
 
 
 @dataclass
-class WorkspaceState:
+class SessionState:
     """External state maintained by orchestrator."""
     scanned_paths: Set[str] = field(default_factory=set)
     files: List[str] = field(default_factory=list)
@@ -103,7 +103,7 @@ class WorkspaceState:
         return [f for f in self.files if f not in self.read_files]
     
     def format_for_prompt(self) -> str:
-        lines = ["=== WORKSPACE STATE ==="]
+        lines = ["=== session state ==="]
         if self.completed_steps:
             lines.append("Completed steps:")
             for step in self.completed_steps[-15:]:
@@ -138,26 +138,26 @@ class WorkspaceState:
         self.completed_steps.clear()
 
 
-_current_state: Optional[WorkspaceState] = None
+_current_state: Optional[SessionState] = None
 
-def get_workspace_state() -> WorkspaceState:
+def get_session_state() -> SessionState:
     global _current_state
     if _current_state is None:
-        _current_state = WorkspaceState()
+        _current_state = SessionState()
     return _current_state
 
-def reset_workspace_state() -> WorkspaceState:
+def reset_session_state() -> SessionState:
     global _current_state
-    _current_state = WorkspaceState()
+    _current_state = SessionState()
     return _current_state
 
 
-class TestWorkspaceStateBasics:
+class TestSessionStateBasics:
     """Test basic state operations."""
     
     def test_init_empty_state(self):
         """Fresh state should be empty."""
-        state = WorkspaceState()
+        state = SessionState()
         assert len(state.scanned_paths) == 0
         assert len(state.files) == 0
         assert len(state.dirs) == 0
@@ -168,7 +168,7 @@ class TestWorkspaceStateBasics:
     
     def test_reset_clears_state(self):
         """Reset should clear all state except user_info."""
-        state = WorkspaceState()
+        state = SessionState()
         state.scanned_paths.add(".")
         state.files.append("test.py")
         state.edited_files.add("test.py")
@@ -190,7 +190,7 @@ class TestUpdateFromStep:
     
     def test_scan_workspace_update(self):
         """Scan workspace should update scanned_paths."""
-        state = WorkspaceState()
+        state = SessionState()
         
         output = """PATH: /workspace
 TOTAL: 3 items (1 dirs, 2 files)
@@ -210,7 +210,7 @@ test.py       file   500 B     2024-01-01
     
     def test_read_file_update(self):
         """Read file should add to read_files set."""
-        state = WorkspaceState()
+        state = SessionState()
         
         state.update_from_step("read_file", {"path": "test.py"}, "content here", True)
         
@@ -220,7 +220,7 @@ test.py       file   500 B     2024-01-01
     
     def test_write_file_success_update(self):
         """Successful write should add to edited_files."""
-        state = WorkspaceState()
+        state = SessionState()
         
         state.update_from_step("write_file", {"path": "new.py"}, "Written 100 bytes", True)
         
@@ -229,7 +229,7 @@ test.py       file   500 B     2024-01-01
     
     def test_write_file_failure_not_edited(self):
         """Failed write should NOT add to edited_files."""
-        state = WorkspaceState()
+        state = SessionState()
         
         state.update_from_step("write_file", {"path": "fail.py"}, "Error", False)
         
@@ -238,7 +238,7 @@ test.py       file   500 B     2024-01-01
     
     def test_replace_in_file_update(self):
         """Replace in file should update edited_files on success."""
-        state = WorkspaceState()
+        state = SessionState()
         
         state.update_from_step(
             "replace_in_file", 
@@ -251,7 +251,7 @@ test.py       file   500 B     2024-01-01
     
     def test_insert_in_file_update(self):
         """Insert in file should update edited_files on success."""
-        state = WorkspaceState()
+        state = SessionState()
         
         state.update_from_step(
             "insert_in_file", 
@@ -264,7 +264,7 @@ test.py       file   500 B     2024-01-01
     
     def test_shell_command_update(self):
         """Shell commands should be recorded in steps."""
-        state = WorkspaceState()
+        state = SessionState()
         
         state.update_from_step(
             "execute_shell", 
@@ -278,7 +278,7 @@ test.py       file   500 B     2024-01-01
     
     def test_none_tool_skip(self):
         """None tool (idempotent skip) should be recorded."""
-        state = WorkspaceState()
+        state = SessionState()
         
         state.update_from_step(
             "none",
@@ -295,7 +295,7 @@ class TestParseScanOutput:
     
     def test_parse_standard_format(self):
         """Parse standard ls-style output."""
-        state = WorkspaceState()
+        state = SessionState()
         
         output = """PATH: /workspace
 TOTAL: 4 items (2 dirs, 2 files)
@@ -316,7 +316,7 @@ setup.py      file   500 B     2024-01-01
     
     def test_parse_nested_path(self):
         """Parse output with base path."""
-        state = WorkspaceState()
+        state = SessionState()
         
         output = """PATH: /workspace/layers
 NAME          TYPE
@@ -334,7 +334,7 @@ main.py       file
     
     def test_skip_headers_and_separators(self):
         """Should skip header lines and separators."""
-        state = WorkspaceState()
+        state = SessionState()
         
         output = """PATH: .
 NAME          TYPE
@@ -353,7 +353,7 @@ class TestEditableFiles:
     
     def test_get_editable_files_filters_binary(self):
         """Should exclude binary files."""
-        state = WorkspaceState()
+        state = SessionState()
         state.files = ["test.py", "image.png", "model.safetensors", "config.json"]
         
         editable = state.get_editable_files()
@@ -365,7 +365,7 @@ class TestEditableFiles:
     
     def test_get_editable_files_excludes_edited(self):
         """Should exclude already edited files."""
-        state = WorkspaceState()
+        state = SessionState()
         state.files = ["a.py", "b.py", "c.py"]
         state.edited_files.add("b.py")
         
@@ -377,7 +377,7 @@ class TestEditableFiles:
     
     def test_get_unread_files(self):
         """Should return files not yet read."""
-        state = WorkspaceState()
+        state = SessionState()
         state.files = ["a.py", "b.py", "c.py"]
         state.read_files.add("a.py")
         
@@ -393,16 +393,16 @@ class TestFormatForPrompt:
     
     def test_format_empty_state(self):
         """Empty state should still produce valid format."""
-        state = WorkspaceState()
+        state = SessionState()
         
         output = state.format_for_prompt()
         
-        assert "WORKSPACE STATE" in output
+        assert "session state" in output
         assert "END STATE" in output
     
     def test_format_with_completed_steps(self):
         """Should include completed steps."""
-        state = WorkspaceState()
+        state = SessionState()
         state.update_from_step("scan_workspace", {"path": "."}, "output", True)
         
         output = state.format_for_prompt()
@@ -412,7 +412,7 @@ class TestFormatForPrompt:
     
     def test_format_with_read_files(self):
         """Should show already read files."""
-        state = WorkspaceState()
+        state = SessionState()
         state.read_files.add("test.py")
         
         output = state.format_for_prompt()
@@ -422,7 +422,7 @@ class TestFormatForPrompt:
     
     def test_format_with_user_info(self):
         """Should include user info."""
-        state = WorkspaceState()
+        state = SessionState()
         state.user_info["name"] = "Ian"
         
         output = state.format_for_prompt()
@@ -436,7 +436,7 @@ class TestStateChecks:
     
     def test_has_scanned(self):
         """Test scanned path checking."""
-        state = WorkspaceState()
+        state = SessionState()
         
         assert state.has_scanned(".") is False
         state.scanned_paths.add(".")
@@ -444,7 +444,7 @@ class TestStateChecks:
     
     def test_has_edited(self):
         """Test edited file checking."""
-        state = WorkspaceState()
+        state = SessionState()
         
         assert state.has_edited("test.py") is False
         state.edited_files.add("test.py")
@@ -452,7 +452,7 @@ class TestStateChecks:
     
     def test_has_read(self):
         """Test read file checking."""
-        state = WorkspaceState()
+        state = SessionState()
         
         assert state.has_read("test.py") is False
         state.read_files.add("test.py")
@@ -462,21 +462,21 @@ class TestStateChecks:
 class TestSingletonState:
     """Test singleton state management."""
     
-    def test_get_workspace_state_returns_same_instance(self):
+    def test_get_session_state_returns_same_instance(self):
         """Should return same instance on repeated calls."""
-        reset_workspace_state()  # Start fresh
+        reset_session_state()  # Start fresh
         
-        state1 = get_workspace_state()
-        state2 = get_workspace_state()
+        state1 = get_session_state()
+        state2 = get_session_state()
         
         assert state1 is state2
     
     def test_reset_creates_new_instance(self):
         """Reset should create a new instance."""
-        state1 = get_workspace_state()
+        state1 = get_session_state()
         state1.scanned_paths.add("test")
         
-        state2 = reset_workspace_state()
+        state2 = reset_session_state()
         
         assert "test" not in state2.scanned_paths
 
@@ -488,8 +488,8 @@ class TestMetadataCaching:
         """File sizes should be cached when scanning workspace."""
         # Import actual implementation
         import sys
-        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
-        from services.workspace_state import WorkspaceState as ActualState, FileMetadata, EnvironmentFacts
+        sys.path.insert(0, str(__file__).replace("tests\\test_session_state.py", "layers\\orchestrator"))
+        from services.session_state import SessionState as ActualState, FileMetadata, EnvironmentFacts
         
         state = ActualState()
         
@@ -521,8 +521,8 @@ requirements.txt      file      128 B     2025-01-01
     def test_shell_facts_extraction(self):
         """Environment facts should be extracted from shell command outputs."""
         import sys
-        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
-        from services.workspace_state import WorkspaceState as ActualState
+        sys.path.insert(0, str(__file__).replace("tests\\test_session_state.py", "layers\\orchestrator"))
+        from services.session_state import SessionState as ActualState
         
         state = ActualState()
         
@@ -539,8 +539,8 @@ nothing to commit, working tree clean"""
     def test_python_version_extraction(self):
         """Python version should be extracted from python --version."""
         import sys
-        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
-        from services.workspace_state import WorkspaceState as ActualState
+        sys.path.insert(0, str(__file__).replace("tests\\test_session_state.py", "layers\\orchestrator"))
+        from services.session_state import SessionState as ActualState
         
         state = ActualState()
         state.update_from_step("execute_shell", {"command": "python --version"}, "Python 3.11.5", True)
@@ -550,8 +550,8 @@ nothing to commit, working tree clean"""
     def test_size_parsing(self):
         """Human-readable sizes should be converted to bytes."""
         import sys
-        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
-        from services.workspace_state import WorkspaceState as ActualState
+        sys.path.insert(0, str(__file__).replace("tests\\test_session_state.py", "layers\\orchestrator"))
+        from services.session_state import SessionState as ActualState
         
         state = ActualState()
         
@@ -565,8 +565,8 @@ nothing to commit, working tree clean"""
     def test_read_file_adds_line_count(self):
         """Reading files should cache line count metadata."""
         import sys
-        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
-        from services.workspace_state import WorkspaceState as ActualState
+        sys.path.insert(0, str(__file__).replace("tests\\test_session_state.py", "layers\\orchestrator"))
+        from services.session_state import SessionState as ActualState
         
         state = ActualState()
         
@@ -584,8 +584,8 @@ line 5"""
     def test_format_for_prompt_includes_metadata(self):
         """format_for_prompt should include environment facts and largest files."""
         import sys
-        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
-        from services.workspace_state import WorkspaceState as ActualState, FileMetadata
+        sys.path.insert(0, str(__file__).replace("tests\\test_session_state.py", "layers\\orchestrator"))
+        from services.session_state import SessionState as ActualState, FileMetadata
         
         state = ActualState()
         state.files = ["README.md", "large_file.bin"]
@@ -623,8 +623,8 @@ class TestConversationLedger:
     def test_user_requests_tracked(self):
         """User requests should be logged to the ledger."""
         import sys
-        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
-        from services.workspace_state import WorkspaceState as ActualState
+        sys.path.insert(0, str(__file__).replace("tests\\test_session_state.py", "layers\\orchestrator"))
+        from services.session_state import SessionState as ActualState
         
         state = ActualState()
         state.add_user_request("List all files in the workspace")
@@ -637,8 +637,8 @@ class TestConversationLedger:
     def test_ip_addresses_extracted(self):
         """IP addresses should be extracted from command outputs."""
         import sys
-        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
-        from services.workspace_state import WorkspaceState as ActualState
+        sys.path.insert(0, str(__file__).replace("tests\\test_session_state.py", "layers\\orchestrator"))
+        from services.session_state import SessionState as ActualState
         
         state = ActualState()
         output = "Server started at 192.168.1.100:8080"
@@ -650,8 +650,8 @@ class TestConversationLedger:
     def test_urls_extracted(self):
         """URLs should be extracted from command outputs."""
         import sys
-        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
-        from services.workspace_state import WorkspaceState as ActualState
+        sys.path.insert(0, str(__file__).replace("tests\\test_session_state.py", "layers\\orchestrator"))
+        from services.session_state import SessionState as ActualState
         
         state = ActualState()
         output = "API docs available at https://api.example.com/docs"
@@ -663,8 +663,8 @@ class TestConversationLedger:
     def test_ports_extracted(self):
         """Port numbers should be extracted from command outputs."""
         import sys
-        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
-        from services.workspace_state import WorkspaceState as ActualState
+        sys.path.insert(0, str(__file__).replace("tests\\test_session_state.py", "layers\\orchestrator"))
+        from services.session_state import SessionState as ActualState
         
         state = ActualState()
         output = "Server listening on port 8443"
@@ -676,8 +676,8 @@ class TestConversationLedger:
     def test_ledger_in_prompt_output(self):
         """Ledger should appear in format_for_prompt output."""
         import sys
-        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
-        from services.workspace_state import WorkspaceState as ActualState
+        sys.path.insert(0, str(__file__).replace("tests\\test_session_state.py", "layers\\orchestrator"))
+        from services.session_state import SessionState as ActualState
         
         state = ActualState()
         state.add_user_request("Deploy to production")
@@ -693,8 +693,8 @@ class TestConversationLedger:
     def test_ledger_preserved_across_reset(self):
         """Ledger should be preserved when reset() is called."""
         import sys
-        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
-        from services.workspace_state import WorkspaceState as ActualState
+        sys.path.insert(0, str(__file__).replace("tests\\test_session_state.py", "layers\\orchestrator"))
+        from services.session_state import SessionState as ActualState
         
         state = ActualState()
         state.add_user_request("First request")
@@ -710,8 +710,8 @@ class TestConversationLedger:
     def test_actions_logged(self):
         """Tool actions should be logged to the ledger."""
         import sys
-        sys.path.insert(0, str(__file__).replace("tests\\test_workspace_state.py", "layers\\orchestrator"))
-        from services.workspace_state import WorkspaceState as ActualState
+        sys.path.insert(0, str(__file__).replace("tests\\test_session_state.py", "layers\\orchestrator"))
+        from services.session_state import SessionState as ActualState
         
         state = ActualState()
         state.update_from_step("read_file", {"path": "config.yaml"}, "content here", True)

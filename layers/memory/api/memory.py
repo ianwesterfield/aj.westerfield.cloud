@@ -42,10 +42,6 @@ from qdrant_client.http import models
 router = APIRouter(tags=["memory"])
 collection_name = os.getenv("INDEX_NAME", "user_memory_collection")
 
-# Pragmatics classifier endpoint
-PRAGMATICS_HOST = os.getenv("PRAGMATICS_HOST", "pragmatics_api")
-PRAGMATICS_PORT = os.getenv("PRAGMATICS_PORT", "8001")
-
 # HTTP session with retry for Qdrant REST calls
 _http_session = None
 
@@ -59,45 +55,6 @@ def _get_http_session() -> requests.Session:
         _http_session.mount("http://", adapter)
         _http_session.mount("https://", adapter)
     return _http_session
-
-def _is_worth_saving(messages: list) -> tuple[bool, str]:
-    """
-    Ask the pragmatics classifier if this conversation is worth saving.
-    
-    Returns:
-        (should_save, error_message) - error_message is empty string if no error
-    
-    Raises no exceptions - returns (False, error) if classifier is unavailable.
-    """
-    # Extract the last user message to send to pragmatics
-    user_text = None
-    for msg in reversed(messages):
-        msg_dict = msg.model_dump() if hasattr(msg, 'model_dump') else msg
-        if msg_dict.get("role") == "user":
-            user_text = _get_text_content(msg_dict.get("content", ""))
-            break
-    
-    if not user_text:
-        return True, ""
-    
-    try:
-        resp = requests.post(
-            f"http://{PRAGMATICS_HOST}:{PRAGMATICS_PORT}/api/pragmatic",
-            json={"text": user_text},
-            timeout=5
-        )
-        resp.raise_for_status()
-        result = resp.json()
-        is_save = result.get("is_save_request", False)
-        confidence = result.get("confidence", 0.0)
-        print(f"[memory] Classifier: is_save={is_save} confidence={confidence:.2f}")
-        return is_save, ""
-    except requests.exceptions.ConnectionError:
-        return False, "Pragmatics classifier unavailable"
-    except requests.exceptions.Timeout:
-        return False, "Pragmatics classifier timeout"
-    except Exception as e:
-        return False, f"Pragmatics error: {str(e)[:50]}"
 
 def _get_text_content(content) -> str:
     """Extract plain text from message content (handles strings and multi-modal arrays)."""
@@ -199,9 +156,13 @@ def save_memory(req: SaveRequest) -> Dict[str, Any]:
     """
     Save a conversation to memory.
     
-    Does search-first: looks for similar memories, extracts facts, 
-    asks my classifier if it is worth saving, then stores it.
-    Returns any found context so the filter can inject it.
+    ATOMIC: By the time this is called, the decision to save has already
+    been made by the upstream filter/orchestrator. This endpoint just:
+    1. Extracts text and facts
+    2. Embeds the content
+    3. Stores in Qdrant
+    
+    No classification, no searching - those happen elsewhere.
     """
     _ensure_collection()
     
@@ -215,14 +176,7 @@ def save_memory(req: SaveRequest) -> Dict[str, Any]:
             user_text = _get_text_content(user_content)
             break
     
-    # For SEARCH: embed only the last user message (not full conversation)
-    # This prevents prior context from polluting search results
-    if user_text:
-        search_vector = embed_messages([{"role": "user", "content": user_text}])
-    else:
-        search_vector = embed_messages(req.messages)
-    
-    # For STORAGE: embed the full conversation for richer context
+    # Embed the full conversation for storage
     storage_vector = embed_messages(req.messages)
     
     if not user_text:
@@ -231,134 +185,14 @@ def save_memory(req: SaveRequest) -> Dict[str, Any]:
     # Serialize full content for storage (with size limit)
     serialized_content = _serialize_full_content(user_content)
     if serialized_content is None:
-        # Content too large, skip saving
         return {
             "status": "skipped",
             "point_id": None,
             "content_hash": None,
-            "existing_context": None,
             "reason": "Content too large (>100MB)"
         }
     
-    # Always search for similar memories first (even if we might skip saving)
-    client = _client()
-    qdrant_host = os.getenv("QDRANT_HOST", "localhost")
-    qdrant_port = os.getenv("QDRANT_PORT", "6333")
-    existing_context = None
-    
-    try:
-        # Use REST API directly for search with retry
-        session = _get_http_session()
-        search_response = session.post(
-            f"http://{qdrant_host}:{qdrant_port}/collections/{collection_name}/points/search",
-            json={
-                "vector": search_vector,  # Use search_vector (last user message only) for retrieval
-                "filter": {
-                    "must": [
-                        {
-                            "key": "user_id",
-                            "match": {"value": req.user_id}
-                        }
-                    ]
-                },
-                "limit": 5,  # Get more results to find relevant docs
-                "score_threshold": 0.35,  # Lower threshold to catch context from previous messages/images
-                "with_payload": True,
-            },
-            timeout=5
-        )
-        search_response.raise_for_status()
-        search_data = search_response.json()
-        search_results = search_data.get("result", []) if "result" in search_data else []
-        
-        # Apply score gap filter: if there's a big drop between top result and others,
-        # only keep the highly relevant ones (prevents "wife's name" when asking "my name")
-        if len(search_results) > 1:
-            top_score = search_results[0].get("score", 0)
-            filtered_results = [search_results[0]]  # Always keep top result
-            for pt in search_results[1:]:
-                pt_score = pt.get("score", 0)
-                # Keep if within 15% of top score (relative gap)
-                # OR if absolute score is very high (>0.7)
-                if pt_score >= top_score * 0.85 or pt_score > 0.7:
-                    filtered_results.append(pt)
-            search_results = filtered_results
-        
-        # Store context if found
-        if search_results:
-            existing_context = []
-            for pt in search_results:
-                payload = pt.get("payload", {})
-                facts_text = payload.get("facts_text")
-                stored_text = payload.get("user_text", "")
-                full_content = payload.get("full_content")
-                
-                # Use full content if available, otherwise fall back to text
-                context_text = stored_text
-                if full_content:
-                    try:
-                        # If it's JSON array, extract text parts
-                        content_data = json.loads(full_content)
-                        if isinstance(content_data, list):
-                            text_parts = []
-                            for item in content_data:
-                                if item.get("type") == "text":
-                                    text_parts.append(item.get("text", ""))
-                            if text_parts:
-                                context_text = " ".join(text_parts)
-                    except:
-                        pass  # Fall back to stored_text
-                
-                existing_context.append({
-                    "user_text": facts_text if facts_text else context_text,
-                    "full_content": full_content,  # Include full content for multi-modal
-                    "facts": payload.get("facts"),
-                    "score": pt.get("score", 0),
-                    "source_type": payload.get("source_type", "prompt"),
-                    "source_name": payload.get("source_name"),
-                })
-    
-    except Exception:
-        pass  # Search failure is non-fatal
-    
-    # Check if this conversation is worth saving via pragmatics classifier
-    # Skip classifier for document chunks (always save those)
-    if req.skip_classifier:
-        worth_saving = True
-        classifier_error = ""
-    else:
-        worth_saving, classifier_error = _is_worth_saving(req.messages)
-    
-    if classifier_error:
-        # Classifier is down - report the error
-        return {
-            "status": "error",
-            "point_id": None,
-            "content_hash": None,
-            "existing_context": existing_context if existing_context else None,
-            "reason": classifier_error
-        }
-    
-    if not worth_saving:
-    
-        # Return context if found, even though we're not saving
-        if existing_context:
-            return {
-                "status": "context_found",
-                "point_id": None,
-                "content_hash": None,
-                "existing_context": existing_context,
-                "reason": "Conversation too trivial to save, but context found"
-            }
-        return {
-            "status": "skipped",
-            "point_id": None,
-            "content_hash": None,
-            "existing_context": None,
-            "reason": "Conversation too trivial to save"
-        }
-    
-    # Always save the new memory (even if similar context was found)
+    # Generate content hash for deduplication
     content_hash = hashlib.md5(serialized_content.encode()).hexdigest()
     
     # Extract structured facts (names, dates, etc.) from user text
@@ -368,8 +202,8 @@ def save_memory(req: SaveRequest) -> Dict[str, Any]:
     # Build payload with full content and extracted facts
     payload: Dict[str, Any] = {
         "user_id": req.user_id,
-        "user_text": user_text,  # Keep for compatibility/search
-        "full_content": serialized_content,  # New: full multi-modal content
+        "user_text": user_text,
+        "full_content": serialized_content,
     }
     
     # Add extracted facts if any
@@ -384,27 +218,19 @@ def save_memory(req: SaveRequest) -> Dict[str, Any]:
     if req.source_name:
         payload["source_name"] = req.source_name
     
+    # Store in Qdrant
+    client = _client()
     point_id = _make_uuid(req.user_id, content_hash)
-    point = models.PointStruct(id=point_id, vector=storage_vector, payload=payload)  # Use storage_vector (full convo) for storage
+    point = models.PointStruct(id=point_id, vector=storage_vector, payload=payload)
     client.upsert(collection_name=collection_name, points=[point])
     
-    # Single consolidated log
-    ctx_count = len(existing_context) if existing_context else 0
-    print(f"[/save] user={req.user_id} saved={True} context={ctx_count}")
+    print(f"[/save] user={req.user_id} hash={content_hash[:8]}")
     
-    # Return status with both saved info and any context that was found
-    result = {
+    return {
         "status": "saved",
         "point_id": point_id,
         "content_hash": content_hash,
-        "existing_context": existing_context
     }
-    
-    # If we found context, also indicate that
-    if existing_context:
-        result["status"] = "saved_with_context"
-    
-    return result
 
 @router.post("/search", response_model=list[MemoryResult])
 def search_memory(req: SearchRequest) -> List[MemoryResult]:

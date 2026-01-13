@@ -145,7 +145,7 @@ def extract_user_info(text: str) -> Dict[str, Optional[str]]:
     Extract user-specific info commonly needed by AJ.
     
     Returns first found name/email, or None if not found.
-    Useful for populating orchestrator workspace state.
+    Useful for populating orchestrator session state.
     """
     entities = extract_entities(text)
     

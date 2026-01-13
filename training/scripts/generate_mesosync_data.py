@@ -41,19 +41,19 @@ ARCHITECTURE_KNOWLEDGE = [
     },
     {
         "question": "What is the request flow through Mesosync?",
-        "answer": "Request flow: User (Open-WebUI) → AJ Filter (aj.filter.py) → Pragmatics API (classify intent) → Based on intent: casual→LLM direct, save→Memory API store, recall→Memory API search, task→Orchestrator API. For tasks: Orchestrator (ReasoningEngine) → WorkspaceState (ground truth) → ToolDispatcher → Handlers (File/Shell/Polyglot/gRPC) → Results streamed via SSE → Filter displays verbatim → User sees response."
+        "answer": "Request flow: User (Open-WebUI) → AJ Filter (aj.filter.py) → Pragmatics API (classify intent) → Based on intent: casual→LLM direct, save→Memory API store, recall→Memory API search, task→Orchestrator API. For tasks: Orchestrator (ReasoningEngine) → SessionState (ground truth) → ToolDispatcher → Handlers (File/Shell/Polyglot/gRPC) → Results streamed via SSE → Filter displays verbatim → User sees response."
     },
     {
         "question": "What is the Orchestrator and what does it do?",
-        "answer": "The Orchestrator (port 8004) is the reasoning engine and brain of Mesosync. Key components: ReasoningEngine (LLM coordination, <think> block parsing), TaskPlanner (decomposes intents into steps), ParallelExecutor (asyncio.gather for batches), WorkspaceState (external ground truth), ToolDispatcher (unified routing to handlers), MemoryConnector (pattern retrieval/storage). The Orchestrator decides WHAT tools to use based on intent, workspace state, and history - the filter NEVER hardcodes tool selection."
+        "answer": "The Orchestrator (port 8004) is the reasoning engine and brain of Mesosync. Key components: ReasoningEngine (LLM coordination, <think> block parsing), TaskPlanner (decomposes intents into steps), ParallelExecutor (asyncio.gather for batches), SessionState (external ground truth), ToolDispatcher (unified routing to handlers), MemoryConnector (pattern retrieval/storage). The Orchestrator decides WHAT tools to use based on intent, session state, and history - the filter NEVER hardcodes tool selection."
     },
     {
         "question": "How does the ToolDispatcher work?",
         "answer": "ToolDispatcher (tool_dispatcher.py, ~536 lines) is the unified routing layer for all tool execution. It routes to singleton handlers: FileHandler (read/write/scan), ShellHandler (PowerShell/Bash), PolyglotHandler (Python/Node/Go), gRPCClient (FunnelCloud remote agents). Key principle: one dispatcher, many handlers. To add a new tool: 1) Implement handler, 2) Register in dispatcher dispatch table, 3) Add to AVAILABLE_TOOLS in reasoning_engine.py. No if/then pattern matching needed."
     },
     {
-        "question": "What is WorkspaceState and why is it important?",
-        "answer": "WorkspaceState (workspace_state.py) maintains external ground truth about the workspace. Critical principle: workspace state is authoritative, NOT the LLM's guess. This prevents 'LLM drift' where the model hallucinates or uses outdated training data. When asked 'what files exist?', the Orchestrator scans the actual filesystem, not guesses from training. WorkspaceState tracks: file metadata, recent operations, extracted values via ledger.extract_value(). This is knowledge accumulation in action."
+        "question": "What is SessionState and why is it important?",
+        "answer": "SessionState (session_state.py) maintains external ground truth about the workspace. Critical principle: session state is authoritative, NOT the LLM's guess. This prevents 'LLM drift' where the model hallucinates or uses outdated training data. When asked 'what files exist?', the Orchestrator scans the actual filesystem, not guesses from training. SessionState tracks: file metadata, recent operations, extracted values via ledger.extract_value(). This is knowledge accumulation in action."
     },
     {
         "question": "What is FunnelCloud?",
@@ -108,7 +108,7 @@ SERVICE_KNOWLEDGE = [
     },
     {
         "question": "What are the key files in the Mesosync codebase?",
-        "answer": "Key files: filters/aj.filter.py (1364 lines, Open-WebUI entry point), layers/shared/logging_utils.py (364 lines, centralized logging), layers/orchestrator/services/tool_dispatcher.py (536 lines, unified routing), layers/orchestrator/services/reasoning_engine.py (LLM coordination), layers/orchestrator/services/workspace_state.py (ground truth), layers/pragmatics/services/classifier.py (DistilBERT intent), layers/memory/api/memory.py (semantic memory)."
+        "answer": "Key files: filters/aj.filter.py (1364 lines, Open-WebUI entry point), layers/shared/logging_utils.py (364 lines, centralized logging), layers/orchestrator/services/tool_dispatcher.py (536 lines, unified routing), layers/orchestrator/services/reasoning_engine.py (LLM coordination), layers/orchestrator/services/session_state.py (ground truth), layers/pragmatics/services/classifier.py (DistilBERT intent), layers/memory/api/memory.py (semantic memory)."
     },
 ]
 
@@ -122,8 +122,8 @@ DEVELOPMENT_PATTERNS = [
         "answer": "Import from shared:\nfrom shared.logging_utils import log_message, LogCategory, LogLevel, create_status_dict\n\nFor logging: msg = log_message('Processing files', LogCategory.ORCHESTRATOR, LogLevel.SCANNING)\nlogger.info(msg)  # Returns: '🔍 Processing files'\n\nFor event emitter (filter): await __event_emitter__(create_status_dict('Task complete', LogCategory.ORCHESTRATOR, LogLevel.SUCCESS, done=True))"
     },
     {
-        "question": "How should I handle workspace state in the Orchestrator?",
-        "answer": "Use workspace_state.py for external ground truth:\nfrom services.workspace_state import get_workspace_state\nstate = get_workspace_state()\nstate.update_from_scan_result(output)  # Parse file metadata from shell output\nvalue = state.ledger.extract_value('port', '8080')  # Quick lookups\nKey principle: workspace state is authoritative, LLM guesses are not. Always scan actual filesystem for current state."
+        "question": "How should I handle session state in the Orchestrator?",
+        "answer": "Use session_state.py for external ground truth:\nfrom services.session_state import get_session_state\nstate = get_session_state()\nstate.update_from_scan_result(output)  # Parse file metadata from shell output\nvalue = state.ledger.extract_value('port', '8080')  # Quick lookups\nKey principle: session state is authoritative, LLM guesses are not. Always scan actual filesystem for current state."
     },
     {
         "question": "What are the naming conventions in Mesosync?",
@@ -150,7 +150,7 @@ DEVELOPMENT_PATTERNS = [
 ARCHITECTURE_PRINCIPLES = [
     {
         "question": "What are the core architecture principles in Mesosync?",
-        "answer": "5 core principles: 1) Knowledge First - accumulate and recall what the system learns, 2) Reasoning Owns Tools - Orchestrator decides execution, no hardcoded rules in filter, 3) Ground Truth Outside - workspace state is authoritative, not LLM, 4) Verbatim Output - tools produce raw output, LLM shows unchanged, 5) Specialization Over Generalization - small models for specific jobs beat big models for everything."
+        "answer": "5 core principles: 1) Knowledge First - accumulate and recall what the system learns, 2) Reasoning Owns Tools - Orchestrator decides execution, no hardcoded rules in filter, 3) Ground Truth Outside - session state is authoritative, not LLM, 4) Verbatim Output - tools produce raw output, LLM shows unchanged, 5) Specialization Over Generalization - small models for specific jobs beat big models for everything."
     },
     {
         "question": "Why does Mesosync separate the filter from the orchestrator?",
@@ -158,7 +158,7 @@ ARCHITECTURE_PRINCIPLES = [
     },
     {
         "question": "What is 'external ground truth' and why does it matter?",
-        "answer": "External ground truth means the workspace state is authoritative, not the LLM's training data or guesses. Traditional LLM: 'What files exist?' → guesses from training data → hallucinated/outdated info. Mesosync: 'What files exist?' → Orchestrator scans filesystem → actual state → accurate response. This prevents LLM drift where models confidently assert wrong information about the current workspace."
+        "answer": "External ground truth means the session state is authoritative, not the LLM's training data or guesses. Traditional LLM: 'What files exist?' → guesses from training data → hallucinated/outdated info. Mesosync: 'What files exist?' → Orchestrator scans filesystem → actual state → accurate response. This prevents LLM drift where models confidently assert wrong information about the current workspace."
     },
     {
         "question": "Why use ML-based intent classification instead of regex patterns?",
@@ -212,7 +212,7 @@ FUNNELCLOUD_KNOWLEDGE = [
     },
     {
         "question": "How do I generate certificates for FunnelCloud agents?",
-        "answer": "Use scripts in FunnelCloud/scripts/: 1) Generate CA: .\\New-CACertificate.ps1 (creates ca.crt, ca.key, ca-fingerprint.txt). 2) Generate agent cert: .\\New-AgentCertificate.ps1 -AgentName 'dev-workstation' (signs with CA). 3) Copy to agent: ca-fingerprint.txt + agent.crt + agent.key. 4) Build agent with embedded certs. CA fingerprint is baked in at build time - cannot be changed at runtime."
+        "answer": "Use scripts in layers/agents/FunnelCloud/scripts/: 1) Generate CA: .\\New-CACertificate.ps1 (creates ca.crt, ca.key, ca-fingerprint.txt). 2) Generate agent cert: .\\New-AgentCertificate.ps1 -AgentName 'dev-workstation' (signs with CA). 3) Copy to agent: ca-fingerprint.txt + agent.crt + agent.key. 4) Build agent with embedded certs. CA fingerprint is baked in at build time - cannot be changed at runtime."
     },
     {
         "question": "What's the FunnelCloud credential elevation model?",

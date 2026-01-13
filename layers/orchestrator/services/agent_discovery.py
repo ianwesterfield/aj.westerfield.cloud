@@ -23,7 +23,9 @@ import socket
 import struct
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
+
+import aiohttp
 
 logger = logging.getLogger("orchestrator.discovery")
 
@@ -34,14 +36,22 @@ DISCOVERY_PEERS_MAGIC = b"FUNNEL_DISCOVER_PEERS"
 DISCOVERY_TIMEOUT = float(os.getenv("FUNNEL_DISCOVERY_TIMEOUT", "2.0"))
 MULTICAST_GROUP = os.getenv("FUNNEL_MULTICAST_GROUP", "239.255.77.77")
 
+# HTTP port for agent REST API (used for gossip peer discovery)
+AGENT_HTTP_PORT = int(os.getenv("FUNNEL_AGENT_HTTP_PORT", "41421"))
+
+# Gossip configuration - how many rounds to expand peer discovery
+GOSSIP_MAX_ROUNDS = int(os.getenv("FUNNEL_GOSSIP_MAX_ROUNDS", "3"))
+GOSSIP_TIMEOUT = float(os.getenv("FUNNEL_GOSSIP_TIMEOUT", "2.0"))
+
 # Local agent for discovery proxy (UDP, same port)
 # This is the ONLY "known" address - the gateway to the local agent
+# All other agents are discovered dynamically via gossip
 LOCAL_AGENT_HOST = os.getenv("FUNNEL_LOCAL_AGENT_HOST", "")  # e.g., "172.25.224.1"
 
-# Seed agents - comma-separated list of IPs for direct UDP discovery
-# Use this for agents on other subnets that multicast can't reach
-# Example: "192.168.10.166,192.168.10.167,192.168.10.168"
-SEED_AGENT_IPS = [ip.strip() for ip in os.getenv("FUNNEL_SEED_AGENTS", "").split(",") if ip.strip()]
+# Gossip seed agent - an IP of any reachable agent to bootstrap cross-subnet discovery
+# This is used when the local agent can't see other subnets via multicast
+# Only ONE seed is needed - gossip will find all other agents from there
+GOSSIP_SEED_HOST = os.getenv("FUNNEL_GOSSIP_SEED_HOST", "")  # e.g., "192.168.10.166"
 
 
 @dataclass
@@ -108,11 +118,14 @@ class AgentDiscoveryService:
 
     async def discover(self, force: bool = False) -> List[AgentCapabilities]:
         """
-        Discover FunnelCloud agents on the network.
+        Discover FunnelCloud agents on the network using gossip-based discovery.
 
         Discovery order:
         1. Try UDP multicast directly (fastest if it works)
-        2. If no agents found, try local agent's HTTP discovery proxy
+        2. If no agents found, try local agent's UDP discovery proxy
+        3. Use gossip to expand: ask each discovered agent for its known peers
+           - This allows cross-subnet discovery without hardcoded IPs
+           - Each agent can multicast on its local LAN and share what it finds
 
         Args:
             force: If True, bypass cache and re-discover
@@ -125,31 +138,35 @@ class AgentDiscoveryService:
             logger.debug("Using cached agent list (%d agents)", len(self._cache))
             return list(self._cache.values())
 
-        logger.info("Starting agent discovery...")
+        logger.info("Starting agent discovery (gossip-based)...")
 
         agents: List[AgentCapabilities] = []
+        discovered_ids: Set[str] = set()
 
         # Step 1: Try direct UDP multicast
         multicast_agents = await self._discover_multicast()
-        agents.extend(multicast_agents)
+        for agent in multicast_agents:
+            if agent.agent_id not in discovered_ids:
+                agents.append(agent)
+                discovered_ids.add(agent.agent_id)
 
         # Step 2: If multicast didn't find anything, try the local agent proxy
         if not agents and LOCAL_AGENT_HOST:
             logger.info("Multicast found no agents, trying local agent discovery proxy at %s:%d",
                         LOCAL_AGENT_HOST, DISCOVERY_PORT)
             proxy_agents = await self._discover_via_proxy()
-            agents.extend(proxy_agents)
-
-        # Step 3: Query seed agents directly (for cross-subnet discovery)
-        if SEED_AGENT_IPS:
-            logger.info("Querying %d seed agent(s) directly...", len(SEED_AGENT_IPS))
-            seed_agents = await self._discover_seed_agents()
-            # Only add agents we haven't already found
-            existing_ids = {a.agent_id for a in agents}
-            for agent in seed_agents:
-                if agent.agent_id not in existing_ids:
+            for agent in proxy_agents:
+                if agent.agent_id not in discovered_ids:
                     agents.append(agent)
-                    existing_ids.add(agent.agent_id)
+                    discovered_ids.add(agent.agent_id)
+
+        # Step 3: Use gossip to expand discovery - ask known agents for their peers
+        # This replaces hardcoded seed agents with dynamic discovery
+        if agents:
+            gossip_agents = await self._discover_via_gossip(agents, discovered_ids)
+            agents.extend(gossip_agents)
+            for agent in gossip_agents:
+                discovered_ids.add(agent.agent_id)
 
         # Update cache
         self._cache = {agent.agent_id: agent for agent in agents}
@@ -226,66 +243,158 @@ class AgentDiscoveryService:
 
         return agents
 
-    async def _discover_seed_agents(self) -> List[AgentCapabilities]:
+    async def _discover_via_gossip(
+        self,
+        initial_agents: List[AgentCapabilities],
+        already_discovered: Set[str]
+    ) -> List[AgentCapabilities]:
         """
-        Discover agents by sending FUNNEL_DISCOVER directly to seed IPs.
+        Expand discovery by asking known agents for their peers (gossip protocol).
         
-        This bypasses multicast for agents on other subnets that can't be
-        reached via multicast or through the local agent proxy.
+        Each FunnelCloud agent can discover peers on its local LAN via multicast.
+        By querying the /discover-peers HTTP endpoint on each agent, we can
+        discover agents across multiple subnets without hardcoding any IPs.
+        
+        If GOSSIP_SEED_HOST is configured, we also query that agent first to
+        bootstrap cross-subnet discovery (useful when local agent can only see
+        its own subnet via multicast).
+        
+        This runs for multiple rounds until no new agents are found or we hit
+        the max rounds limit.
+        
+        Args:
+            initial_agents: Agents already discovered (to query for their peers)
+            already_discovered: Set of agent IDs already known
+            
+        Returns:
+            List of newly discovered agents
         """
-        agents: List[AgentCapabilities] = []
-
-        if not SEED_AGENT_IPS:
-            return agents
-
-        async def query_agent(ip: str) -> Optional[AgentCapabilities]:
-            """Query a single agent by IP."""
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                sock.settimeout(DISCOVERY_TIMEOUT)
-                
-                sock.sendto(DISCOVERY_MAGIC, (ip, DISCOVERY_PORT))
-                logger.debug("Sent FUNNEL_DISCOVER to seed agent %s:%d", ip, DISCOVERY_PORT)
-                
-                loop = asyncio.get_event_loop()
-                data, addr = await asyncio.wait_for(
-                    loop.run_in_executor(None, lambda: sock.recvfrom(4096)),
-                    timeout=DISCOVERY_TIMEOUT + 1.0
+        new_agents: List[AgentCapabilities] = []
+        known_ids = set(already_discovered)
+        agents_to_query = list(initial_agents)
+        queried_ips: Set[str] = set()
+        
+        # If we have a gossip seed configured, add it as a synthetic agent to query
+        # This bootstraps cross-subnet discovery when local agent can't multicast to other LANs
+        if GOSSIP_SEED_HOST and GOSSIP_SEED_HOST not in queried_ips:
+            # Check if seed is already in our initial agents
+            seed_already_known = any(
+                agent.ip_address == GOSSIP_SEED_HOST 
+                for agent in initial_agents
+            )
+            if not seed_already_known:
+                logger.info("Adding gossip seed agent at %s for cross-subnet bootstrap", GOSSIP_SEED_HOST)
+                seed_agent = AgentCapabilities(
+                    agent_id="gossip-seed",
+                    hostname="gossip-seed",
+                    platform="unknown",
+                    capabilities=[],
+                    workspace_roots=[],
+                    certificate_fingerprint="",
+                    ip_address=GOSSIP_SEED_HOST,
                 )
-                sock.close()
-                
-                response = json.loads(data.decode("utf-8"))
-                agent = AgentCapabilities.from_dict(response, ip_address=ip)
-                logger.info("Discovered seed agent: %s at %s (%s)",
-                            agent.agent_id, ip, agent.platform)
-                return agent
-                
-            except asyncio.TimeoutError:
-                logger.debug("Seed agent %s did not respond", ip)
-            except json.JSONDecodeError as e:
-                logger.warning("Invalid JSON from seed agent %s: %s", ip, e)
-            except Exception as e:
-                logger.debug("Failed to query seed agent %s: %s", ip, e)
-            finally:
-                try:
-                    sock.close()
-                except:
-                    pass
-            return None
-
-        # Query all seed agents in parallel
-        tasks = [query_agent(ip) for ip in SEED_AGENT_IPS]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+                agents_to_query.append(seed_agent)
         
-        for result in results:
-            if isinstance(result, AgentCapabilities):
-                agents.append(result)
-            elif isinstance(result, Exception):
-                logger.debug("Seed agent query exception: %s", result)
+        for round_num in range(GOSSIP_MAX_ROUNDS):
+            if not agents_to_query:
+                break
+                
+            logger.info("Gossip round %d: querying %d agent(s) for peers...",
+                        round_num + 1, len(agents_to_query))
+            
+            # Query all agents in this round in parallel
+            tasks = []
+            for agent in agents_to_query:
+                if agent.ip_address and agent.ip_address not in queried_ips:
+                    tasks.append(self._query_agent_peers(agent))
+                    queried_ips.add(agent.ip_address)
+            
+            if not tasks:
+                break
+                
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Collect new agents for next round
+            round_new_agents: List[AgentCapabilities] = []
+            
+            for result in results:
+                if isinstance(result, list):
+                    for agent in result:
+                        if agent.agent_id not in known_ids:
+                            new_agents.append(agent)
+                            round_new_agents.append(agent)
+                            known_ids.add(agent.agent_id)
+                            logger.info("Gossip discovered: %s at %s (%s)",
+                                        agent.agent_id, agent.ip_address, agent.platform)
+                elif isinstance(result, Exception):
+                    logger.debug("Gossip query exception: %s", result)
+            
+            # Next round will query the newly discovered agents
+            agents_to_query = round_new_agents
+            
+            if not round_new_agents:
+                logger.debug("Gossip round %d found no new agents, stopping", round_num + 1)
+                break
+        
+        logger.info("Gossip discovery found %d new agent(s) across %d round(s)",
+                    len(new_agents), round_num + 1)
+        return new_agents
 
-        logger.info("Seed discovery found %d agent(s) from %d IP(s)", 
-                    len(agents), len(SEED_AGENT_IPS))
-        return agents
+    async def _query_agent_peers(self, agent: AgentCapabilities) -> List[AgentCapabilities]:
+        """
+        Query a single agent for its known peers via HTTP.
+        
+        Agents expose GET /discover-peers which triggers a local multicast
+        discovery and returns all agents visible from that agent's network.
+        
+        Args:
+            agent: The agent to query
+            
+        Returns:
+            List of agents known to this agent
+        """
+        peers: List[AgentCapabilities] = []
+        
+        if not agent.ip_address:
+            logger.debug("Skipping gossip query for %s - no IP address", agent.agent_id)
+            return peers
+            
+        url = f"http://{agent.ip_address}:{AGENT_HTTP_PORT}/discover-peers"
+        logger.debug("Querying %s at %s for peers", agent.agent_id, url)
+        
+        try:
+            # Use longer timeout for gossip - agent needs time to multicast and collect responses
+            timeout = aiohttp.ClientTimeout(total=max(GOSSIP_TIMEOUT, 5.0))
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=timeout) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        agent_list = data.get("agents", data.get("peers", []))
+                        logger.debug("Agent %s returned %d peers", agent.agent_id, len(agent_list))
+                        
+                        for peer_data in agent_list:
+                            try:
+                                # Try to get IP from the data, or use the responding agent's IP for same-subnet peers
+                                peer_ip = peer_data.get("ipAddress", peer_data.get("ip_address", ""))
+                                peer = AgentCapabilities.from_dict(peer_data, ip_address=peer_ip)
+                                peers.append(peer)
+                                logger.debug("Parsed peer from %s: %s at %s", 
+                                           agent.agent_id, peer.agent_id, peer.ip_address or "no-ip")
+                            except Exception as e:
+                                logger.warning("Failed to parse peer data from %s: %s", agent.agent_id, e)
+                    else:
+                        logger.warning("Agent %s returned status %d for peer discovery",
+                                    agent.agent_id, response.status)
+        except asyncio.TimeoutError:
+            logger.warning("Peer query to %s timed out after %.1fs", agent.agent_id, GOSSIP_TIMEOUT)
+        except aiohttp.ClientError as e:
+            logger.warning("HTTP error querying %s for peers: %s", agent.agent_id, e)
+        except aiohttp.ClientError as e:
+            logger.debug("HTTP error querying %s for peers: %s", agent.agent_id, e)
+        except Exception as e:
+            logger.debug("Failed to query %s for peers: %s", agent.agent_id, e)
+            
+        return peers
 
     async def _discover_multicast(self) -> List[AgentCapabilities]:
         """Discover agents via UDP multicast."""

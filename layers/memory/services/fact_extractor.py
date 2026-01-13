@@ -1,40 +1,102 @@
 """
 Fact Extractor
 
-Extracts structured facts from conversational text using spaCy NER.
-Calls the pragmatics service for entity extraction instead of regex.
+Extracts structured facts from conversational text via pragmatics service.
+Uses LLM-based extraction for terminology, preferences, and relationships.
+Uses spaCy NER for named entities (names, orgs, dates, etc.).
 
-For structured documents (runbooks with tables/key-value pairs), also
-parses markdown tables and key: value lines locally.
+NO REGEX - all extraction delegated to pragmatics service.
 """
 
 import os
-import re
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict
 
 import requests
 
 logger = logging.getLogger("memory.fact_extractor")
 
-# Pragmatics service URL for NER
+# Pragmatics service URL
 PRAGMATICS_API_URL = os.getenv("PRAGMATICS_API_URL", "http://pragmatics_api:8001")
 
 
 def extract_facts(text: str) -> List[Dict[str, str]]:
     """
-    Extract named entities from text via pragmatics NER service.
+    Extract structured facts from text via pragmatics service.
     
-    Returns list of {type, value} dicts for detected entities.
-    Falls back gracefully if service is unavailable.
+    Combines:
+    1. LLM-based extraction (terminology, preferences, relationships)
+    2. spaCy NER (names, orgs, dates, emails, locations)
+    
+    Returns list of {type, value} dicts for storage.
+    Falls back gracefully if services are unavailable.
     """
     if not text or len(text.strip()) < 3:
         return []
     
     facts = []
     
+    # 1. LLM-based fact extraction (terminology, preferences, relationships)
+    llm_facts = _extract_facts_llm(text)
+    facts.extend(llm_facts)
+    
+    # 2. spaCy NER extraction (names, orgs, dates, etc.)
+    ner_facts = _extract_facts_ner(text)
+    facts.extend(ner_facts)
+    
+    return facts
+
+
+def _extract_facts_llm(text: str) -> List[Dict[str, str]]:
+    """
+    Call pragmatics LLM endpoint for semantic fact extraction.
+    
+    Extracts:
+    - Terminology definitions ("agents" = FunnelCloud Agents)
+    - Preferred names
+    - Preferences
+    - Relationships
+    """
     try:
-        # Call pragmatics NER endpoint
+        resp = requests.post(
+            f"{PRAGMATICS_API_URL}/api/pragmatics/extract-facts-storage",
+            json={"text": text},
+            timeout=30,  # LLM can take a moment
+        )
+        
+        if resp.status_code == 200:
+            result = resp.json()
+            facts = result.get("facts", [])
+            if facts:
+                logger.debug(f"LLM extracted {len(facts)} facts")
+            return facts
+        else:
+            logger.warning(f"Fact extraction returned {resp.status_code}")
+            return []
+            
+    except requests.Timeout:
+        logger.warning("Fact extraction timeout")
+        return []
+    except requests.ConnectionError:
+        logger.warning("Pragmatics service unavailable for fact extraction")
+        return []
+    except Exception as e:
+        logger.error(f"Fact extraction failed: {e}")
+        return []
+
+
+def _extract_facts_ner(text: str) -> List[Dict[str, str]]:
+    """
+    Call pragmatics NER endpoint for named entity extraction.
+    
+    Extracts:
+    - Person names
+    - Organizations
+    - Dates
+    - Emails
+    - Locations
+    """
+    try:
         resp = requests.post(
             f"{PRAGMATICS_API_URL}/api/pragmatics/entities",
             json={"text": text},
@@ -43,8 +105,8 @@ def extract_facts(text: str) -> List[Dict[str, str]]:
         
         if resp.status_code == 200:
             entities = resp.json()
+            facts = []
             
-            # Convert NER results to fact format
             for name in entities.get("names", []):
                 facts.append({"type": "person_name", "value": name})
             
@@ -60,111 +122,40 @@ def extract_facts(text: str) -> List[Dict[str, str]]:
             for loc in entities.get("locations", []):
                 facts.append({"type": "location", "value": loc})
             
-            for money in entities.get("money", []):
-                facts.append({"type": "money", "value": money})
-            
-            for time in entities.get("times", []):
-                facts.append({"type": "time", "value": time})
-            
-            logger.debug(f"NER extracted {len(facts)} facts from text")
+            if facts:
+                logger.debug(f"NER extracted {len(facts)} entities")
+            return facts
         else:
             logger.warning(f"NER service returned {resp.status_code}")
-    
-    except requests.RequestException as e:
-        logger.warning(f"NER service unavailable: {e}")
+            return []
+            
+    except requests.Timeout:
+        logger.warning("NER service timeout")
+        return []
+    except requests.ConnectionError:
+        logger.warning("NER service unavailable")
+        return []
     except Exception as e:
         logger.error(f"NER extraction failed: {e}")
-    
-    return facts
+        return []
 
 
 def extract_facts_from_document(text: str) -> List[Dict[str, str]]:
     """
-    For longer docs (runbooks, etc.)—gets NER facts plus tables and key:value lines.
+    Extract facts from longer documents.
+    
+    Same as extract_facts but for documents - could add 
+    document-specific handling in the future.
     """
-    facts = []
-    
-    # Get NER-based facts
-    facts.extend(extract_facts(text))
-    
-    # Extract from markdown tables
-    table_facts = _extract_from_tables(text)
-    facts.extend(table_facts)
-    
-    # Extract key-value pairs (common in runbooks)
-    kv_facts = _extract_key_value_pairs(text)
-    facts.extend(kv_facts)
-    
-    # Dedupe
-    seen = set()
-    unique_facts = []
-    for f in facts:
-        key = (f["type"], f["value"].lower())
-        if key not in seen:
-            seen.add(key)
-            unique_facts.append(f)
-    
-    return unique_facts
-
-
-def _extract_from_tables(text: str) -> List[Dict[str, str]]:
-    """Pull facts from markdown tables. First row = headers, rest = data."""
-    facts = []
-    
-    # Find markdown tables (lines with |)
-    lines = text.split('\n')
-    in_table = False
-    headers = []
-    
-    for line in lines:
-        line = line.strip()
-        if '|' in line and not line.startswith('```'):
-            cells = [c.strip() for c in line.split('|') if c.strip()]
-            
-            # Skip separator lines
-            if all(re.match(r'^[-:]+$', c) for c in cells):
-                continue
-            
-            if not in_table:
-                # First row = headers
-                headers = [h.lower().replace(' ', '_') for h in cells]
-                in_table = True
-            else:
-                # Data row
-                for i, cell in enumerate(cells):
-                    if i < len(headers) and cell and not cell.startswith('-'):
-                        fact_type = f"table_{headers[i]}"
-                        facts.append({"type": fact_type, "value": cell})
-        else:
-            in_table = False
-            headers = []
-    
-    return facts
-
-
-def _extract_key_value_pairs(text: str) -> List[Dict[str, str]]:
-    """Grab Key: Value or Key = Value lines. Skips URLs and long values."""
-    facts = []
-    
-    # Pattern for "Key: Value" or "Key = Value"
-    kv_pattern = r'^([A-Za-z][A-Za-z0-9 _-]{2,30})[:=]\s*(.+)$'
-    
-    for line in text.split('\n'):
-        line = line.strip()
-        match = re.match(kv_pattern, line)
-        if match:
-            key = match.group(1).strip().lower().replace(' ', '_').replace('-', '_')
-            value = match.group(2).strip()
-            
-            # Skip if value looks like a URL, code, or is too long
-            if value and len(value) < 200 and not value.startswith('http'):
-                facts.append({"type": f"kv_{key}", "value": value})
-    
-    return facts
+    return extract_facts(text)
 
 
 def format_facts_for_storage(facts: List[Dict[str, str]]) -> str:
-    """Turn facts into a readable string for storage (one per line, type: value)."""
+    """
+    Format facts as readable string for storage.
+    
+    Output: "type: value" on separate lines.
+    """
     if not facts:
         return ""
     
@@ -176,20 +167,18 @@ def format_facts_for_storage(facts: List[Dict[str, str]]) -> str:
 
 
 def facts_to_embedding_text(facts: List[Dict[str, str]], original_text: str = "") -> str:
-    """Build text optimized for embedding—facts in readable form plus context snippet."""
+    """
+    Build text optimized for embedding search.
+    
+    Combines fact types and values in a searchable format.
+    """
+    if not facts:
+        return ""
+    
     parts = []
-    
-    # Add formatted facts
     for f in facts:
-        # Convert type to readable form
-        readable_type = f['type'].replace('_', ' ').replace('kv ', '')
+        # Make type readable
+        readable_type = f['type'].replace('_', ' ')
         parts.append(f"{readable_type}: {f['value']}")
-    
-    # If we have original text, extract key noun phrases
-    if original_text and len(original_text) > 100:
-        # Add first sentence or header as context
-        first_line = original_text.split('\n')[0][:200]
-        if first_line:
-            parts.append(f"context: {first_line}")
     
     return " | ".join(parts)

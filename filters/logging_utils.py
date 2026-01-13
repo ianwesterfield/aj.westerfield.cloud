@@ -88,7 +88,7 @@ class LogCategory(str, Enum):
     FILE_HANDLER = "file_handler"         # File operations
     SHELL_HANDLER = "shell_handler"       # Shell/command execution
     POLYGLOT_HANDLER = "polyglot_handler" # Code execution handler
-    STATE = "state"                        # Workspace state management
+    STATE = "state"                        # Session state management
     TASK_PLANNER = "task_planner"        # Task planning
     
     # Supporting components

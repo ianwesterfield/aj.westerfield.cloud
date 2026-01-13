@@ -36,6 +36,9 @@ CA_CERT_PATH = os.getenv("CA_CERT_PATH", "certs/ca/ca.crt")
 # This MUST match the CA that signed valid agent certificates
 CA_FINGERPRINT = os.getenv("FUNNEL_CA_FINGERPRINT", "")
 
+# Force insecure mode (for development when agents don't have certs)
+FUNNEL_INSECURE = os.getenv("FUNNEL_INSECURE", "").lower() in ("true", "1", "yes")
+
 # Connection timeout
 GRPC_TIMEOUT_SECONDS = 86400  # 24 hours for comprehensive scans
 
@@ -151,7 +154,13 @@ class AgentGrpcClient:
         
         # Create new channel
         target = f"{agent.ip_address}:{agent.grpc_port}"
-        credentials = self._load_credentials()
+        
+        # Check if we should use insecure mode
+        use_insecure = FUNNEL_INSECURE
+        credentials = None if use_insecure else self._load_credentials()
+        
+        if use_insecure:
+            logger.warning("FUNNEL_INSECURE is set - using insecure gRPC connections")
         
         # Allow large messages for directory scans (500MB)
         max_message_size = 500 * 1024 * 1024

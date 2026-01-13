@@ -122,11 +122,11 @@ async def dispatch_tool(
             "error": None,
         }
     
-    # Dump workspace state for debugging/inspection
+    # Dump session state for debugging/inspection
     if tool == "dump_state":
-        from services.workspace_state import get_workspace_state
+        from services.session_state import get_session_state
         import json
-        state = get_workspace_state()
+        state = get_session_state()
         
         # Build comprehensive state dump
         state_dump = {

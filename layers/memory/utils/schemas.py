@@ -24,7 +24,6 @@ class SaveRequest(BaseModel):
     metadata: Optional[dict] = Field(None, description="Additional metadata")
     source_type: Optional[str] = Field(None, description="Source type: document, prompt, url, image")
     source_name: Optional[str] = Field(None, description="Source name: filename, URL, or text preview")
-    skip_classifier: bool = Field(False, description="Skip pragmatics classifier (for document chunks)")
 
 
 class SearchRequest(BaseModel):

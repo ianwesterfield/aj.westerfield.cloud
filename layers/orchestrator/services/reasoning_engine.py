@@ -5,7 +5,7 @@ Uses Ollama to generate structured reasoning steps from user intents.
 Parses LLM output into validated Step objects.
 
 Architecture:
-- State is maintained EXTERNALLY by WorkspaceState (not by the LLM)
+- State is maintained EXTERNALLY by SessionState (not by the LLM)
 - LLM receives state as context, only outputs next step
 - This prevents state drift and reduces token cost
 """
@@ -19,7 +19,7 @@ import httpx
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Tuple
 
 from schemas.models import Step, StepResult, WorkspaceContext
-from services.workspace_state import WorkspaceState, get_workspace_state
+from services.session_state import SessionState, get_session_state
 
 
 logger = logging.getLogger("orchestrator.reasoning")
@@ -140,7 +140,7 @@ TOOLS:
 RULES:
 - Default to workspace tools unless user says "my PC/machine"
 - One tool per response, no markdown, no fabrication
-- Follow the task plan in WORKSPACE STATE
+- Follow the task plan in session state
 """
 
 
@@ -149,7 +149,7 @@ class ReasoningEngine:
     LLM-powered reasoning engine for step generation.
     
     Architecture:
-    - State is maintained externally by WorkspaceState
+    - State is maintained externally by SessionState
     - LLM receives state as context, only outputs the next step
     - This prevents hallucination and state drift
     """
@@ -589,29 +589,29 @@ Now create a plan for:
         history: List[StepResult],
         memory_context: List[Dict[str, Any]],
         workspace_context: Optional[WorkspaceContext] = None,
-        workspace_state: Optional[WorkspaceState] = None,
+        session_state: Optional[SessionState] = None,
     ) -> Step:
         """
         Generate the next step for a task using LLM reasoning.
         
         Args:
             task: User's task description
-            history: Previous step results (for backward compat, prefer workspace_state)
+            history: Previous step results (for backward compat, prefer session_state)
             memory_context: Relevant patterns from memory
             workspace_context: Current workspace settings
-            workspace_state: External state (ground truth from actual tool outputs)
+            session_state: External state (ground truth from actual tool outputs)
             
         Returns:
             Step object with tool, params, and reasoning
         """
         # Use external state if provided, otherwise fall back to old approach
-        if workspace_state is None:
-            workspace_state = get_workspace_state()
+        if session_state is None:
+            session_state = get_session_state()
         
         context_parts = []
         
         # 1. Inject external state (the key change - LLM doesn't maintain this)
-        state_context = workspace_state.format_for_prompt()
+        state_context = session_state.format_for_prompt()
         if state_context:
             context_parts.append(state_context)
         
@@ -624,8 +624,8 @@ Now create a plan for:
             )
         
         # 3. User info from state (name, etc.)
-        if workspace_state.user_info:
-            user_info_text = "\n".join(f"  {k}: {v}" for k, v in workspace_state.user_info.items())
+        if session_state.user_info:
+            user_info_text = "\n".join(f"  {k}: {v}" for k, v in session_state.user_info.items())
             context_parts.append(f"User info (use this, don't guess):\n{user_info_text}")
         
         # 4. Memory patterns (optional)
@@ -637,10 +637,10 @@ Now create a plan for:
             context_parts.append(f"Relevant patterns from memory:\n{patterns}")
         
         # 5. GUARDRAIL: If too many steps without progress, force completion
-        if len(workspace_state.completed_steps) >= 15:
-            logger.warning(f"GUARDRAIL: {len(workspace_state.completed_steps)} steps - forcing completion check")
+        if len(session_state.completed_steps) >= 15:
+            logger.warning(f"GUARDRAIL: {len(session_state.completed_steps)} steps - forcing completion check")
             # Check if we're making progress
-            recent_edits = sum(1 for s in workspace_state.completed_steps[-5:] 
+            recent_edits = sum(1 for s in session_state.completed_steps[-5:] 
                              if s.tool in ("write_file", "insert_in_file", "replace_in_file", "append_to_file")
                              and s.success)
             if recent_edits == 0:
@@ -668,7 +668,7 @@ Now create a plan for:
             step = self._parse_response(response, task)
             
             # Apply guardrails
-            step = self._apply_guardrails(step, workspace_state)
+            step = self._apply_guardrails(step, session_state)
             
             return step
             
@@ -700,7 +700,7 @@ Now create a plan for:
                         "replace_in_file", # Find/replace text in workspace file
                         "insert_in_file",  # Insert text at position in file
                         "append_to_file",  # Append to workspace file
-                        "dump_state",      # Output workspace state
+                        "dump_state",      # Output session state
                         "validate_script", # Validate a script
                         "complete",        # Task done or error
                         "none",            # Skip step
@@ -776,7 +776,7 @@ Now create a plan for:
                         "replace_in_file", # Find/replace text in workspace file
                         "insert_in_file",  # Insert text at position in file
                         "append_to_file",  # Append to workspace file
-                        "dump_state",      # Output workspace state
+                        "dump_state",      # Output session state
                         "validate_script", # Validate a script
                         "complete",        # Task done or error
                         "none",            # Skip step
@@ -854,7 +854,7 @@ Now create a plan for:
         history: List[StepResult],
         memory_context: List[Dict[str, Any]],
         workspace_context: Optional[WorkspaceContext] = None,
-        workspace_state: Optional[WorkspaceState] = None,
+        session_state: Optional[SessionState] = None,
         status_callback: Optional[Callable[[str], None]] = None,
     ):
         """
@@ -867,13 +867,13 @@ Now create a plan for:
             status_callback: Optional callback for model loading status updates
         """
         # Use external state if provided
-        if workspace_state is None:
-            workspace_state = get_workspace_state()
+        if session_state is None:
+            session_state = get_session_state()
         
         # Build context (same as non-streaming version)
         context_parts = []
         
-        state_context = workspace_state.format_for_prompt()
+        state_context = session_state.format_for_prompt()
         if state_context:
             context_parts.append(state_context)
         
@@ -884,8 +884,8 @@ Now create a plan for:
                 f"shell={workspace_context.allow_shell_commands}"
             )
         
-        if workspace_state.user_info:
-            user_info_text = "\n".join(f"  {k}: {v}" for k, v in workspace_state.user_info.items())
+        if session_state.user_info:
+            user_info_text = "\n".join(f"  {k}: {v}" for k, v in session_state.user_info.items())
             context_parts.append(f"User info (use this, don't guess):\n{user_info_text}")
         
         if memory_context:
@@ -896,9 +896,9 @@ Now create a plan for:
             context_parts.append(f"Relevant patterns from memory:\n{patterns}")
         
         # Guardrail check
-        if len(workspace_state.completed_steps) >= 15:
-            logger.warning(f"GUARDRAIL: {len(workspace_state.completed_steps)} steps - forcing completion")
-            recent_edits = sum(1 for s in workspace_state.completed_steps[-5:] 
+        if len(session_state.completed_steps) >= 15:
+            logger.warning(f"GUARDRAIL: {len(session_state.completed_steps)} steps - forcing completion")
+            recent_edits = sum(1 for s in session_state.completed_steps[-5:] 
                              if s.tool in ("write_file", "insert_in_file", "replace_in_file", "append_to_file")
                              and s.success)
             if recent_edits == 0:
@@ -940,7 +940,7 @@ Now create a plan for:
             step = self._parse_response(full_response, task)
             
             # Apply guardrails (same as non-streaming)
-            step = self._apply_guardrails(step, workspace_state)
+            step = self._apply_guardrails(step, session_state)
             
             yield "", step  # Final yield with parsed step
             
@@ -953,7 +953,7 @@ Now create a plan for:
                 reasoning=f"Error during reasoning: {e}",
             )
     
-    def _apply_guardrails(self, step: Step, workspace_state: WorkspaceState) -> Step:
+    def _apply_guardrails(self, step: Step, session_state: SessionState) -> Step:
         """Apply guardrails to a parsed step. Returns corrected step if needed."""
         
         # ⛔ CRITICAL GUARDRAIL: remote_execute requires verified agents
@@ -990,7 +990,7 @@ Now create a plan for:
                     reasoning="Redirected workspace path command to scan_workspace",
                 )
             
-            if not workspace_state.discovered_agents:
+            if not session_state.discovered_agents:
                 # If 'code' param contains a Python script, redirect to write_file
                 if code and ("import " in code or "def " in code or "class " in code):
                     logger.warning(f"GUARDRAIL: Redirecting remote_execute with code to write_file")
@@ -1028,9 +1028,9 @@ Now create a plan for:
                         params={"error": "Cannot execute remote commands - no FunnelCloud agents discovered. Call list_agents first to verify target machines are available."},
                         reasoning="Blocked remote_execute - agent verification required",
                     )
-            if agent_id and agent_id not in workspace_state.discovered_agents:
+            if agent_id and agent_id not in session_state.discovered_agents:
                 logger.error(f"GUARDRAIL BLOCK: remote_execute on unknown agent '{agent_id}'")
-                available = ", ".join(workspace_state.discovered_agents)
+                available = ", ".join(session_state.discovered_agents)
                 return Step(
                     step_id="guardrail_unknown_agent",
                     tool="complete",
@@ -1057,16 +1057,16 @@ Now create a plan for:
         # ⛔ CRITICAL GUARDRAIL: Force remote_execute when agents are discovered
         # If we found agents via list_agents, the model MUST use remote_execute for subsequent operations
         # This catches the common failure where model uses scan_workspace/execute_shell instead
-        logger.debug(f"Guardrail check: discovered_agents={workspace_state.discovered_agents}, tool={step.tool}")
-        if workspace_state.discovered_agents and step.tool in ("scan_workspace", "execute_shell"):
+        logger.debug(f"Guardrail check: discovered_agents={session_state.discovered_agents}, tool={step.tool}")
+        if session_state.discovered_agents and step.tool in ("scan_workspace", "execute_shell"):
             # Check if we just did list_agents in the last few steps
-            recent_steps = workspace_state.completed_steps[-3:]
+            recent_steps = session_state.completed_steps[-3:]
             did_list_agents = any(s.tool == "list_agents" for s in recent_steps)
-            logger.info(f"Guardrail: agents={workspace_state.discovered_agents}, recent_tools={[s.tool for s in recent_steps]}, did_list_agents={did_list_agents}")
+            logger.info(f"Guardrail: agents={session_state.discovered_agents}, recent_tools={[s.tool for s in recent_steps]}, did_list_agents={did_list_agents}")
             
             if did_list_agents:
                 # Get the first available agent (discovered_agents is a List[str])
-                agent_id = workspace_state.discovered_agents[0]
+                agent_id = session_state.discovered_agents[0]
                 
                 logger.warning(f"GUARDRAIL: Redirecting {step.tool} to remote_execute on {agent_id}")
                 
@@ -1100,13 +1100,13 @@ Now create a plan for:
         # If we just discovered agents and LLM tries to complete without doing actual work,
         # reject it - the task likely requires remote_execute
         if step.tool == "complete":
-            recent_steps = workspace_state.completed_steps[-3:]
+            recent_steps = session_state.completed_steps[-3:]
             last_was_list_agents = any(s.tool == "list_agents" for s in recent_steps)
-            did_remote_work = any(s.tool == "remote_execute" for s in workspace_state.completed_steps)
+            did_remote_work = any(s.tool == "remote_execute" for s in session_state.completed_steps)
             
             # CRITICAL: If list_agents found NO agents, force completion with clear error message
             # This prevents the model from hallucinating fake results
-            if last_was_list_agents and not workspace_state.discovered_agents:
+            if last_was_list_agents and not session_state.discovered_agents:
                 answer_text = step.params.get("answer", "")
                 # Detect if model is trying to provide fake results (hallucination)
                 # Include both Unix and Windows path patterns
@@ -1168,14 +1168,14 @@ Now create a plan for:
                         reasoning="Forced error completion - no agents available but model tried to provide answer",
                     )
             
-            if last_was_list_agents and not did_remote_work and workspace_state.discovered_agents:
+            if last_was_list_agents and not did_remote_work and session_state.discovered_agents:
                 # LLM is trying to complete without doing remote work after discovering agents
                 error_text = step.params.get("error", "")
                 answer_text = step.params.get("answer", "")
                 
                 # EXCEPTION: If the task was just asking about agents, list_agents IS the answer
                 # Don't force remote work for agent status/count queries
-                task_lower = workspace_state.original_task.lower() if workspace_state.original_task else ""
+                task_lower = session_state.original_task.lower() if session_state.original_task else ""
                 is_agent_query = any(phrase in task_lower for phrase in [
                     "how many agent", "agents online", "agents available", "agents connected",
                     "list agent", "show agent", "what agent", "which agent", "agent status",
@@ -1197,7 +1197,7 @@ Now create a plan for:
         # This catches the "retry with better parameters" anti-pattern
         # BUT allows different commands (scanning C: then S:)
         if step.tool == "remote_execute":
-            recent_remote = [s for s in workspace_state.completed_steps[-5:] if s.tool == "remote_execute"]
+            recent_remote = [s for s in session_state.completed_steps[-5:] if s.tool == "remote_execute"]
             if recent_remote:
                 last_remote = recent_remote[-1]
                 # Check if last remote operation was successful
@@ -1241,7 +1241,7 @@ Now create a plan for:
                 current_path = step.params.get("path", "") or step.params.get("file_path", "")
                 if current_path:
                     same_path_count = sum(
-                        1 for s in workspace_state.completed_steps[-5:]
+                        1 for s in session_state.completed_steps[-5:]
                         if s.tool == step.tool and 
                         (s.params.get("path", "") or s.params.get("file_path", "")) == current_path
                     )
@@ -1255,7 +1255,7 @@ Now create a plan for:
                         )
             else:
                 # For non-file tools, use simple count
-                recent_tools = [s.tool for s in workspace_state.completed_steps[-5:]]
+                recent_tools = [s.tool for s in session_state.completed_steps[-5:]]
                 if step.tool in recent_tools:
                     repeat_count = recent_tools.count(step.tool)
                     # Tools that should never be called twice
@@ -1273,7 +1273,7 @@ Now create a plan for:
         
         # GUARDRAIL: Prevent calling dump_state more than once
         if step.tool == "dump_state":
-            dump_count = sum(1 for s in workspace_state.completed_steps if s.tool == "dump_state")
+            dump_count = sum(1 for s in session_state.completed_steps if s.tool == "dump_state")
             if dump_count >= 1:
                 logger.warning(f"GUARDRAIL: dump_state already called {dump_count}x")
                 return Step(
@@ -1287,7 +1287,7 @@ Now create a plan for:
         if step.tool == "replace_in_file":
             path = step.params.get("path", "")
             recent_failures = sum(
-                1 for s in workspace_state.completed_steps[-5:]
+                1 for s in session_state.completed_steps[-5:]
                 if s.tool == "replace_in_file" 
                 and s.params.get("path") == path
                 and not s.success
@@ -1308,7 +1308,7 @@ Now create a plan for:
         # GUARDRAIL: Prevent re-reading already read files
         if step.tool == "read_file":
             path = step.params.get("path", "") or step.params.get("file_path", "")
-            if path and path in workspace_state.read_files:
+            if path and path in session_state.read_files:
                 logger.warning(f"GUARDRAIL: Blocking re-read of '{path}'")
                 return Step(
                     step_id="guardrail_no_reread",
@@ -1322,9 +1322,9 @@ Now create a plan for:
         # NOTE: write_file can create new files, so don't block it
         if step.tool in ("insert_in_file", "replace_in_file", "append_to_file"):
             path = step.params.get("path", "") or step.params.get("file_path", "")
-            if path and workspace_state.files and path not in workspace_state.files:
+            if path and session_state.files and path not in session_state.files:
                 logger.warning(f"GUARDRAIL: Path '{path}' not in scanned files for edit operation")
-                similar = [f for f in workspace_state.files if f.endswith(path) or path in f]
+                similar = [f for f in session_state.files if f.endswith(path) or path in f]
                 if similar:
                     correct_path = similar[0]
                     logger.info(f"GUARDRAIL: Correcting path to '{correct_path}'")
@@ -1509,8 +1509,8 @@ Now create a plan for:
             
             # Try to extract intent from the invalid response and suggest a correction
             # This helps when the model outputs markdown instead of JSON
-            # Note: get workspace state here since _parse_response doesn't receive it as param
-            current_state = get_workspace_state()
+            # Note: get session state here since _parse_response doesn't receive it as param
+            current_state = get_session_state()
             suggested_tool = self._infer_tool_from_invalid_response(response, task, current_state)
             if suggested_tool:
                 logger.info(f"Auto-correcting invalid response to: {suggested_tool}")
@@ -1580,14 +1580,14 @@ JSON only:"""
             logger.warning(f"Task intent extraction failed: {e}")
             return {"drives": [], "operation": "unknown", "needs_remote": False}
     
-    def _infer_tool_from_invalid_response(self, response: str, task: str, workspace_state: Optional[WorkspaceState] = None) -> Optional[Step]:
+    def _infer_tool_from_invalid_response(self, response: str, task: str, session_state: Optional[SessionState] = None) -> Optional[Step]:
         """
         Try to infer the intended tool from an invalid (non-JSON) LLM response.
         
         This handles cases where the model outputs markdown/conversational text
         instead of the required <think>...</think> + JSON format.
         
-        Uses workspace_state to determine what's already been done:
+        Uses session_state to determine what's already been done:
         - If agents not verified → list_agents
         - If task mentions drive scans → remote_execute with smart size-checking command
         
@@ -1598,11 +1598,11 @@ JSON only:"""
         response_lower = response.lower()
         
         # Get current state
-        if workspace_state is None:
-            workspace_state = get_workspace_state()
+        if session_state is None:
+            session_state = get_session_state()
         
-        agents_verified = workspace_state.agents_verified
-        discovered_agents = workspace_state.discovered_agents
+        agents_verified = session_state.agents_verified
+        discovered_agents = session_state.discovered_agents
         
         # Use LLM to extract task intent (synchronous call - no async issues)
         intent = self._extract_task_intent_sync(task)
@@ -1613,7 +1613,7 @@ JSON only:"""
         
         # Track which drives have already been size-checked (from completed steps)
         scanned_drives = set()
-        for step in workspace_state.completed_steps:
+        for step in session_state.completed_steps:
             if step.tool == "remote_execute" and step.success:
                 # Check if this was a size-checking command for a drive
                 cmd = step.params.get("command", "")

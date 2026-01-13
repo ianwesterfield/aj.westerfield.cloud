@@ -318,9 +318,9 @@ class Action:
             default="http://orchestrator_api:8004",
             description="URL of the orchestrator API"
         )
-        enable_workspace_capture: bool = Field(
+        enable_session_capture: bool = Field(
             default=True,
-            description="Include workspace state in captures"
+            description="Include session state in captures"
         )
     
     def __init__(self):

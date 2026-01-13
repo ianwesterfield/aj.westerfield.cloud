@@ -1,5 +1,5 @@
 """
-Workspace State Manager - External State Tracking
+Session State Manager - External State Tracking
 
 Maintains ground-truth state from actual tool outputs rather than
 asking the LLM to track state (which causes drift/hallucination).
@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import re
 import logging
 
-logger = logging.getLogger("orchestrator.workspace_state")
+logger = logging.getLogger("orchestrator.session_state")
 
 
 @dataclass
@@ -297,7 +297,7 @@ class CompletedStep:
 
 
 @dataclass
-class WorkspaceState:
+class SessionState:
     """
     External state maintained by orchestrator, NOT the LLM.
     
@@ -820,12 +820,12 @@ class WorkspaceState:
         
         # Workspace index - show status prominently
         if self.files or self.dirs:
-            lines.append("=== WORKSPACE STATE (already indexed - use this data) ===\n")
+            lines.append("=== session state (already indexed - use this data) ===\n")
             lines.append(f"✅ WORKSPACE ALREADY SCANNED - {len(self.files)} files, {len(self.dirs)} dirs indexed")
             lines.append("   DO NOT call scan_workspace again - data is available below")
             lines.append("")
         else:
-            lines.append("=== WORKSPACE STATE ===\n")
+            lines.append("=== session state ===\n")
             lines.append("⚠️ WORKSPACE NOT YET SCANNED")
             lines.append("   You MUST call scan_workspace first to see files")
             lines.append("")
@@ -1050,20 +1050,93 @@ class WorkspaceState:
         # Keep user_info and ledger across tasks - they're session-level
 
 
-# Singleton for session state
-_current_state: Optional[WorkspaceState] = None
+# Session-based state storage
+_session_states: Dict[str, SessionState] = {}
+_current_session_id: Optional[str] = None
+
+# Legacy singleton for backward compatibility (will be removed)
+_current_state: Optional[SessionState] = None
 
 
-def get_workspace_state() -> WorkspaceState:
-    """Get or create the current workspace state."""
-    global _current_state
+def get_session_state(session_id: Optional[str] = None) -> SessionState:
+    """
+    Get or create session state for a session.
+    
+    Args:
+        session_id: Optional session identifier. If provided, returns
+                   session-specific state. Otherwise uses global state.
+    
+    Returns:
+        SessionState for the session (or global if no session_id).
+    """
+    global _current_state, _current_session_id
+    
+    if session_id:
+        if session_id not in _session_states:
+            _session_states[session_id] = SessionState()
+            logger.info(f"Created new session state for session: {session_id[:8]}...")
+        _current_session_id = session_id
+        return _session_states[session_id]
+    
+    # Fall back to global state for backward compatibility
     if _current_state is None:
-        _current_state = WorkspaceState()
+        _current_state = SessionState()
     return _current_state
 
 
-def reset_workspace_state() -> WorkspaceState:
-    """Reset and return fresh workspace state."""
+def reset_session_state(session_id: Optional[str] = None) -> SessionState:
+    """
+    Reset and return fresh session state.
+    
+    Args:
+        session_id: Optional session identifier. If provided, resets
+                   session-specific state. Otherwise resets global state.
+    
+    Returns:
+        Fresh SessionState for the session (or global).
+    """
     global _current_state
-    _current_state = WorkspaceState()
+    
+    if session_id:
+        _session_states[session_id] = SessionState()
+        logger.info(f"Reset session state for session: {session_id[:8]}...")
+        return _session_states[session_id]
+    
+    # Fall back to global state reset
+    _current_state = SessionState()
     return _current_state
+
+
+def get_existing_session(session_id: str) -> Optional[SessionState]:
+    """
+    Get session state for a specific session if it exists.
+    
+    Args:
+        session_id: Session identifier.
+    
+    Returns:
+        SessionState if session exists, None otherwise.
+    """
+    return _session_states.get(session_id)
+
+
+def cleanup_session(session_id: str) -> bool:
+    """
+    Remove session state for a session (cleanup on disconnect).
+    
+    Args:
+        session_id: Session identifier to cleanup.
+    
+    Returns:
+        True if session was removed, False if it didn't exist.
+    """
+    if session_id in _session_states:
+        del _session_states[session_id]
+        logger.info(f"Cleaned up session state for session: {session_id[:8]}...")
+        return True
+    return False
+
+
+def get_active_sessions() -> List[str]:
+    """Get list of active session IDs."""
+    return list(_session_states.keys())
