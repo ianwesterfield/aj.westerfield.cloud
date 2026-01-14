@@ -1,4 +1,3 @@
-# Awesome Task
 """
 AJ Filter - Agentic Reasoning & Memory
 
@@ -8,18 +7,16 @@ Open-WebUI filter that handles:
   - Code execution via executor
   - Semantic memory storage and retrieval
 """
-
 import os
 import re
 import json
 import base64
 import sys
+import requests
+
 from typing import Optional, List, Tuple, Dict, Any
 from enum import Enum
-
-import requests
 from pydantic import BaseModel, Field
-
 
 # ============================================================================
 # Centralized Logging Utilities (Inline for Open-WebUI Compatibility)
@@ -49,7 +46,6 @@ class LogLevel(str, Enum):
     EXECUTING = "executing"
     RESULT = "result"
 
-
 class LogCategory(str, Enum):
     """Source/component emitting the message."""
     FILTER = "filter"
@@ -69,12 +65,11 @@ class LogCategory(str, Enum):
     VALIDATION = "validation"
     MIGRATION = "migration"
 
-
 # Icon mapping: (LogCategory, LogLevel) -> icon
 ICON_MAP: Dict[Tuple[LogCategory, LogLevel], str] = {
     (LogCategory.FILTER, LogLevel.SUCCESS): "✅",
     (LogCategory.FILTER, LogLevel.DONE): "✅",
-    (LogCategory.FILTER, LogLevel.SAVED): "💾",
+    (LogCategory.FILTER, LogLevel.SAVED): "🧠",
     (LogCategory.FILTER, LogLevel.THINKING): "💭",
     (LogCategory.FILTER, LogLevel.RUNNING): "⏳",
     (LogCategory.FILTER, LogLevel.READY): "✅",
@@ -86,7 +81,7 @@ ICON_MAP: Dict[Tuple[LogCategory, LogLevel], str] = {
     (LogCategory.FILTER, LogLevel.PARTIAL_ERROR): "⚠️",
     (LogCategory.FILTER, LogLevel.ERROR): "❌",
     (LogCategory.FILTER, LogLevel.FAILED): "❌",
-    (LogCategory.FILTER, LogLevel.BLOCKED): "🚫",
+    (LogCategory.FILTER, LogLevel.BLOCKED): "❌",
     (LogCategory.FILTER, LogLevel.SCANNING): "🔍",
     (LogCategory.ORCHESTRATOR, LogLevel.SUCCESS): "✅",
     (LogCategory.ORCHESTRATOR, LogLevel.DONE): "✅",
@@ -104,11 +99,9 @@ ICON_MAP: Dict[Tuple[LogCategory, LogLevel], str] = {
 
 DEFAULT_ICON = "◆"
 
-
 def get_icon(category: LogCategory, level: LogLevel) -> str:
     """Get icon for category and level combination."""
     return ICON_MAP.get((category, level), DEFAULT_ICON)
-
 
 def log_message(message: str, category: LogCategory, level: LogLevel, include_icon: bool = True, icon_override: Optional[str] = None) -> str:
     """Generate formatted log message with icon."""
@@ -116,7 +109,6 @@ def log_message(message: str, category: LogCategory, level: LogLevel, include_ic
         return message
     icon = icon_override if icon_override else get_icon(category, level)
     return f"{icon} {message}"
-
 
 def create_status_dict(message: str, category: LogCategory, level: LogLevel, done: bool = False, hidden: bool = False) -> Dict[str, any]:
     """Create status dict ready for event emitter."""
@@ -130,7 +122,6 @@ def create_status_dict(message: str, category: LogCategory, level: LogLevel, don
         }
     }
 
-
 def create_error_dict(message: str, category: LogCategory, done: bool = True, hidden: bool = False) -> Dict[str, any]:
     """Create error status dict."""
     return create_status_dict(message, category, LogLevel.ERROR, done=done, hidden=hidden)
@@ -139,7 +130,6 @@ def create_error_dict(message: str, category: LogCategory, done: bool = True, hi
 def create_success_dict(message: str, category: LogCategory, done: bool = True, hidden: bool = False) -> Dict[str, any]:
     """Create success status dict."""
     return create_status_dict(message, category, LogLevel.SUCCESS, done=done, hidden=hidden)
-
 
 # ============================================================================
 # Configuration
@@ -150,77 +140,6 @@ EXTRACTOR_API_URL = os.getenv("EXTRACTOR_API_URL", "http://extractor_api:8002")
 ORCHESTRATOR_API_URL = os.getenv("ORCHESTRATOR_API_URL", "http://orchestrator_api:8004")
 EXECUTOR_API_URL = os.getenv("EXECUTOR_API_URL", "http://executor_api:8005")
 PRAGMATICS_API_URL = os.getenv("PRAGMATICS_API_URL", "http://pragmatics_api:8001")
-
-# System prompt describing AJ capabilities and output contracts
-# This is injected into the chat LLM that presents results to users
-AJ_SYSTEM_PROMPT = """# AJ
-
-AJ is an agentic-capable AI-assisted filter for Open-WebUI. It sits between the LLM and your workspace to route intent, manage semantic memory, run workspace operations, and provide a streaming UX.
-
-## What AJ Does
-
-1. **Classifies Intent** — Determine whether the user is chatting, saving info, recalling, or requesting a task.
-2. **Manages Memory** — Save facts/docs/notes and retrieve relevant context later.
-3. **Runs Workspace Ops** — Read/list/edit files and run shell commands via the Executor.
-4. **Streaming UX** — Show "thinking + progress" while tasks run, then display results verbatim.
-
-## Key Principle (No Shortcuts)
-
-- AJ must not hardcode "patterns" (e.g., "largest files" => `du`) inside the filter. The Orchestrator decides tools, parameters, and ordering.
-- If intent == `task`, ALWAYS delegate planning and step selection to the Orchestrator.
-
-## Intent Routing
-
-- `casual`: respond normally, no tools.
-- `save`: store memory payload, then confirm saved (short).
-- `recall`: search memory, inject relevant results, answer using retrieved context.
-- `task`: orchestrate multi-step work (plan → execute → verify → complete).
-
-## Output Contract (VERBATIM-FIRST) — CRITICAL
-
-When ANY tool/command produces output (stdout, stderr, file reads, scans, diffs):
-
-1. **Show the raw output FIRST** in a fenced code block.
-2. Output must be **EXACTLY as received**:
-   - do NOT summarize
-   - do NOT paraphrase
-   - do NOT reformat into bullet points
-   - do NOT reorder
-   - do NOT trim "unimportant" lines
-3. **No interpretation before output.** Status lines are allowed; prose is not.
-4. After output, you MAY add brief commentary (max 3 lines) limited to:
-   - the next step AJ will run (or what it needs from the user)
-   - error handling / recovery choices
-   - completion confirmation
-5. If multiple outputs occur, show them **in chronological order** as separate code blocks.
-6. If stdout and stderr both exist, show stdout first, then stderr (separate blocks).
-
-### CORRECT (always do this):
-```
-total 15
-drwxr-xr-x  4096  Dec 28 19:05  filters/
--rw-r--r-- 38618  Dec 29 03:04  README.md
-```
-
-### WRONG (never do this):
-- filters/: A directory containing…
-- README.md: The main documentation…
-
-The user wants to SEE the actual terminal output, not your interpretation of it.
-
-## File Editing Guardrails (Surgical)
-
-- Prefer `replace_in_file` / `insert_in_file` / `append_to_file` over `write_file`.
-- Do not overwrite entire files unless explicitly required.
-- Preserve existing style and formatting; make minimal edits.
-- If an overwrite is necessary, state that clearly BEFORE doing it.
-
-## Role Boundary
-
-- The Orchestrator plans. The Executor executes. AJ presents results and manages memory.
-- Users should see the real outputs; AJ must not "translate" outputs into prose.
-- If the user requests interpretation, do it only AFTER verbatim output, and do not restate the output in a different format.
-"""
 
 # File type to MIME type mapping
 CONTENT_TYPE_MAP = {
@@ -239,7 +158,6 @@ CONTENT_TYPE_MAP = {
     ".wav": "audio/wav",
     ".m4a": "audio/mp4",
 }
-
 
 # ============================================================================
 # Intent Classification
@@ -275,7 +193,6 @@ def _classify_intent(text: str) -> Dict[str, Any]:
     # Fallback if pragmatics is down - default to casual (safe)
     print("[aj] Warning: Pragmatics unavailable, defaulting to casual")
     return {"intent": "casual", "confidence": 0.3}
-
 
 def _detect_task_continuation(user_text: str, messages: List[dict], confidence: float) -> bool:
     """
@@ -332,7 +249,6 @@ def _detect_task_continuation(user_text: str, messages: List[dict], confidence: 
     
     # Fallback: if pragmatics unavailable, don't upgrade (safe default)
     return False
-
 
 # ============================================================================
 # Orchestrator Integration
@@ -394,7 +310,6 @@ def _build_task_description(messages: List[dict]) -> str:
     # Fallback to current text if no original task found
     return user_text
 
-
 def _is_json_plan_content(content: str) -> bool:
     """
     Detect if content is raw JSON planning output that should be formatted.
@@ -420,7 +335,6 @@ def _is_json_plan_content(content: str) -> bool:
         return True
     
     return False
-
 
 def _format_json_plan_as_blockquote(content: str) -> str:
     """
@@ -449,7 +363,6 @@ def _format_json_plan_as_blockquote(content: str) -> str:
     
     # If no steps found, return empty (will be filtered)
     return ""
-
 
 async def _orchestrate_task(
     user_id: str,
@@ -613,7 +526,6 @@ async def _orchestrate_task(
         )
         return None, ""
 
-
 # ============================================================================
 # Content Extraction Layer
 # ============================================================================
@@ -744,7 +656,6 @@ def _extract_all_content_batch(
         print(f"[aj] Batch extraction error: {e}")
         return "", filenames, []
 
-
 def _extract_images_from_messages(
     messages: List[dict],
     user_prompt: Optional[str] = None
@@ -800,7 +711,6 @@ def _extract_images_from_messages(
     
     return image_chunks
 
-
 def _load_image_url(url: str) -> Tuple[Optional[str], Optional[str]]:
     """Load image from various sources (data URL, HTTP, local file)."""
     
@@ -834,7 +744,6 @@ def _load_image_url(url: str) -> Tuple[Optional[str], Optional[str]]:
     
     return None, None
 
-
 def _extract_and_chunk_file(file_path: str, filename: str) -> List[dict]:
     """Extract text from file and split into chunks."""
     try:
@@ -865,7 +774,6 @@ def _extract_and_chunk_file(file_path: str, filename: str) -> List[dict]:
                 return [{"content": f.read(), "chunk_index": 0, "chunk_type": "text"}]
         except Exception:
             return []
-
 
 def _extract_file_contents(body: dict) -> Tuple[str, List[str], List[dict]]:
     """Extract and chunk all uploaded files from request."""
@@ -909,7 +817,6 @@ def _extract_file_contents(body: dict) -> Tuple[str, List[str], List[dict]]:
     
     return "\n\n".join(file_contents), filenames, all_chunks
 
-
 def _call_extractor(
     content: str,
     content_type: str,
@@ -938,7 +845,6 @@ def _call_extractor(
     except Exception as e:
         print(f"[aj] Extractor error: {e}")
         return []
-
 
 # ============================================================================
 # Memory Layer
@@ -978,7 +884,6 @@ async def _save_chunk_to_memory(
         print(f"[aj] Failed to save chunk: {e}")
         return False
 
-
 async def _search_memory(
     user_id: str,
     query_text: str,
@@ -1005,7 +910,6 @@ async def _search_memory(
         print(f"[aj] Search error: {e}")
         return []
 
-
 async def _save_to_memory(
     user_id: str,
     messages: List[dict],
@@ -1031,7 +935,6 @@ async def _save_to_memory(
         print(f"[aj] Save error: {e}")
         return False
 
-
 def _extract_user_text_prompt(messages: List[dict]) -> Optional[str]:
     """Extract user's text prompt from last user message."""
     if not messages:
@@ -1042,18 +945,20 @@ def _extract_user_text_prompt(messages: List[dict]) -> Optional[str]:
             continue
         
         content = msg.get("content")
+        
         if isinstance(content, str):
             return content
         
         if isinstance(content, list):
             text_parts = []
+            
             for item in content:
                 if isinstance(item, dict) and item.get("type") == "text":
                     text_parts.append(item.get("text", ""))
+                    
             return " ".join(text_parts) if text_parts else None
     
     return None
-
 
 # ============================================================================
 # Context Formatting
@@ -1088,7 +993,6 @@ def _format_source(ctx: dict) -> str:
         return f'💬 "{snippet}"'
     
     return "📝 memory"
-
 
 # ============================================================================
 # Filter Plugin Class
@@ -1152,21 +1056,6 @@ class Filter:
             m.get("role") == "system" and "AJ" in m.get("content", "")
             for m in messages
         )
-        
-        if not has_aj_system:
-            # Add AJ system prompt at the beginning
-            aj_system = {
-                "role": "system",
-                "content": AJ_SYSTEM_PROMPT
-            }
-            # Insert after any existing system messages, or at start
-            insert_idx = 0
-            for i, m in enumerate(messages):
-                if m.get("role") == "system":
-                    insert_idx = i + 1
-                else:
-                    break
-            messages.insert(insert_idx, aj_system)
         
         if not context_items and not orchestrator_context:
             body["messages"] = messages
