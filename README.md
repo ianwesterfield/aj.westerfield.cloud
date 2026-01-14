@@ -1,32 +1,19 @@
 # AJ: Knowledge-Centric AI Infrastructure
 
-> **AJ** is a knowledge-centric environment assistant. Built with privacy, autonomy, and extended context management in mind.
+**An agentic AI assistant that remembers you, as you go.** Based on a semantic and agentic approach, AJ focuses on:
 
----
-
-## What is AJ?
-
-AJ solves a critical problem with AI assistants: **they forget everything**. Each conversation starts from scratch with no understanding of your environment, your patterns, or your history.
-
-AJ changes this by:
-
-1. **Planning** intelligently based on your workspace and history
-2. **Showing Progress** as it works through multi-step tasks
-3. **Adapting** based on your feedback and new information
-4. **Remembering** what it learns in a semantic vector database
-5. **Improving** with every interaction
-
-**An agentic AI assistant that remembers you, as you go.** It plans, acts, learns, and gets better with every conversation.
-
----
-
-## How AJ Fits the Landscape
+1. **Privacy** completely local to your environment.
+2. **Planning** intelligently based on your workspace and history
+3. **Showing Progress** as it works through multi-step tasks
+4. **Adapting** based on your feedback and new information
+5. **Remembering** what it learns in a semantic vector database
+6. **Improving** with every interaction
 
 The AI tooling ecosystem is crowded. Here's where AJ sits — and why it exists.
 
 ### The "All You Need is Bash" Philosophy
 
-At its core, AJ embraces a simple truth: most tasks eventually reduce to `exec(command)`. Files, shell, code execution, remote calls—it's all just commands on machines. The trick isn't _what_ to execute, it's _knowing when_ to execute it.
+At its core, AJ embraces a simple truth: most tasks eventually reduce to `exec(command)`. Files, shell, code execution, remote calls—it's all just commands on machines. The trick isn't just knowing _what_ to execute, but also _where_ and _when_.
 
 That's where AJ differs from pure tool-exposure protocols.
 
@@ -34,16 +21,21 @@ That's where AJ differs from pure tool-exposure protocols.
 
 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) is a specification for exposing tools to LLMs—think of it as a standard interface. It defines how to describe tools, transport requests, and return results. Clean, standard, interoperable.
 
-AJ's backend services are tools (REST APIs) that an orchestrator invokes. Today they're custom REST; tomorrow they could speak MCP natively. But AJ adds the part MCP doesn't provide: **a reasoning layer that decides what to call**.
+**MCP is tool-centric:** Servers advertise their tools, hosts discover them, and the LLM picks from the menu. The LLM sees "here are 47 tools" and decides which to call.
+
+**AJ is intent-centric:** The orchestrator reasons about _what needs to happen_, then dispatches atomic operations to agents. Agents don't advertise a menu—they report capabilities ("I can run PowerShell", "I have GPU access"). The orchestrator plans the solution, then sends specific commands: "run this script", "read this file", "execute this query."
 
 ```
-MCP:  User → Client decides → "Call tool X" → Result
-AJ:   User → Intent Classifier → Orchestrator decides → "Call tool → Result
+MCP:  Tools advertise → Host discovers → LLM picks from menu → Execute
+
+AJ:   Intent classified → Orchestrator reasons → Plan steps → Dispatch atomic ops to agents
 ```
 
-With MCP alone, the host application (or LLM) makes all the decisions about which tools to invoke. With AJ, specialized models route and reason—intent classification happens in 50ms with a fine-tuned DistilBERT, not a general-purpose LLM inference. The orchestrator _reasons_ about which tools make sense given session state, history, and available agents.
+With MCP, the LLM is the decision-maker given a tool catalog. With AJ, the orchestrator is the decision-maker—it reasons about the problem, plans a solution, and agents are just execution endpoints for atomic operations.
 
-**AJ = reasoning layer + tool execution. MCP = how tools get exposed. Complementary, not competing.**
+**AJ's agents don't think. They execute.** The thinking happens in the orchestrator, informed by session state, history, and the actual capabilities of discovered agents.
+
+**MCP = tool discovery + invocation protocol. AJ = reasoning engine that plans solutions and dispatches atomic operations. Complementary, not competing.**
 
 ### Defined Sequence vs. Adaptive Reasoning
 
@@ -77,31 +69,49 @@ No LLM drift. Session state is the source of truth—always.
 ### High-Level System Flow
 
 ```mermaid
-graph TB
-    A(["🤖 User<br/>(Open-WebUI)"])
-    B[["AJ Filter<br/>(Intent Router)"]]
-    C[/"Pragmatics<br/>(4-Class Intent)"/]
-    D{{"Orchestrator<br/>(Reasoning Engine)"}}
-    E[("Knowledge<br/>(Semantic Memory)")]
-    F>"Tool Execution<br/>(Files, Shell, Code)"]
-    G["FunnelCloud<br/>(Remote Agents)"]
+sequenceDiagram
+    participant U as 🤖 User (Open-WebUI)
+    participant F as AJ Filter
+    participant P as Pragmatics
+    participant M as Memory (Qdrant)
+    participant O as Orchestrator
+    participant T as Tools
+    participant A as FunnelCloud Agents
 
-    A -->|"Message"| B
-    B -->|"Classify Intent"| C
-    C -->|"intent + confidence"| B
-    B -->|"casual"| A
-    B -->|"save/recall"| E
-    B -->|"task"| D
+    U->>F: Message
+    F->>P: Classify intent
+    P-->>F: intent + confidence
 
-    D -->|"Retrieve Context"| E
-    D -->|"Plan & Reason"| D
-    D -->|"Execute"| F
-    F -->|"Local File/Shell"| F
-    F -->|"Remote Task"| G
-    F -->|"Results"| D
-
-    D -->|"Store Insights"| E
-    D -->|"Stream Results"| A
+    alt Intent: CASUAL
+        F-->>U: LLM responds directly
+    else Intent: SAVE
+        F->>M: Store payload
+        M-->>F: Stored
+        F-->>U: Confirmed
+    else Intent: RECALL
+        F->>M: Semantic search
+        M-->>F: Retrieved facts
+        F-->>U: Here's what I know...
+    else Intent: TASK
+        F->>O: Execute task
+        O->>M: Retrieve context
+        M-->>O: Session history
+        O->>O: Plan steps
+        loop Each step
+            O->>T: Execute tool
+            alt Local task
+                T-->>O: Result
+            else Remote task
+                T->>A: gRPC call (mTLS)
+                A-->>T: Result
+                T-->>O: Result
+            end
+            O->>O: Reason about result
+        end
+        O->>M: Store insights
+        O-->>F: Stream response (SSE)
+        F-->>U: Final answer
+    end
 ```
 
 ### System Components
