@@ -164,7 +164,7 @@ services:
       - FUNNEL_INSECURE=${FUNNEL_INSECURE:-true}
     volumes:
       - ${HOST_WORKSPACE_PATH:-/mnt/c/Code}:/workspace:rw
-      - ./FunnelCloud/certs:/app/certs:ro
+      - ./layers/agents/FunnelCloud/certs:/app/certs:ro
     depends_on:
       - ollama
       - memory_api

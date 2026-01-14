@@ -392,11 +392,12 @@ docker compose ps
 
 ### Auto-Start on Windows Boot
 
-To automatically start AJ services when Windows boots (using WSL2 + Docker), create a scheduled task:
+To automatically start AJ services when Windows boots (using WSL2 + Docker Engine), create a scheduled task:
 
 ```powershell
 # Run as Administrator
-$Action = New-ScheduledTaskAction -Execute "wsl.exe" -Argument "-d Ubuntu -u root -- bash -c 'service docker start && cd /mnt/c/Code/aj.westerfield.cloud && docker compose up -d'"
+# Note: Replace 'Debian' with your WSL distro name (check with: wsl -l -v)
+$Action = New-ScheduledTaskAction -Execute "wsl.exe" -Argument "-d Debian -u root -- bash -c 'service docker start && cd /mnt/c/Code/aj.westerfield.cloud && docker compose up -d'"
 $Trigger = New-ScheduledTaskTrigger -AtStartup
 $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RunOnlyIfNetworkAvailable
 $Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest

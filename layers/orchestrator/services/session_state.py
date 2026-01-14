@@ -330,6 +330,7 @@ class SessionState:
     
     # FunnelCloud agent tracking
     discovered_agents: List[str] = field(default_factory=list)  # Agent IDs discovered this session
+    queried_agents: List[str] = field(default_factory=list)  # Agent IDs that have been queried with remote_execute
     agents_verified: bool = False  # True after list_agents has been called
     
     # Task plan - generated at start, guides execution
@@ -426,8 +427,13 @@ class SessionState:
         
         elif tool == "remote_execute":
             cmd = params.get("command", "")[:40]
-            agent = params.get("agent_id", "default")
+            # Handle various param names for agent
+            agent = (params.get("agent_id") or params.get("agent") or 
+                    params.get("agent_name") or params.get("agentName") or "default")
             summary = f"remote({agent}): {cmd}... {'OK' if success else 'FAILED'}"
+            # Track that this agent has been queried (for multi-agent progress)
+            if success and agent and agent != "default" and agent not in self.queried_agents:
+                self.queried_agents.append(agent)
             
         else:
             summary = f"{tool}: {'OK' if success else 'FAILED'}"
@@ -833,8 +839,19 @@ class SessionState:
         # FunnelCloud agent status - critical for remote execution
         if self.agents_verified:
             if self.discovered_agents:
-                lines.append(f"🖥️ AGENTS VERIFIED: {', '.join(self.discovered_agents)}")
-                lines.append("   You may now use remote_execute with these agent(s)")
+                lines.append(f"🖥️ AGENTS DISCOVERED: {', '.join(self.discovered_agents)}")
+                
+                # Show progress on multi-agent tasks
+                if self.queried_agents:
+                    lines.append(f"   ✅ QUERIED: {', '.join(self.queried_agents)}")
+                    remaining = [a for a in self.discovered_agents if a not in self.queried_agents]
+                    if remaining:
+                        lines.append(f"   ⏳ REMAINING: {', '.join(remaining)}")
+                        lines.append(f"   ⚠️ {len(remaining)} agent(s) still need remote_execute!")
+                    else:
+                        lines.append("   ✅ All agents queried - ready to summarize results")
+                else:
+                    lines.append("   ⏳ No agents queried yet - use remote_execute with agent_id")
             else:
                 lines.append("🖥️ AGENTS VERIFIED: None found")
                 lines.append("   No remote execution available - tell user to start an agent")

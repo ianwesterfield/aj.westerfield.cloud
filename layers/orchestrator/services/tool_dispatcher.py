@@ -308,6 +308,9 @@ async def dispatch_tool(
     if tool == "remote_execute":
         return await _handle_remote_execute(params)
     
+    if tool == "remote_execute_all":
+        return await _handle_remote_execute_all(params)
+    
     if tool == "list_agents":
         return await _handle_list_agents(params)
     
@@ -463,8 +466,10 @@ async def _handle_remote_execute(params: Dict[str, Any]) -> Dict[str, Any]:
             logger.warning(f"Failed to decode base64 command: {e}")
             # Fall back to regular command if base64 decode fails
     
-    agent_id = params.get("agent_id", "") or params.get("agent", "")
-    # Handle list format for agent_id too
+    # Handle various param names for agent (model may use different names)
+    agent_id = (params.get("agent_id") or params.get("agent") or 
+                params.get("agent_name") or params.get("agentName") or "")
+    # Handle list format for agent_id too (model might pass ["agent1", "agent2"])
     if isinstance(agent_id, list):
         agent_id = agent_id[0] if agent_id else ""
     agent_id = str(agent_id).strip()
@@ -577,3 +582,110 @@ async def _handle_remote_execute(params: Dict[str, Any]) -> Dict[str, Any]:
             "error": f"Remote execution failed: {str(e)}",
         }
 
+
+async def _handle_remote_execute_all(params: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Execute a command on ALL discovered FunnelCloud agents in parallel.
+    
+    This is the preferred tool when the user wants to run the same command
+    across multiple machines (e.g., "ask each agent", "run on all machines").
+    
+    Params:
+        command: Command to execute on all agents (PowerShell on Windows)
+        timeout: Optional timeout per agent in seconds (default 300)
+    
+    Returns combined output from all agents.
+    """
+    import asyncio
+    
+    command = params.get("command", "") or params.get("cmd", "")
+    if isinstance(command, list):
+        command = " ".join(str(c) for c in command)
+    command = str(command).strip()
+    
+    timeout = params.get("timeout", 300)  # 5 min default for parallel ops
+    
+    if not command:
+        return {
+            "success": False,
+            "output": None,
+            "error": "No command specified for remote execution",
+        }
+    
+    # Get all available agents
+    try:
+        agents = await get_available_agents()
+        if not agents:
+            return {
+                "success": False,
+                "output": None,
+                "error": "No FunnelCloud agents available. Run list_agents first to verify.",
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "output": None,
+            "error": f"Failed to discover agents: {e}",
+        }
+    
+    logger.info(f"Executing on {len(agents)} agents in parallel: {command[:50]}...")
+    
+    # Execute on all agents in parallel
+    async def execute_on_agent(agent: AgentCapabilities) -> Dict[str, Any]:
+        """Execute command on a single agent, return result dict."""
+        try:
+            client = get_grpc_client()
+            result = await client.execute(
+                agent_id=agent.agent_id,
+                command=command,
+                task_type="powershell",
+                timeout_seconds=timeout,
+            )
+            
+            output_parts = [f"[{agent.agent_id} @ {agent.ip_address}]"]
+            
+            if result.stdout:
+                output_parts.append(result.stdout)
+            if result.stderr and not result.success:
+                output_parts.append(f"ERROR: {result.stderr}")
+            if not result.stdout and not result.stderr:
+                output_parts.append("(no output)")
+            
+            output_parts.append(f"[Exit: {result.exit_code}, {result.duration_ms}ms]")
+            
+            return {
+                "agent_id": agent.agent_id,
+                "success": result.success or bool(result.stdout),
+                "output": "\n".join(output_parts),
+            }
+        except Exception as e:
+            return {
+                "agent_id": agent.agent_id,
+                "success": False,
+                "output": f"[{agent.agent_id}] ERROR: {e}",
+            }
+    
+    # Run all in parallel
+    tasks = [execute_on_agent(agent) for agent in agents]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Combine outputs
+    all_outputs = []
+    success_count = 0
+    
+    for result in results:
+        if isinstance(result, Exception):
+            all_outputs.append(f"[Unknown agent] ERROR: {result}")
+        else:
+            all_outputs.append(result["output"])
+            if result.get("success"):
+                success_count += 1
+    
+    combined_output = f"Executed on {len(agents)} agent(s) ({success_count} succeeded):\n\n"
+    combined_output += "\n\n---\n\n".join(all_outputs)
+    
+    return {
+        "success": success_count > 0,
+        "output": combined_output,
+        "error": None if success_count > 0 else "All agents failed",
+    }

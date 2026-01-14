@@ -1121,12 +1121,12 @@ class Filter:
             description="Maximum memory items to inject as context"
         )
         workspace_root: str = Field(
-            default="/workspace/aj.westerfield.cloud",
-            description="Workspace root inside container (e.g., /workspace/myproject). "
-                        "Maps to HOST_WORKSPACE_PATH on host machine."
+            default="/workspace",
+            description="Workspace root inside container. "
+                        "Maps to HOST_WORKSPACE_PATH on host machine via docker-compose volume."
         )
         host_workspace_hint: str = Field(
-            default="C:/Code",
+            default="C:/Code/aj.westerfield.cloud",
             description="Display hint: what HOST_WORKSPACE_PATH is set to on host. "
                         "This is informational only - actual mapping is in docker-compose."
         )

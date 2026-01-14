@@ -133,14 +133,16 @@ FORMAT: {"tool": "name", "params": {...}, "note": "status", "reasoning": "why"}
 
 TOOLS:
 - scan_workspace, read_file, write_file, execute_shell: For /workspace operations
-- list_agents, remote_execute: For user's machine (call list_agents FIRST)
+- list_agents: Discover available FunnelCloud agents (call FIRST before remote ops)
+- remote_execute: Run command on a specific agent {"agent_id": "name", "command": "..."}
 - complete: {"answer": "response"} when done, {"error": "msg"} on failure
 - none: {"reason": "why"} to skip
 
 RULES:
 - Default to workspace tools unless user says "my PC/machine"
 - One tool per response, no markdown, no fabrication
-- Follow the task plan in session state
+- Check session state for progress - it shows QUERIED vs REMAINING agents
+- Only call complete when ALL work is done (check REMAINING agents!)
 """
 
 
@@ -373,14 +375,19 @@ Keep responses focused and informative."""
 OUTPUT FORMAT - CRITICAL:
 1. First, briefly explain your strategy (1-2 sentences)
 2. Then output a SHORT numbered list (1. 2. 3. etc.) of concrete steps
-3. Keep total plan SHORT - 2-5 steps max
-4. Each step should be specific and actionable
+3. Each step should be specific and actionable
 
 STRATEGY TIPS:
 - If task mentions multiple targets (C: and S:), list them as separate steps
 - For remote/host operations, include "verify agent available" as first step  
 - Break complex operations into atomic steps (read, process, verify, report)
 - End plan with a final verification or summary step
+
+MULTI-AGENT PATTERN - CRITICAL:
+When user says "each agent", "all agents", "every machine", etc:
+- List agents first
+- Then create ONE step PER AGENT for the operation
+- Use placeholders like "agent1", "agent2" etc. or "for each agent"
 
 EXAMPLES:
 
@@ -389,10 +396,15 @@ User: "What are the largest files on my C: drive?"
 2. Scan C: drive for file sizes
 3. Report top 10 largest files
 
-User: "Add a comment to README.md"
-1. Read README.md
-2. Add comment header to file
-3. Confirm change
+User: "Ask each agent for disk space"
+1. Query agent registry
+2. For each agent: query disk space
+3. Report results per agent
+
+User: "Check folder sizes on all my machines"
+1. List available agents
+2. For each agent: scan for largest folders
+3. Summarize by machine
 
 User: "Scan C: and S: for large folders"
 1. Verify FunnelCloud agent is available
@@ -691,7 +703,7 @@ Now create a plan for:
             "properties": {
                 "tool": {
                     "type": "string",
-                    "description": "Tool to call - WORKSPACE tools for files, list_agents+remote_execute for remote PC",
+                    "description": "Tool to call - WORKSPACE tools for files, remote tools for agents",
                     "enum": [
                         "write_file",      # Create or overwrite files in workspace
                         "read_file",       # Read file contents in workspace
@@ -704,8 +716,8 @@ Now create a plan for:
                         "validate_script", # Validate a script
                         "complete",        # Task done or error
                         "none",            # Skip step
-                        "list_agents",     # ONLY for "my PC/machine" - discover available agents first
-                        "remote_execute",  # Run command on remote PC - MUST call list_agents first!
+                        "list_agents",     # Discover available FunnelCloud agents
+                        "remote_execute",  # Run command on ONE agent - iterate for multi-agent tasks
                     ]
                 },
                 "params": {
@@ -767,7 +779,7 @@ Now create a plan for:
             "properties": {
                 "tool": {
                     "type": "string",
-                    "description": "Tool to call - WORKSPACE tools for files, list_agents+remote_execute for remote PC",
+                    "description": "Tool to call - WORKSPACE tools for files, remote tools for agents",
                     "enum": [
                         "write_file",      # Create or overwrite files in workspace
                         "read_file",       # Read file contents in workspace
@@ -780,8 +792,8 @@ Now create a plan for:
                         "validate_script", # Validate a script
                         "complete",        # Task done or error
                         "none",            # Skip step
-                        "list_agents",     # ONLY for "my PC/machine" - discover available agents first
-                        "remote_execute",  # Run command on remote PC - MUST call list_agents first!
+                        "list_agents",     # Discover available FunnelCloud agents
+                        "remote_execute",  # Run command on ONE agent - iterate for multi-agent tasks
                     ]
                 },
                 "params": {
@@ -1167,74 +1179,46 @@ Now create a plan for:
                         params={"error": "No FunnelCloud agents are available. I cannot access your remote machine to perform this task. Please ensure the FunnelCloud agent is running on the target machine."},
                         reasoning="Forced error completion - no agents available but model tried to provide answer",
                     )
-            
-            if last_was_list_agents and not did_remote_work and session_state.discovered_agents:
-                # LLM is trying to complete without doing remote work after discovering agents
-                error_text = step.params.get("error", "")
-                answer_text = step.params.get("answer", "")
-                
-                # EXCEPTION: If the task was just asking about agents, list_agents IS the answer
-                # Don't force remote work for agent status/count queries
-                task_lower = session_state.original_task.lower() if session_state.original_task else ""
-                is_agent_query = any(phrase in task_lower for phrase in [
-                    "how many agent", "agents online", "agents available", "agents connected",
-                    "list agent", "show agent", "what agent", "which agent", "agent status",
-                    "funnel cloud agent", "funnelcloud agent"
-                ])
-                
-                # Only block if this looks like a lazy completion (hallucinated answer)
-                # AND it's not just an agent query
-                if not is_agent_query and answer_text and "scan" not in answer_text.lower() and "error" not in answer_text.lower():
-                    logger.warning(f"GUARDRAIL: Blocking lazy completion after list_agents - no remote work done")
-                    return Step(
-                        step_id="guardrail_require_remote_work",
-                        tool="complete",
-                        params={"error": "You discovered agents but didn't perform the requested remote operation. Use remote_execute to do the actual work."},
-                        reasoning="Blocked lazy completion - LLM must use discovered agents",
-                    )
         
         # GUARDRAIL: If last remote_execute succeeded with SAME params, don't retry
         # This catches the "retry with better parameters" anti-pattern
-        # BUT allows different commands (scanning C: then S:)
+        # BUT allows different commands (scanning C: then S:) OR different agents
         if step.tool == "remote_execute":
-            recent_remote = [s for s in session_state.completed_steps[-5:] if s.tool == "remote_execute"]
-            if recent_remote:
-                last_remote = recent_remote[-1]
-                # Check if last remote operation was successful
-                if last_remote.success:
-                    last_cmd = last_remote.params.get("command", "")
-                    new_cmd = step.params.get("command", "")
-                    
-                    logger.debug(f"Checking duplicate: last='{last_cmd[:50]}' new='{new_cmd[:50]}'")
-                    
-                    # Check for exact match or similar command (same base operation)
-                    is_same_operation = False
-                    if last_cmd and new_cmd:
-                        # Exact match
-                        if last_cmd == new_cmd:
-                            is_same_operation = True
-                        # Similar command - same base cmdlet with minor variations
-                        elif "Get-ChildItem" in last_cmd and "Get-ChildItem" in new_cmd:
-                            is_same_operation = True
-                        # Both listing files with du or ls
-                        elif ("du " in last_cmd or "ls " in last_cmd) and ("du " in new_cmd or "ls " in new_cmd):
-                            is_same_operation = True
-                    
-                    if is_same_operation:
-                        logger.warning(f"GUARDRAIL: Blocking duplicate remote_execute - similar command already succeeded")
-                        return Step(
-                            step_id="guardrail_no_retry_remote",
-                            tool="complete",
-                            params={"answer": "I already retrieved the requested information. See the output above."},
-                            reasoning=f"Blocked retry of remote_execute - previous similar command succeeded",
-                        )
-                    else:
-                        logger.info(f"GUARDRAIL: Allowing remote_execute - different command")
+            # Handle various param names the model might use for agent
+            new_agent = (step.params.get("agent_id") or step.params.get("agent") or 
+                        step.params.get("agent_name") or step.params.get("agentName") or "")
+            new_cmd = step.params.get("command", "")
+            
+            # Check for exact duplicate (same agent AND same command)
+            for prev_step in session_state.completed_steps[-10:]:
+                if prev_step.tool != "remote_execute" or not prev_step.success:
+                    continue
+                
+                # Handle various param names
+                prev_agent = (prev_step.params.get("agent_id") or prev_step.params.get("agent") or
+                             prev_step.params.get("agent_name") or prev_step.params.get("agentName") or "")
+                prev_cmd = prev_step.params.get("command", "")
+                
+                # Only block if BOTH agent AND command match exactly
+                is_duplicate = (prev_agent == new_agent) and (prev_cmd == new_cmd)
+                
+                if is_duplicate:
+                    logger.warning(f"GUARDRAIL: Blocking duplicate remote_execute - same agent+command: {new_agent}")
+                    return Step(
+                        step_id="guardrail_no_retry_remote",
+                        tool="complete",
+                        params={"answer": "I already retrieved the requested information. See the output above."},
+                        reasoning=f"Blocked retry of remote_execute - agent {new_agent} already queried",
+                    )
+            
+            # Allow: same command to DIFFERENT agent
+            # Allow: different command to same agent (multi-step on one machine)
+            logger.info(f"GUARDRAIL: Allowing remote_execute to {new_agent or 'default'} - not a duplicate")
         
         # GUARDRAIL: Detect tool repetition loops (same tool called 3+ times with SAME target)
         # For file operations, allow multiple calls to different paths
         # NOTE: remote_execute is exempt - it has its own smarter duplicate detection above
-        if step.tool != "remote_execute":
+        if step.tool not in ("remote_execute", "remote_execute_all"):
             # For file tools, check if we're targeting the same path
             file_tools = {"write_file", "read_file", "replace_in_file", "insert_in_file", "append_to_file"}
             if step.tool in file_tools:
