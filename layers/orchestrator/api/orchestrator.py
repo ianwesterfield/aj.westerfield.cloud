@@ -1024,16 +1024,33 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
         file_ops = sum(1 for r in all_results if "File Operation Result" in r)
         scan_ops = sum(1 for r in all_results if "Workspace Files" in r)
         read_ops = sum(1 for r in all_results if "File Content:" in r)
+        error_ops = sum(1 for r in all_results if "### Step" in r and "Error ###" in r)
         
         header = """### TASK COMPLETED ###
 **CRITICAL:** Actions below have ALREADY been executed. Report in PAST TENSE.
 """
         if file_ops > 0:
             header += f"**Files modified:** {file_ops}\n"
+        if error_ops > 0:
+            header += f"**Errors encountered:** {error_ops}\n"
         header += "### Action Log ###\n"
         
         # Context-appropriate summarization instructions
-        if scan_ops > 0 and file_ops == 0 and read_ops == 0:
+        if error_ops > 0:
+            # Errors occurred - ALWAYS report them with details
+            footer = """### End Action Log ###
+
+⚠️ SUMMARIZATION: Report what happened, including ALL ERRORS with details.
+- Start by stating if the task succeeded or failed
+- If failed: Explain WHY it failed
+- For any code blocks, specify the command and/or agent(s) used
+- For each ERROR: Include the full error message so the user can troubleshoot
+- For connection/network errors: Include the specific error type and message
+- Be helpful: Suggest possible causes or next steps if appropriate
+- Use past tense: "I attempted to...", "The command failed with..."
+- NEVER omit error details - they are critical for troubleshooting
+"""
+        elif scan_ops > 0 and file_ops == 0 and read_ops == 0:
             # User just asked to list files - give a brief summary
             footer = """### End Action Log ###
 
@@ -1063,8 +1080,9 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
 ⚠️ SUMMARIZATION: Answer the user's question directly and concisely.
 - If they asked a yes/no question, answer yes or no first
 - If they asked for specific info, provide just that info
-- Do NOT dump raw command output - summarize the key findings
-- Keep your response brief and helpful
+- For ERRORS: Include the full error message so the user can troubleshoot
+- For successful commands: Summarize the key findings, don't dump raw output
+- Keep your response helpful and actionable
 - NEVER mention internal terms like "session state", tool names, or section headers
 - Speak naturally as if you personally explored the files
 """

@@ -273,6 +273,7 @@ def search_memory(req: SearchRequest) -> List[MemoryResult]:
         return [
             MemoryResult(
                 user_text=pt.get("payload", {}).get("user_text", ""),
+                facts=pt.get("payload", {}).get("facts"),
                 messages=None,
                 score=pt.get("score", 0),
                 source_type=pt.get("payload", {}).get("source_type"),

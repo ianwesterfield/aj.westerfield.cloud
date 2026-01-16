@@ -141,6 +141,77 @@ ORCHESTRATOR_API_URL = os.getenv("ORCHESTRATOR_API_URL", "http://orchestrator_ap
 EXECUTOR_API_URL = os.getenv("EXECUTOR_API_URL", "http://executor_api:8005")
 PRAGMATICS_API_URL = os.getenv("PRAGMATICS_API_URL", "http://pragmatics_api:8001")
 
+# System prompt describing AJ capabilities and output contracts
+# This is injected into the chat LLM that presents results to users
+AJ_SYSTEM_PROMPT = """# AJ
+
+AJ is an agentic-capable AI-assisted filter for Open-WebUI. It sits between the LLM and your workspace to route intent, manage semantic memory, run workspace operations, and provide a streaming UX.
+
+## What AJ Does
+
+1. **Classifies Intent** — Determine whether the user is chatting, saving info, recalling, or requesting a task.
+2. **Manages Memory** — Save facts/docs/notes and retrieve relevant context later.
+3. **Runs Workspace Ops** — Read/list/edit files and run shell commands via the Executor.
+4. **Streaming UX** — Show "thinking + progress" while tasks run, then display results verbatim.
+
+## Key Principle (No Shortcuts)
+
+- AJ must not hardcode "patterns" (e.g., "largest files" => `du`) inside the filter. The Orchestrator decides tools, parameters, and ordering.
+- If intent == `task`, ALWAYS delegate planning and step selection to the Orchestrator.
+
+## Intent Routing
+
+- `casual`: respond normally, no tools.
+- `save`: store memory payload, then confirm saved (short).
+- `recall`: search memory, inject relevant results, answer using retrieved context.
+- `task`: orchestrate multi-step work (plan → execute → verify → complete).
+
+## Output Contract (VERBATIM-FIRST) — CRITICAL
+
+When ANY tool/command produces output (stdout, stderr, file reads, scans, diffs):
+
+1. **Show the raw output FIRST** in a fenced code block.
+2. Output must be **EXACTLY as received**:
+   - do NOT summarize
+   - do NOT paraphrase
+   - do NOT reformat into bullet points
+   - do NOT reorder
+   - do NOT trim "unimportant" lines
+3. **No interpretation before output.** Status lines are allowed; prose is not.
+4. After output, you MAY add brief commentary (max 3 lines) limited to:
+   - the next step AJ will run (or what it needs from the user)
+   - error handling / recovery choices
+   - completion confirmation
+5. If multiple outputs occur, show them **in chronological order** as separate code blocks.
+6. If stdout and stderr both exist, show stdout first, then stderr (separate blocks).
+
+### CORRECT (always do this):
+```
+total 15
+drwxr-xr-x  4096  Dec 28 19:05  filters/
+-rw-r--r-- 38618  Dec 29 03:04  README.md
+```
+
+### WRONG (never do this):
+- filters/: A directory containing…
+- README.md: The main documentation…
+
+The user wants to SEE the actual terminal output, not your interpretation of it.
+
+## File Editing Guardrails (Surgical)
+
+- Prefer `replace_in_file` / `insert_in_file` / `append_to_file` over `write_file`.
+- Do not overwrite entire files unless explicitly required.
+- Preserve existing style and formatting; make minimal edits.
+- If an overwrite is necessary, state that clearly BEFORE doing it.
+
+## Role Boundary
+
+- The Orchestrator plans. The Executor executes. AJ presents results and manages memory.
+- Users should see the real outputs; AJ must not "translate" outputs into prose.
+- If the user requests interpretation, do it only AFTER verbatim output, and do not restate the output in a different format.
+"""
+
 # File type to MIME type mapping
 CONTENT_TYPE_MAP = {
     ".md": "text/markdown",
@@ -1057,6 +1128,21 @@ class Filter:
             for m in messages
         )
         
+        if not has_aj_system:
+            # Add AJ system prompt at the beginning
+            aj_system = {
+                "role": "system",
+                "content": AJ_SYSTEM_PROMPT
+            }
+            # Insert after any existing system messages, or at start
+            insert_idx = 0
+            for i, m in enumerate(messages):
+                if m.get("role") == "system":
+                    insert_idx = i + 1
+                else:
+                    break
+            messages.insert(insert_idx, aj_system)
+        
         if not context_items and not orchestrator_context:
             body["messages"] = messages
             return body
@@ -1073,8 +1159,23 @@ class Filter:
             context_lines.append("### Retrieved Memories ###")
             for ctx in context_items[:self.user_valves.max_context_items]:
                 user_text = ctx.get("user_text")
+                facts = ctx.get("facts")
+                
                 if user_text:
                     context_lines.append(f"- {user_text}")
+                    
+                    # Show facts that explain why this memory was retrieved
+                    if facts and isinstance(facts, dict):
+                        fact_parts = []
+                        for fact_type, fact_value in facts.items():
+                            if fact_value:
+                                # Format: "names: Ian" or "preferences: dark mode"
+                                if isinstance(fact_value, list):
+                                    fact_parts.append(f"{fact_type}: {', '.join(str(v) for v in fact_value)}")
+                                else:
+                                    fact_parts.append(f"{fact_type}: {fact_value}")
+                        if fact_parts:
+                            context_lines.append(f"  📌 Facts: {'; '.join(fact_parts)}")
             context_lines.append("### End Memories ###\n")
         
         if not context_lines:

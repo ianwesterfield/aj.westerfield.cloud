@@ -89,6 +89,7 @@ public class PeerDiscoveryService
         try
         {
           var remainingMs = (int)(endTime - DateTime.UtcNow).TotalMilliseconds;
+
           if (remainingMs <= 0) break;
 
           udpClient.Client.ReceiveTimeout = Math.Min(500, remainingMs);

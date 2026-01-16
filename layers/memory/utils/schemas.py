@@ -36,6 +36,7 @@ class SearchRequest(BaseModel):
 class MemoryResult(BaseModel):
     """A single search result with the stored text, score, and source info."""
     user_text: Optional[str] = Field(None, description="Stored message text or facts")
+    facts: Optional[dict] = Field(None, description="Extracted facts (names, emails, preferences, etc.)")
     messages: Optional[List[dict]] = Field(None, description="Deprecated: raw messages")
     score: float = Field(..., description="Similarity score (0-1)")
     source_type: Optional[str] = Field(None, description="Source type")

@@ -127,24 +127,42 @@ class ThinkingStreamParser:
         return full_response.strip()
 
 
-SYSTEM_PROMPT = """You are AJ, an agentic AI assistant. Output ONE JSON tool call per response.
+SYSTEM_PROMPT = """You are AJ, an agentic AI assistant with thought and progress user update streaming capabilities.
 
 FORMAT: {"tool": "name", "params": {...}, "note": "status", "reasoning": "why"}
 
 TOOLS:
-- scan_workspace, read_file, write_file, execute_shell: For /workspace operations
 - list_agents: Discover available FunnelCloud agents (call FIRST before remote ops)
 - remote_execute: Run command on a specific agent {"agent_id": "name", "command": "..."}
+- remote_execute_all: Run command on ALL discovered agents {"command": "..."}
 - complete: {"answer": "response"} when done, {"error": "msg"} on failure
 - none: {"reason": "why"} to skip
 
-RULES:
-- Default to workspace tools unless user says "my PC/machine"
-- One tool per response, no markdown, no fabrication
-- Check session state for progress - it shows QUERIED vs REMAINING agents
-- Only call complete when ALL work is done (check REMAINING agents!)
-"""
+MULTI-TARGET REQUESTS:
+User requests may involve MULTIPLE agents. Parse ALL targets and execute commands on EACH correct agent.
+Example: "reboot domain02, and add a file to my workstation" requires TWO remote_execute calls:
+  1. remote_execute on "domain02" with reboot command
+  2. remote_execute on user's workstation with file creation command
+Execute ONE command per response, track progress, continue until ALL targets are handled.
 
+TARGET IDENTIFICATION:
+- Explicit names: "domain02", "prod-api-01" -> use exact agent name
+- "my workstation", "my PC", "my machine" -> CHECK USER MEMORY for known workstation, or match agent ID containing "workstation", "desktop", or user's name like "ians-r16"
+- "the server" (ambiguous) -> list matching agents and ask for clarification
+- Match targets against discovered agents - if explicit target not found, report error
+- ALWAYS check memory context for user preferences, known machines, and prior context
+
+AGENT CONTEXT HINTS:
+- Agent IDs often encode purpose: "domain02" = domain controller, "prod-api-01" = production API, "ians-r16" = Ian's workstation
+- Use these hints to match user intent to correct agent
+
+RULES:
+- Call list_agents FIRST before any remote operations
+- One tool call per response - iterate for multi-target requests
+- No fabrication - agents must be discovered first
+- Check session state for QUERIED vs REMAINING - don't complete until ALL targets handled
+- For file operations: use PowerShell (Set-Content, Add-Content, New-Item) on Windows agents
+"""
 
 class ReasoningEngine:
     """
@@ -698,26 +716,19 @@ Now create a plan for:
         url = f"{self.base_url}/api/chat"
         
         # JSON Schema for structured output - forces exact format
+        # MUST match SYSTEM_PROMPT tools exactly
         tool_call_schema = {
             "type": "object",
             "properties": {
                 "tool": {
                     "type": "string",
-                    "description": "Tool to call - WORKSPACE tools for files, remote tools for agents",
+                    "description": "Tool to call - remote agent tools for FunnelCloud operations",
                     "enum": [
-                        "write_file",      # Create or overwrite files in workspace
-                        "read_file",       # Read file contents in workspace
-                        "scan_workspace",  # List files/dirs - USE THIS for listing files
-                        "execute_shell",   # Run shell command in container
-                        "replace_in_file", # Find/replace text in workspace file
-                        "insert_in_file",  # Insert text at position in file
-                        "append_to_file",  # Append to workspace file
-                        "dump_state",      # Output session state
-                        "validate_script", # Validate a script
-                        "complete",        # Task done or error
-                        "none",            # Skip step
-                        "list_agents",     # Discover available FunnelCloud agents
-                        "remote_execute",  # Run command on ONE agent - iterate for multi-agent tasks
+                        "list_agents",       # Discover available FunnelCloud agents (call FIRST)
+                        "remote_execute",    # Run command on ONE specific agent
+                        "remote_execute_all",# Run command on ALL discovered agents
+                        "complete",          # Task done or error
+                        "none",              # Skip step
                     ]
                 },
                 "params": {
@@ -774,26 +785,19 @@ Now create a plan for:
         url = f"{self.base_url}/api/chat"
         
         # JSON Schema for structured output - forces exact format
+        # MUST match SYSTEM_PROMPT tools exactly
         tool_call_schema = {
             "type": "object",
             "properties": {
                 "tool": {
                     "type": "string",
-                    "description": "Tool to call - WORKSPACE tools for files, remote tools for agents",
+                    "description": "Tool to call - remote agent tools for FunnelCloud operations",
                     "enum": [
-                        "write_file",      # Create or overwrite files in workspace
-                        "read_file",       # Read file contents in workspace
-                        "scan_workspace",  # List files/dirs - USE THIS for listing files
-                        "execute_shell",   # Run shell command in container
-                        "replace_in_file", # Find/replace text in workspace file
-                        "insert_in_file",  # Insert text at position in file
-                        "append_to_file",  # Append to workspace file
-                        "dump_state",      # Output session state
-                        "validate_script", # Validate a script
-                        "complete",        # Task done or error
-                        "none",            # Skip step
-                        "list_agents",     # Discover available FunnelCloud agents
-                        "remote_execute",  # Run command on ONE agent - iterate for multi-agent tasks
+                        "list_agents",       # Discover available FunnelCloud agents (call FIRST)
+                        "remote_execute",    # Run command on ONE specific agent
+                        "remote_execute_all",# Run command on ALL discovered agents
+                        "complete",          # Task done or error
+                        "none",              # Skip step
                     ]
                 },
                 "params": {
@@ -1077,10 +1081,31 @@ Now create a plan for:
             logger.info(f"Guardrail: agents={session_state.discovered_agents}, recent_tools={[s.tool for s in recent_steps]}, did_list_agents={did_list_agents}")
             
             if did_list_agents:
-                # Get the first available agent (discovered_agents is a List[str])
-                agent_id = session_state.discovered_agents[0]
+                # CRITICAL: Extract target from user request - do NOT blindly use first agent
+                user_request = session_state.ledger.user_requests[-1] if session_state.ledger.user_requests else ""
+                agent_id = self._extract_target_agent(user_request, session_state.discovered_agents)
                 
-                logger.warning(f"GUARDRAIL: Redirecting {step.tool} to remote_execute on {agent_id}")
+                if not agent_id:
+                    # No match found AND user specified a target - block instead of defaulting
+                    # Check if user mentioned any specific hostname/target
+                    # NOTE: Uses module-level 're' import (line 14)
+                    target_patterns = re.findall(r"['\"]([^'\"]+)['\"]|(?:on|reboot|restart|shutdown|check)\s+(\S+)", user_request.lower())
+                    user_specified_target = any(target_patterns)
+                    
+                    if user_specified_target:
+                        logger.error(f"GUARDRAIL BLOCK: User specified target not found in discovered agents: {user_request}")
+                        return Step(
+                            step_id="guardrail_target_mismatch",
+                            tool="complete",
+                            params={"error": f"Target not found. User request mentions a specific target that doesn't match any discovered agent. Available agents: {', '.join(session_state.discovered_agents)}"},
+                            reasoning="Blocked - user-specified target not found in discovered agents",
+                        )
+                    else:
+                        # Generic request like "check my machine" - OK to use first agent
+                        agent_id = session_state.discovered_agents[0]
+                        logger.info(f"GUARDRAIL: Generic request, using first agent: {agent_id}")
+                
+                logger.warning(f"GUARDRAIL: Redirecting {step.tool} to remote_execute on {agent_id} (matched from user request)")
                 
                 # Convert the workspace tool call to remote_execute
                 if step.tool == "scan_workspace":
@@ -2107,6 +2132,85 @@ JSON only:"""
             )
         
         # Can't redirect this command
+        return None
+    
+    def _extract_target_agent(self, user_request: str, discovered_agents: List[str]) -> Optional[str]:
+        """
+        Extract the target agent from a user request by matching against discovered agents.
+        
+        This is CRITICAL for preventing the wrong-target bug where the model defaults
+        to the first agent instead of using the user-specified target.
+        
+        Handles:
+        - Explicit names: "domain02", "prod-api-01"
+        - Contextual references: "my workstation", "my PC", "my machine"
+        - Quoted targets: 'server-name' or "server-name"
+        - Action patterns: "reboot X", "shutdown X"
+        
+        Args:
+            user_request: The user's original request (e.g., "reboot domain02")
+            discovered_agents: List of available agent IDs
+            
+        Returns:
+            Matching agent ID if found, None otherwise
+        """
+        if not user_request or not discovered_agents:
+            return None
+        
+        request_lower = user_request.lower()
+        
+        # Strategy 0: Contextual references - "my workstation", "my PC", "my machine"
+        # These refer to the user's personal machine
+        personal_machine_phrases = [
+            "my workstation", "my pc", "my machine", "my computer", "my desktop",
+            "my laptop", "workstation", "personal machine"
+        ]
+        if any(phrase in request_lower for phrase in personal_machine_phrases):
+            # Look for agents that are likely workstations
+            workstation_indicators = ["workstation", "desktop", "laptop", "ians", "ian-", "-pc", "-ws"]
+            for agent in discovered_agents:
+                agent_lower = agent.lower()
+                if any(ind in agent_lower for ind in workstation_indicators):
+                    logger.info(f"Target extraction: contextual match '{agent}' for personal machine reference")
+                    return agent
+            # Also check for agents with user name patterns (e.g., "ians-r16")
+            for agent in discovered_agents:
+                if re.match(r'^[a-z]+s?-[a-z0-9]+$', agent.lower()):  # Pattern like "ians-r16"
+                    logger.info(f"Target extraction: user-pattern match '{agent}' for personal machine")
+                    return agent
+        
+        # Strategy 1: Exact match - check if any agent ID appears in the request
+        for agent in discovered_agents:
+            if agent.lower() in request_lower:
+                logger.info(f"Target extraction: exact match '{agent}' in request")
+                return agent
+        
+        # Strategy 2: Quoted target - extract 'target' or "target" from request
+        quoted_matches = re.findall(r"['\"]([^'\"]+)['\"]", user_request)
+        for quoted in quoted_matches:
+            quoted_lower = quoted.lower()
+            for agent in discovered_agents:
+                if agent.lower() == quoted_lower or quoted_lower in agent.lower():
+                    logger.info(f"Target extraction: quoted match '{agent}' from '{quoted}'")
+                    return agent
+        
+        # Strategy 3: Action target - "reboot X", "shutdown X", "restart X", "check X"
+        action_patterns = [
+            r"(?:reboot|restart|shutdown|stop|start|check|query|scan)\s+['\"]?(\S+?)['\"]?(?:\s|$)",
+            r"(?:on|to|from)\s+['\"]?(\S+?)['\"]?(?:\s|$)",
+        ]
+        for pattern in action_patterns:
+            matches = re.findall(pattern, request_lower)
+            for match in matches:
+                # Clean up the match (remove trailing punctuation)
+                match = match.rstrip(".,!?")
+                for agent in discovered_agents:
+                    if agent.lower() == match or match in agent.lower():
+                        logger.info(f"Target extraction: action match '{agent}' from pattern")
+                        return agent
+        
+        # No match found
+        logger.warning(f"Target extraction: no match found for request '{user_request}' in agents {discovered_agents}")
         return None
     
     def _validate_powershell_syntax(self, command: str) -> List[str]:
