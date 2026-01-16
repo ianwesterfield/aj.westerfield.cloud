@@ -450,7 +450,9 @@ async def _handle_remote_execute(params: Dict[str, Any]) -> Dict[str, Any]:
         command: Command to execute (PowerShell on Windows)
         timeout: Optional timeout in seconds (default 30)
     """
-    command = params.get("command", "") or params.get("cmd", "")
+    # Support multiple param names (model uses different formats)
+    command = (params.get("command", "") or params.get("cmd", "") or 
+               params.get("command_text", "") or params.get("commandText", ""))
     # Handle list format: ["python", "-m", "venv", "..."] -> "python -m venv ..."
     if isinstance(command, list):
         command = " ".join(str(c) for c in command)
@@ -598,7 +600,9 @@ async def _handle_remote_execute_all(params: Dict[str, Any]) -> Dict[str, Any]:
     """
     import asyncio
     
-    command = params.get("command", "") or params.get("cmd", "")
+    # Support multiple param names (model uses different formats)
+    command = (params.get("command", "") or params.get("cmd", "") or 
+               params.get("command_text", "") or params.get("commandText", ""))
     if isinstance(command, list):
         command = " ".join(str(c) for c in command)
     command = str(command).strip()

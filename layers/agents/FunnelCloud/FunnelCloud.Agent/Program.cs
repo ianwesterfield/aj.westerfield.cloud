@@ -135,7 +135,438 @@ public class Program
     if (IsCommandAvailable("python") || IsCommandAvailable("python3")) caps.Add("python");
     if (IsCommandAvailable("cargo")) caps.Add("rust");
 
+    // Detect server roles based on platform
+    if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+    {
+      caps.AddRange(DetectWindowsServerRoles());
+    }
+    else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+    {
+      caps.AddRange(DetectLinuxServerRoles());
+    }
+
     return caps.ToArray();
+  }
+
+  /// <summary>
+  /// Detect Windows Server roles and features.
+  /// Uses Get-WindowsFeature for Server editions, and service/registry checks for all editions.
+  /// </summary>
+  private static IEnumerable<string> DetectWindowsServerRoles()
+  {
+    var roles = new List<string>();
+
+    try
+    {
+      // First, try Get-WindowsFeature (only works on Server editions)
+      var windowsFeatures = RunPowerShellCommand(
+          "Get-WindowsFeature | Where-Object { $_.Installed -eq $true } | Select-Object -ExpandProperty Name");
+
+      if (!string.IsNullOrEmpty(windowsFeatures))
+      {
+        var installedFeatures = windowsFeatures
+            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(f => f.Trim().ToLowerInvariant())
+            .ToHashSet();
+
+        // Map Windows Features to role names
+        var featureMapping = new Dictionary<string, string>
+        {
+          // Active Directory
+          { "ad-domain-services", "role:domain-controller" },
+          { "adcs-cert-authority", "role:certificate-authority" },
+          { "adfs-federation", "role:federation-services" },
+          { "adlds", "role:lightweight-directory" },
+          
+          // Network Services
+          { "dns", "role:dns-server" },
+          { "dhcp", "role:dhcp-server" },
+          { "npas", "role:network-policy-server" },
+          { "routing", "role:routing-remote-access" },
+          { "directaccess-vpn", "role:vpn-server" },
+          
+          // Web & Application
+          { "web-server", "role:iis-web-server" },
+          { "web-webserver", "role:iis-web-server" },
+          { "application-server", "role:app-server" },
+          
+          // File & Storage
+          { "fs-fileserver", "role:file-server" },
+          { "fs-dfs-namespace", "role:dfs-namespace" },
+          { "fs-dfs-replication", "role:dfs-replication" },
+          { "fs-resource-manager", "role:file-resource-manager" },
+          { "fs-nfs-service", "role:nfs-server" },
+          { "fs-iscsitarget-server", "role:iscsi-target" },
+          { "storage-services", "role:storage-server" },
+          { "fs-data-deduplication", "role:deduplication" },
+          
+          // Virtualization
+          { "hyper-v", "role:hypervisor" },
+          { "containers", "role:container-host" },
+          
+          // Print Services
+          { "print-server", "role:print-server" },
+          { "print-internet", "role:internet-printing" },
+          
+          // Remote Desktop
+          { "rds-rd-server", "role:remote-desktop-host" },
+          { "rds-connection-broker", "role:rd-connection-broker" },
+          { "rds-gateway", "role:rd-gateway" },
+          { "rds-web-access", "role:rd-web-access" },
+          
+          // Update Services
+          { "updateservices", "role:wsus" },
+          { "updateservices-services", "role:wsus" },
+          
+          // Failover & Clustering
+          { "failover-clustering", "role:failover-cluster" },
+          { "nlb", "role:network-load-balancer" },
+          
+          // Windows Deployment
+          { "wds", "role:deployment-services" },
+          { "wds-deployment", "role:deployment-services" },
+          
+          // Fax Server
+          { "fax", "role:fax-server" },
+        };
+
+        foreach (var (feature, role) in featureMapping)
+        {
+          if (installedFeatures.Contains(feature))
+          {
+            roles.Add(role);
+          }
+        }
+      }
+    }
+    catch
+    {
+      // Get-WindowsFeature not available (likely workstation edition)
+    }
+
+    // Check for Exchange Server (registry-based detection)
+    try
+    {
+      var exchangeVersion = RunPowerShellCommand(
+          @"(Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\ExchangeServer\v15\Setup' -ErrorAction SilentlyContinue).MsiProductMajor");
+      if (!string.IsNullOrWhiteSpace(exchangeVersion))
+      {
+        roles.Add("role:exchange-server");
+      }
+    }
+    catch { }
+
+    // Check for SQL Server
+    try
+    {
+      var sqlInstances = RunPowerShellCommand(
+          @"(Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Microsoft SQL Server' -ErrorAction SilentlyContinue).InstalledInstances");
+      if (!string.IsNullOrWhiteSpace(sqlInstances))
+      {
+        roles.Add("role:sql-server");
+      }
+    }
+    catch { }
+
+    // Service-based detection (works on all Windows editions)
+    var serviceRoleMapping = new Dictionary<string, string>
+    {
+      { "DNS", "role:dns-server" },
+      { "DHCPServer", "role:dhcp-server" },
+      { "NTDS", "role:domain-controller" },  // AD DS
+      { "ADWS", "role:domain-controller" },  // AD Web Services
+      { "W3SVC", "role:iis-web-server" },    // IIS
+      { "MSSQLSERVER", "role:sql-server" },
+      { "SQLSERVERAGENT", "role:sql-server" },
+      { "MSExchangeIS", "role:exchange-server" },       // Exchange Information Store
+      { "MSExchangeTransport", "role:exchange-server" }, // Exchange Transport
+      { "vmms", "role:hypervisor" },         // Hyper-V Management
+      { "vmcompute", "role:hypervisor" },    // Hyper-V Compute
+      { "docker", "role:container-host" },
+      { "WinRM", "role:remote-management" },
+      { "Spooler", "role:print-server" },    // Only add if Print-Server feature detected
+      { "wuauserv", "role:workstation" },    // Windows Update (indicates desktop/workstation)
+    };
+
+    try
+    {
+      var runningServices = RunPowerShellCommand(
+          "Get-Service | Where-Object { $_.Status -eq 'Running' } | Select-Object -ExpandProperty Name");
+
+      if (!string.IsNullOrEmpty(runningServices))
+      {
+        var services = runningServices
+            .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var (service, role) in serviceRoleMapping)
+        {
+          // Don't duplicate roles already detected via features
+          if (services.Contains(service) && !roles.Contains(role))
+          {
+            // Special case: only mark as print-server if it's actually a print server role
+            if (role == "role:print-server" && !roles.Contains("role:print-server"))
+              continue;
+
+            roles.Add(role);
+          }
+        }
+      }
+    }
+    catch { }
+
+    // Detect if this is a workstation vs server
+    try
+    {
+      var productType = RunPowerShellCommand(
+          "(Get-CimInstance -ClassName Win32_OperatingSystem).ProductType");
+      if (!string.IsNullOrEmpty(productType))
+      {
+        var type = productType.Trim();
+        if (type == "1")
+          roles.Add("os:workstation");
+        else if (type == "2")
+          roles.Add("os:domain-controller");
+        else if (type == "3")
+          roles.Add("os:server");
+      }
+    }
+    catch { }
+
+    return roles.Distinct();
+  }
+
+  /// <summary>
+  /// Detect Linux server roles based on running services and installed packages.
+  /// </summary>
+  private static IEnumerable<string> DetectLinuxServerRoles()
+  {
+    var roles = new List<string>();
+
+    // Service-based detection using systemctl
+    var serviceRoleMapping = new Dictionary<string, string>
+    {
+      // DNS
+      { "named", "role:dns-server" },
+      { "bind9", "role:dns-server" },
+      { "dnsmasq", "role:dns-server" },
+      { "unbound", "role:dns-server" },
+      
+      // DHCP
+      { "isc-dhcp-server", "role:dhcp-server" },
+      { "dhcpd", "role:dhcp-server" },
+      { "dnsmasq", "role:dhcp-server" },  // dnsmasq can do both
+      { "kea-dhcp4", "role:dhcp-server" },
+      { "kea-dhcp6", "role:dhcp-server" },
+      
+      // Web Servers
+      { "nginx", "role:web-server" },
+      { "apache2", "role:web-server" },
+      { "httpd", "role:web-server" },
+      { "caddy", "role:web-server" },
+      { "lighttpd", "role:web-server" },
+      
+      // Database Servers
+      { "mysql", "role:database-server" },
+      { "mysqld", "role:database-server" },
+      { "mariadb", "role:database-server" },
+      { "postgresql", "role:database-server" },
+      { "mongod", "role:database-server" },
+      { "redis-server", "role:cache-server" },
+      { "redis", "role:cache-server" },
+      { "memcached", "role:cache-server" },
+      
+      // Mail Servers
+      { "postfix", "role:mail-server" },
+      { "sendmail", "role:mail-server" },
+      { "exim4", "role:mail-server" },
+      { "dovecot", "role:mail-server" },
+      
+      // File Sharing
+      { "smbd", "role:file-server" },
+      { "nmbd", "role:file-server" },
+      { "nfs-server", "role:nfs-server" },
+      { "nfs-kernel-server", "role:nfs-server" },
+      { "vsftpd", "role:ftp-server" },
+      { "proftpd", "role:ftp-server" },
+      
+      // Directory Services
+      { "slapd", "role:ldap-server" },
+      { "sssd", "role:directory-client" },
+      { "winbind", "role:ad-member" },
+      { "samba-ad-dc", "role:domain-controller" },
+      
+      // Virtualization & Containers
+      { "docker", "role:container-host" },
+      { "containerd", "role:container-host" },
+      { "podman", "role:container-host" },
+      { "libvirtd", "role:hypervisor" },
+      { "qemu-kvm", "role:hypervisor" },
+      { "kubelet", "role:kubernetes-node" },
+      
+      // Monitoring & Logging
+      { "prometheus", "role:monitoring-server" },
+      { "grafana-server", "role:monitoring-server" },
+      { "zabbix-server", "role:monitoring-server" },
+      { "nagios", "role:monitoring-server" },
+      { "elasticsearch", "role:log-server" },
+      { "logstash", "role:log-server" },
+      { "rsyslog", "role:syslog-server" },
+      
+      // Proxy & Load Balancing
+      { "haproxy", "role:load-balancer" },
+      { "squid", "role:proxy-server" },
+      { "traefik", "role:reverse-proxy" },
+      
+      // VPN
+      { "openvpn", "role:vpn-server" },
+      { "wireguard", "role:vpn-server" },
+      { "strongswan", "role:vpn-server" },
+      
+      // CI/CD
+      { "jenkins", "role:ci-server" },
+      { "gitlab-runner", "role:ci-runner" },
+      
+      // Message Queues
+      { "rabbitmq-server", "role:message-queue" },
+      { "kafka", "role:message-queue" },
+      
+      // SSH (indicates remote access capability)
+      { "sshd", "role:remote-management" },
+      { "ssh", "role:remote-management" },
+    };
+
+    try
+    {
+      // Get list of active services
+      var psi = new ProcessStartInfo
+      {
+        FileName = "systemctl",
+        Arguments = "list-units --type=service --state=running --no-legend --no-pager",
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        UseShellExecute = false,
+        CreateNoWindow = true
+      };
+
+      using var process = Process.Start(psi);
+      if (process != null)
+      {
+        var output = process.StandardOutput.ReadToEnd();
+        process.WaitForExit(5000);
+
+        if (!string.IsNullOrEmpty(output))
+        {
+          var runningServices = output
+              .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+              .Select(line =>
+              {
+                // Parse systemctl output: "service.service loaded active running description"
+                var parts = line.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+                return parts.Length > 0 ? parts[0].Replace(".service", "") : "";
+              })
+              .Where(s => !string.IsNullOrEmpty(s))
+              .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+          foreach (var (service, role) in serviceRoleMapping)
+          {
+            if (runningServices.Contains(service) && !roles.Contains(role))
+            {
+              roles.Add(role);
+            }
+          }
+        }
+      }
+    }
+    catch { }
+
+    // Check for Kubernetes control plane
+    try
+    {
+      if (File.Exists("/etc/kubernetes/admin.conf") ||
+          Directory.Exists("/etc/kubernetes/manifests"))
+      {
+        roles.Add("role:kubernetes-control-plane");
+      }
+    }
+    catch { }
+
+    // Check if running in a container
+    try
+    {
+      if (File.Exists("/.dockerenv") ||
+          (File.Exists("/proc/1/cgroup") &&
+           File.ReadAllText("/proc/1/cgroup").Contains("docker")))
+      {
+        roles.Add("env:container");
+      }
+    }
+    catch { }
+
+    // Check for cloud VM indicators
+    try
+    {
+      var dmidecodeOutput = "";
+      var psi = new ProcessStartInfo
+      {
+        FileName = "dmidecode",
+        Arguments = "-s system-product-name",
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        UseShellExecute = false,
+        CreateNoWindow = true
+      };
+
+      using var process = Process.Start(psi);
+      if (process != null)
+      {
+        dmidecodeOutput = process.StandardOutput.ReadToEnd().Trim().ToLowerInvariant();
+        process.WaitForExit(3000);
+
+        if (dmidecodeOutput.Contains("virtual machine") || dmidecodeOutput.Contains("vmware"))
+          roles.Add("env:vmware-vm");
+        else if (dmidecodeOutput.Contains("kvm") || dmidecodeOutput.Contains("qemu"))
+          roles.Add("env:kvm-vm");
+        else if (dmidecodeOutput.Contains("hyper-v"))
+          roles.Add("env:hyperv-vm");
+        else if (dmidecodeOutput.Contains("xen"))
+          roles.Add("env:xen-vm");
+      }
+    }
+    catch { }
+
+    return roles.Distinct();
+  }
+
+  /// <summary>
+  /// Run a PowerShell command and return the output.
+  /// </summary>
+  private static string RunPowerShellCommand(string command)
+  {
+    try
+    {
+      var psi = new ProcessStartInfo
+      {
+        FileName = "powershell",
+        Arguments = $"-NoProfile -NonInteractive -Command \"{command}\"",
+        RedirectStandardOutput = true,
+        RedirectStandardError = true,
+        UseShellExecute = false,
+        CreateNoWindow = true
+      };
+
+      using var process = Process.Start(psi);
+      if (process != null)
+      {
+        var output = process.StandardOutput.ReadToEnd();
+        process.WaitForExit(10000); // 10 second timeout
+        return process.ExitCode == 0 ? output.Trim() : "";
+      }
+    }
+    catch { }
+
+    return "";
   }
 
   private static bool IsCommandAvailable(string command)

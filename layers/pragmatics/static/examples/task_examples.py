@@ -375,6 +375,70 @@ TASK_EXAMPLES = [
     "Run remotely",
     "Check the remote system",
     
+    # =======================================================================
+    # FUNNELCLOUD AGENT DISCOVERY & STATUS
+    # =======================================================================
+    # Queries about agent availability, network discovery, and agent status
+    
+    # Agent discovery - general
+    "Which agents are online?",
+    "What agents are available?",
+    "Show me the available agents",
+    "List online agents",
+    "Can you see which agents are online?",
+    "What machines are connected?",
+    "Show connected agents",
+    "List all agents",
+    "What agents do we have?",
+    "Are there any agents online?",
+    "How many agents are connected?",
+    "Show agent status",
+    "What agents can I use?",
+    "Which machines are available?",
+    "Discover available agents",
+    "Find online agents",
+    "Scan for agents",
+    "What hosts are reachable?",
+    "Show me the agent list",
+    "List FunnelCloud agents",
+    
+    # Agent status queries
+    "Is domain02 online?",
+    "Is exchange01 available?",
+    "Check if postfix01 is running",
+    "Is my workstation connected?",
+    "Is ians-r16 online?",
+    "Can you reach domain02?",
+    "Is the agent on domain02 responding?",
+    "Check agent status on exchange01",
+    "Is the FunnelCloud agent running on domain02?",
+    "What's the status of domain02?",
+    "Is domain02 reachable?",
+    "Can you connect to exchange01?",
+    
+    # Agent capabilities
+    "What can domain02 do?",
+    "What capabilities does exchange01 have?",
+    "Show me what agents can run PowerShell",
+    "Which agents have Docker?",
+    "What tools are available on domain02?",
+    "List capabilities of ians-r16",
+    "What's installed on the agents?",
+    "Which machines can run Python?",
+    "What server roles does domain02 have?",
+    "Is domain02 a domain controller?",
+    "What roles does exchange01 have?",
+    
+    # Multi-agent operations
+    "Run this on all agents",
+    "Execute on all machines",
+    "Check all agents for disk space",
+    "Run Get-Process on all agents",
+    "Broadcast to all agents",
+    "Run this everywhere",
+    "Execute on every machine",
+    "Check status on all hosts",
+    
     # Drive/storage queries
     "What drives are available?",
     "List available drives",

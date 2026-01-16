@@ -24,5 +24,8 @@ RUN if [ -d /app/static/distilbert_intent ]; then \
   mv /app/static/distilbert_memory /app/distilbert_memory; \
   fi
 
+# Install any missing dependencies
+RUN pip install --no-cache-dir httpx>=0.27.0
+
 EXPOSE 8001
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8001"]

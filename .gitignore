@@ -49,3 +49,4 @@ secrets/
 Thumbs.db
 training/**/data/
 venv/
+publish-selfcontained/

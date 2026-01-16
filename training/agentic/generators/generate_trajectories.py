@@ -5,12 +5,15 @@ Agentic Trajectory Generator
 Uses a frontier model (Claude/GPT-4) to solve coding tasks with tool use,
 capturing full thought → action → observation traces for training.
 
+Can also load and augment open datasets from HuggingFace (Toucan-1.5M, etc.)
+
 Requirements:
-    pip install anthropic openai httpx
+    pip install anthropic openai httpx datasets
 
 Usage:
     python generate_trajectories.py --count 1000 --category coding --output ../data/trajectories/
     python generate_trajectories.py --task-file tasks.txt --verify
+    python generate_trajectories.py --load-dataset toucan --subset Kimi-K2 --sample 500
 """
 
 import json
@@ -27,6 +30,12 @@ try:
     ANTHROPIC_AVAILABLE = True
 except ImportError:
     ANTHROPIC_AVAILABLE = False
+
+try:
+    from datasets import load_dataset
+    DATASETS_AVAILABLE = True
+except ImportError:
+    DATASETS_AVAILABLE = False
 
 try:
     import openai
@@ -311,6 +320,85 @@ Be thorough but efficient. Use appropriate tools and show your reasoning."""
         return None
 
 
+def generate_shutdown_trajectory_with_claude(prompt: Dict, client: "anthropic.Anthropic") -> Optional[Trajectory]:
+    """Generate trajectory for shutdown/restart target selection using Claude.
+    
+    These are special prompts that involve agent discovery, disambiguation,
+    and confirmation patterns for destructive operations.
+    """
+    
+    system_prompt = f"""You are AJ, an agentic AI assistant with the FunnelCloud system.
+
+CRITICAL SAFETY RULES:
+1. For ANY shutdown/restart operation, ALWAYS:
+   - Discover available agents (list_agents)
+   - Identify the target machine clearly
+   - If ambiguous, ask clarifying questions
+   - Get explicit user confirmation before executing
+   - Show impact on current running tasks
+
+2. Destructive operations include: shutdown, restart, delete, format
+3. If target is ambiguous or unclear, BLOCK execution and ask for clarification
+4. Warn if target is the user's own machine or running critical services
+
+CONTEXT:
+{prompt.get('system_instruction', '')}
+
+Available agents in this scenario:
+{json.dumps(prompt.get('context', {}), indent=2)}
+
+Expected guardrail: {prompt.get('guardrail_type', 'none')}"""
+
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=4096,
+            system=system_prompt,
+            tools=TOOLS,
+            messages=[{"role": "user", "content": f"Task: {prompt['user_request']}"}]
+        )
+        
+        # Parse response into trajectory steps
+        steps = []
+        for block in response.content:
+            if block.type == "text":
+                steps.append(TrajectoryStep(step_type="thought", content=block.text))
+            elif block.type == "tool_use":
+                steps.append(TrajectoryStep(
+                    step_type="action",
+                    tool=block.name,
+                    tool_input=block.input
+                ))
+        
+        if not steps:
+            steps.append(TrajectoryStep(
+                step_type="final_answer",
+                content="Unable to generate valid trajectory"
+            ))
+        
+        return Trajectory(
+            task=prompt['user_request'],
+            context=prompt.get('context'),
+            steps=steps,
+            metadata={
+                "category": "shutdown_target_selection",
+                "subcategory": prompt.get('category'),
+                "difficulty": prompt.get('difficulty', 'medium'),
+                "guardrail_type": prompt.get('guardrail_type'),
+                "tools_used": list(set(s.tool for s in steps if s.tool)),
+                "num_steps": len(steps),
+                "success": True,
+                "verification_method": "manual_review",
+                "prompt_id": prompt.get('id'),
+                "expected_outcome": prompt.get('expected_outcome')
+            }
+        )
+    except Exception as e:
+        print(f"  Error generating shutdown trajectory: {e}")
+        return None
+        return None
+
+
 def generate_synthetic_trajectory(task: str, category: str) -> Trajectory:
     """Generate a synthetic trajectory using templates (no API calls)."""
     
@@ -408,15 +496,68 @@ def trajectory_to_dict(traj: Trajectory) -> Dict:
     }
 
 
+def load_toucan_dataset(subset: str = "Kimi-K2", sample_size: Optional[int] = None) -> Generator[Dict, None, None]:
+    """Load Toucan-1.5M dataset from HuggingFace and convert to trajectory format."""
+    if not DATASETS_AVAILABLE:
+        print("Error: datasets package required for open dataset loading")
+        print("  pip install datasets")
+        return
+    
+    try:
+        print(f"Loading Toucan-1.5M ({subset})...")
+        dataset = load_dataset("Agent-Ark/Toucan-1.5M", subset, split="train")
+        
+        if sample_size:
+            dataset = dataset.shuffle(seed=42).select(range(min(sample_size, len(dataset))))
+            print(f"Sampling {sample_size} examples")
+        else:
+            print(f"Loaded {len(dataset)} examples")
+        
+        for example in dataset:
+            # Convert Toucan format to our Trajectory format
+            trajectory_dict = {
+                "task": example.get("question", ""),
+                "context": {"source": "Toucan-1.5M", "subset": subset},
+                "trajectory": [
+                    {
+                        "step_type": "chat_messages",
+                        "content": example.get("messages", [])
+                    }
+                ],
+                "metadata": {
+                    "category": "open_dataset",
+                    "source": "Toucan-1.5M",
+                    "source_subset": subset,
+                    "tools_used": example.get("target_tools", []),
+                    "difficulty": "medium",
+                    "uuid": example.get("uuid"),
+                    "subset_type": example.get("subset"),  # single-turn-original, multi-turn, etc.
+                    "question_quality": example.get("question_quality_assessment"),
+                    "response_quality": example.get("response_quality_assessment"),
+                    "success": True
+                }
+            }
+            yield trajectory_dict
+    except Exception as e:
+        print(f"Error loading Toucan dataset: {e}")
+        return
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate agentic trajectories")
     parser.add_argument("--count", "-n", type=int, default=100)
     parser.add_argument("--category", "-c", type=str, default="coding",
-                        choices=list(TASK_TEMPLATES.keys()))
+                        choices=list(TASK_TEMPLATES.keys()) + ["shutdown"])
     parser.add_argument("--output", "-o", type=str, default="../data/trajectories/")
     parser.add_argument("--use-claude", action="store_true",
                         help="Use Claude API for generation (requires ANTHROPIC_API_KEY)")
     parser.add_argument("--task-file", type=str, help="File with custom tasks (one per line)")
+    parser.add_argument("--load-dataset", choices=["toucan"], 
+                        help="Load from open dataset instead of generating")
+    parser.add_argument("--dataset-subset", type=str, default="Kimi-K2",
+                        help="Dataset subset (for Toucan: Kimi-K2, Qwen3-32B, GPT-OSS-120B)")
+    parser.add_argument("--sample", type=int, default=None,
+                        help="Sample size from dataset")
     parser.add_argument("--seed", type=int, default=42)
     
     args = parser.parse_args()
@@ -430,6 +571,42 @@ def main():
     if args.task_file:
         with open(args.task_file) as f:
             custom_tasks = [line.strip() for line in f if line.strip()]
+    
+    # Load shutdown prompts if category is shutdown
+    shutdown_prompts = []
+    if args.category == "shutdown":
+        try:
+            from shutdown_prompts import SHUTDOWN_PROMPTS
+            shutdown_prompts = SHUTDOWN_PROMPTS
+            # Override count if not explicitly set
+            if args.count == 100:  # default value
+                args.count = len(SHUTDOWN_PROMPTS)
+        except ImportError:
+            print("Error: shutdown_prompts module not found")
+            return
+    
+    # Handle open dataset loading
+    if args.load_dataset:
+        if args.load_dataset == "toucan":
+            output_file = output_dir / f"toucan_{args.dataset_subset}_trajectories.jsonl"
+            generated = 0
+            
+            print(f"Loading Toucan-1.5M ({args.dataset_subset})...")
+            if args.sample:
+                print(f"Sampling {args.sample} examples")
+            print(f"Output: {output_file}")
+            print()
+            
+            with open(output_file, 'w', encoding='utf-8') as f:
+                for i, trajectory in enumerate(load_toucan_dataset(args.dataset_subset, args.sample)):
+                    f.write(json.dumps(trajectory, ensure_ascii=False) + '\n')
+                    generated += 1
+                    if (i + 1) % 100 == 0:
+                        print(f"  Saved {i + 1}...")
+            
+            print(f"\n✅ Loaded and saved {generated} trajectories from Toucan-1.5M")
+            print(f"   File: {output_file}")
+        return
     
     # Initialize API client if using Claude
     claude_client = None
@@ -454,24 +631,37 @@ def main():
     
     with open(output_file, 'w', encoding='utf-8') as f:
         for i in range(args.count):
-            # Get task
-            if custom_tasks:
-                task = custom_tasks[i % len(custom_tasks)]
+            # Get task/prompt
+            if args.category == "shutdown":
+                if i < len(shutdown_prompts):
+                    prompt = shutdown_prompts[i]
+                else:
+                    break
+                # For shutdown, always use Claude if available
+                if claude_client:
+                    trajectory = generate_shutdown_trajectory_with_claude(prompt, claude_client)
+                else:
+                    print("  Warning: Shutdown trajectories require --use-claude")
+                    continue
             else:
-                task = generate_task(args.category)
-            
-            # Generate trajectory
-            if claude_client:
-                trajectory = generate_with_claude(task, claude_client)
-            else:
-                trajectory = generate_synthetic_trajectory(task, args.category)
+                if custom_tasks:
+                    task = custom_tasks[i % len(custom_tasks)]
+                else:
+                    task = generate_task(args.category)
+                
+                # Generate trajectory
+                if claude_client:
+                    trajectory = generate_with_claude(task, claude_client)
+                else:
+                    trajectory = generate_synthetic_trajectory(task, args.category)
             
             if trajectory:
                 f.write(json.dumps(trajectory_to_dict(trajectory), ensure_ascii=False) + '\n')
                 generated += 1
+                print(f"  [{i+1}/{args.count}] {trajectory.task[:60]}...")
             
-            if (i + 1) % 10 == 0:
-                print(f"  Generated {i + 1}/{args.count}...")
+            if (i + 1) % 5 == 0:
+                print(f"  Progress: {generated} generated so far...")
     
     print(f"\n✅ Generated {generated} trajectories")
     print(f"   Saved to: {output_file}")
