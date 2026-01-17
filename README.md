@@ -2,7 +2,7 @@
 
 > **AJ** = **A**gent **J**ournalist
 
-**An agentic AI assistant that learns as you go.** Based on a pragmatic and agentic approach, AJ focuses on:
+**AJ learns learns as you go.** based on a pragmatic and agentic approach. AJ's focus is on:
 
 1. **Privacy** completely local to your environment.
 2. **Planning** intelligently based on your workspace and history
@@ -129,19 +129,22 @@ sequenceDiagram
 
 ---
 
-## How It Works: Plan → Execute → Learn → Adapt
+## How It Works: Plan → Execute → Learn
 
-Every task follows the same intelligent pattern:
+Every task follows the same learning pattern:
 
 ```mermaid
+
 graph TD
-    A(["1. User Task"]) --> B["2. UNDERSTAND<br/>Retrieve history & context<br/>Analyze session state"]
-    B --> C{{"3. PLAN<br/>Generate step-by-step plan<br/>Show & get approval"}}
-    C --> D>"4. EXECUTE WITH PROGRESS<br/>Run each step<br/>Show real-time updates"]
-    D --> E[/"5. RECONSIDER & ADAPT<br/>Check results vs plan<br/>Update if needed"/]
-    E --> F[("6. LEARN<br/>Store insights & patterns<br/>Get smarter next time")]
-    F --> G(["7. Complete"])
-    E -.->|Feedback| C
+    A(["User Task"])
+    B["Orient<br/>Analyze session state, memory & intent"]
+    C{{"Plan<br/>Generate step-by-step plan"}}
+    D>"Execute<br/>Complete the planned list giving real-time updates"]
+    E[("Learn<br/>Store insights & patterns")]
+    F(["Complete"])
+
+    A --> B --> E --> C --> D --> B
+    C --> F
 ```
 
 This is **agentic reasoning**: not just executing, but thinking, adapting, and learning. You're not talking to a lookup table—you're working with an agent that reasons in real-time.
@@ -170,7 +173,7 @@ For network equipment (UniFi, Cisco, etc.), MCP servers can provide the same sel
 
 ```mermaid
 graph LR
-    M{{"AJ<br/>(Orchestrator)"}}
+    M{{"AJ<br/>(Orchestrator)"}}****
     D>"Docker<br/>(Local Tasks)"]
     W1(["Windows<br/>Machine"])
     L1(["Linux<br/>Workstation"])
