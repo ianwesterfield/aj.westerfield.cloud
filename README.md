@@ -1,8 +1,8 @@
 # AJ: Knowledge-Centric AI Infrastructure
 
-> **AJ** = **A**gent **J**ournalist — an agentic AI that learns and reports as it works.
+> **AJ** = **A**gent **J**ournalist
 
-**An agentic AI assistant that remembers you, as you go.** Based on a semantic and agentic approach, AJ focuses on:
+**An agentic AI assistant that learns as you go.** Based on a pragmatic and agentic approach, AJ focuses on:
 
 1. **Privacy** completely local to your environment.
 2. **Planning** intelligently based on your workspace and history
