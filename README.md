@@ -15,11 +15,18 @@ The AI tooling ecosystem is crowded. Here's where AJ sits — and why it exists.
 
 ### The "All You Need is Bash" Philosophy
 
-At its core, AJ boils most tasks down to commands. Files, shell, code execution, remote calls — it's all just commands on machines. One trick to orchestrating complex requests across infrastructure is knowing _where_ and _when_ in addition to simply _what_ to do.
+At its core, AJ boils most tasks down to commands. Files, shell, code execution, remote calls — it's all just commands on machines. Not every piece of infrastructure can run an agent, but nearly everything can be reached:
 
-That's where AJ differs from pure tool-exposure protocols.
+- **FunnelCloud agents** on Windows/Linux machines (full capability detection)
+- **SSH/shell access** to network equipment (switches, routers, firewalls)
+- **REST/API calls** to services and appliances (storage arrays, cloud APIs, smart devices)
+- **Local execution** in Docker containers
 
-### Protocol vs. Brain
+The orchestrator doesn't care _how_ it reaches infrastructure — only that it can issue commands and observe results. A Cisco switch responds to `show running-config` the same way a Windows server responds to `Get-Process`.
+
+The trick is not only knowing _what_ to do, but also _where_ and _when_. That's where AJ differs from pure tool-exposure protocols.
+
+### Brain vs. Protocol
 
 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) is a specification for exposing tools to LLMs—think of it as a standard interface. It defines how to describe tools, transport requests, and return results. Clean, standard, interoperable.
 
@@ -143,7 +150,23 @@ This is **agentic reasoning**: not just executing, but thinking, adapting, and l
 
 ## FunnelCloud: Distributed Agents
 
-FunnelCloud agents extend AJ's reach beyond Docker containers to any machine you control:
+For machines that can run software, FunnelCloud agents provide rich capability detection and secure execution. For everything else (switches, appliances, cloud services), the orchestrator uses SSH or API calls directly.
+
+### Why Agents? Self-Describing Infrastructure
+
+A key benefit: **you don't have to teach the LLM your IT stack**. Agents self-report their capabilities at discovery time — installed tools, server roles, platform details. The orchestrator knows what's possible before planning any task.
+
+```
+"I need to query Active Directory"
+  → Orchestrator sees: domain02 has role:domain-controller
+  → Routes AD commands to domain02 automatically
+
+"Restart the web server"
+  → Orchestrator sees: webprod01 has role:iis-web-server, webprod02 has role:nginx
+  → Asks: "Which web server? IIS on webprod01 or nginx on webprod02?"
+```
+
+For network equipment (UniFi, Cisco, etc.), MCP servers can provide the same self-describing pattern — expose device capabilities as tools, and the orchestrator treats them like any other infrastructure.
 
 ```mermaid
 graph LR
