@@ -13,7 +13,7 @@ The AI tooling ecosystem is crowded. Here's where AJ sits — and why it exists.
 
 ### The "All You Need is Bash" Philosophy
 
-At its core, AJ embraces a simple truth: most tasks eventually reduce to `exec(command)`. Files, shell, code execution, remote calls—it's all just commands on machines. The trick isn't just knowing _what_ to execute, but also _where_ and _when_.
+At its core, AJ boils most tasks down to commands. Files, shell, code execution, remote calls — it's all just commands on machines. One trick to orchestrating complex requests across infrastructure is knowing _where_ and _when_ in addition to simply _what_ to do.
 
 That's where AJ differs from pure tool-exposure protocols.
 
@@ -39,7 +39,7 @@ With MCP, the LLM is the decision-maker given a tool catalog. With AJ, the orche
 
 ### Defined Sequence vs. Adaptive Reasoning
 
-Visual workflow builders like [n8n](https://github.com/n8n-io/n8n) are fantastic for deterministic automation: "When X happens, do Y, then Z." You define the sequence, and execution follows that exact path. Every time.
+Visual workflow builders like [n8n](https://github.com/n8n-io/n8n) are fantastic for deterministic automation: "When X happens, do Y, then Z." You define the sequence, and execution follows that path.
 
 AJ is more like giving directions to a driver. You say where you want to go; it figures out the route:
 
@@ -53,14 +53,6 @@ AJ is more like giving directions to a driver. You say where you want to go; it 
 Want "every hour, sync CRM to Sheets"? Use a workflow builder—it's the right tool. Want "help me deploy this to whichever server makes sense"? That requires reasoning, context, and the ability to discover available agents on the fly.
 
 They're complementary. AJ could _be called by_ a workflow builder as an automation step. Or AJ could _call_ external automations when the reasoning engine decides that's the right move.
-
-### Ground Truth, Not Hallucination
-
-Traditional LLMs guess based on training data. Ask "what files are in my project?" and you get a confident-sounding hallucination.
-
-AJ maintains **external ground truth**. The orchestrator scans the actual filesystem, queries actual state, and feeds that to the LLM as authoritative context. The model reasons _about_ reality, not _instead of_ reality.
-
-No LLM drift. Session state is the source of truth—always.
 
 ---
 
@@ -116,15 +108,15 @@ sequenceDiagram
 
 ### System Components
 
-| Component            | Purpose                                | Technology                                                                                                    | Port  |
-| -------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ----- |
-| **AJ Filter**        | Intent routing & LLM coordination      | [Open-WebUI](https://github.com/open-webui/open-webui) Python filter                                          | N/A   |
-| **Pragmatics API**   | Fast intent classification (4 classes) | [DistilBERT](https://huggingface.co/distilbert-base-uncased) + [FastAPI](https://github.com/tiangolo/fastapi) | 8001  |
-| **Orchestrator API** | Reasoning engine + tool dispatch       | Python/FastAPI + [Ollama](https://github.com/ollama/ollama)                                                   | 8004  |
-| **Memory API**       | Semantic knowledge storage & recall    | [Qdrant](https://github.com/qdrant/qdrant) vectors + embeddings                                               | 8000  |
-| **Extractor API**    | Media processing (PDF, images, audio)  | [LLaVA](https://github.com/haotian-liu/LLaVA) + [Whisper](https://github.com/openai/whisper)                  | 8002  |
-| **Qdrant**           | Vector database for semantic search    | [Qdrant](https://github.com/qdrant/qdrant) (in-memory)                                                        | 6333  |
-| **Ollama**           | Local LLM inference                    | r1-distill-aj:32b-4k                                                                                          | 11434 |
+| Component            | Purpose                                             | Technology                                                                                                    | Port  |
+| -------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ----- |
+| **Filter**           | Intent routing & LLM coordination                   | [Open-WebUI](https://github.com/open-webui/open-webui) Python filter                                          | N/A   |
+| **Pragmatics API**   | Fast intent classification (4 classes, agent-aware) | [DistilBERT](https://huggingface.co/distilbert-base-uncased) + [FastAPI](https://github.com/tiangolo/fastapi) | 8001  |
+| **Orchestrator API** | Reasoning engine + tool dispatch                    | Python/FastAPI + [Ollama](https://github.com/ollama/ollama)                                                   | 8004  |
+| **Memory API**       | Semantic knowledge storage & recall                 | [Qdrant](https://github.com/qdrant/qdrant) vectors + embeddings                                               | 8000  |
+| **Extractor API**    | Media processing (PDF, images, audio)               | [LLaVA](https://github.com/haotian-liu/LLaVA) + [Whisper](https://github.com/openai/whisper)                  | 8002  |
+| **Qdrant**           | Vector database for semantic search                 | [Qdrant](https://github.com/qdrant/qdrant) (in-memory)                                                        | 6333  |
+| **Ollama**           | Local LLM inference                                 | r1-distill-aj:32b-4k                                                                                          | 11434 |
 
 ---
 
@@ -171,29 +163,6 @@ This is **agentic reasoning**: not just executing, but thinking, adapting, and l
 - **vs. Single Unified Model**:
   - ❌ 70B for everything = 40GB+ VRAM, high cost per token, single point of failure
   - ✅ DistilBERT + specialized LLM = right-sized models for each job
-
-### ⚡ **Workspace-Aware Reasoning**
-
-```mermaid
-graph TB
-    subgraph traditional ["Traditional LLM Approach"]
-        A1["User: What files?"]
-        B1["LLM: Guesses from training data"]
-        C1(["❌ Hallucinated/outdated info"])
-        A1 --> B1 --> C1
-    end
-
-    subgraph aj ["AJ Approach"]
-        A2["User: What files?"]
-        B2{{"Orchestrator: Scans filesystem"}}
-        C2[("State: 47 files, 3 dirs")]
-        D2["LLM: Based on ground truth"]
-        E2(["✅ Accurate, current info"])
-        A2 --> B2 --> C2 --> D2 --> E2
-    end
-```
-
-Session state is the source of truth—the LLM reasons _about_ it, not _instead of_ it.
 
 ### 📚 **Knowledge Accumulation**
 
@@ -315,6 +284,7 @@ sequenceDiagram
 - **mTLS + fingerprint pinning** (cryptographic identity)
 - **Try-then-elevate** permission model
 - **One-click deployment** to Windows machines
+- **Server role detection** (Windows: DC, DNS, DHCP, Exchange, SQL Server, IIS, Hyper-V, File Server; Linux: nginx, Apache, MySQL, PostgreSQL, Docker, Kubernetes)
 
 **Deploy an agent:**
 
@@ -607,6 +577,8 @@ docker compose up -d --build pragmatics_api
 - [x] Orchestrator reasoning engine
 - [x] Multi-step task planning
 - [x] Session state tracking (ground truth)
+- [x] Target selection safety (multi-agent disambiguation)
+- [x] Agent-aware intent classification (60+ agent task examples)
 
 ### Phase 2: FunnelCloud Agents ✅
 
@@ -616,8 +588,9 @@ docker compose up -d --build pragmatics_api
 - [x] gRPC service definition (task_service.proto)
 - [x] Windows service installation (NSSM)
 - [x] One-click deployment scripts
+- [x] Server role detection (Exchange, DC, DNS, DHCP, IIS, SQL Server, etc.)
+- [x] Self-contained deployment (no .NET runtime dependency)
 - [ ] Multi-agent orchestration (parallel execution)
-- [ ] Capability advertisement (agent skills registry)
 
 See [FunnelCloud/README.md](layers/agents/FunnelCloud/README.md) for detailed deployment instructions.
 
@@ -749,7 +722,7 @@ AJ includes **two custom fine-tuned models** trained on workspace-specific knowl
 | `r1-distill-aj:32b` | [DeepSeek-R1-Distill-Qwen-32B](https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-32B) | Reasoning with `<think>` tags | 2k/4k/8k/32k |
 | `qwen2.5-aj:32b`    | [Qwen2.5-32B-Instruct](https://huggingface.co/Qwen/Qwen2.5-32B-Instruct)                        | Direct answers                | 2k/4k/8k/32k |
 
-**Default model**: `r1-distill-aj:32b-4k` (reasoning + balanced context)
+**Default model**: `qwen2.5-aj:32b-4k` (reasoning + balanced context)
 
 ### Training Data
 
