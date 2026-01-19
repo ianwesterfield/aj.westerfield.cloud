@@ -133,17 +133,24 @@ FORMAT: {"tool": "name", "params": {...}, "note": "status", "reasoning": "why"}
 
 TOOLS:
 - list_agents: Discover available FunnelCloud agents (call FIRST before remote ops)
-- remote_execute: Run command on a specific agent {"agent_id": "name", "command": "..."}
-- remote_execute_all: Run command on ALL discovered agents {"command": "..."}
+- remote_execute: Run command on ONE specific agent {"agent_id": "name", "command": "..."}
+- remote_execute_all: Run SAME command on ALL agents at once {"command": "..."} - USE THIS when user says "each agent", "all machines", "every agent"
 - complete: {"answer": "response"} when done, {"error": "msg"} on failure
 - none: {"reason": "why"} to skip
 
-MULTI-TARGET REQUESTS:
-User requests may involve MULTIPLE agents. Parse ALL targets and execute commands on EACH correct agent.
-Example: "reboot domain02, and add a file to my workstation" requires TWO remote_execute calls:
-  1. remote_execute on "domain02" with reboot command
-  2. remote_execute on user's workstation with file creation command
-Execute ONE command per response, track progress, continue until ALL targets are handled.
+⚠️ CRITICAL TOOL CHOICE FOR MULTI-AGENT OPERATIONS:
+- "ask each agent", "run on all machines", "every agent" → remote_execute_all (single call, parallel execution)
+- "reboot domain02 AND add file to workstation" → multiple remote_execute calls (DIFFERENT commands per target)
+
+WHEN TO USE remote_execute_all:
+- User says "each", "all", "every" + agents/machines → remote_execute_all
+- Same command needs to run on multiple agents → remote_execute_all
+- Example: "ask each agent to report disk space" → ONE call to remote_execute_all
+
+WHEN TO USE remote_execute (single agent):
+- Different commands for different targets
+- User specifies ONE explicit agent name
+- Example: "reboot domain02" → ONE remote_execute to domain02
 
 TARGET IDENTIFICATION:
 - Explicit names: "domain02", "prod-api-01" -> use exact agent name
@@ -158,7 +165,6 @@ AGENT CONTEXT HINTS:
 
 RULES:
 - Call list_agents FIRST before any remote operations
-- One tool call per response - iterate for multi-target requests
 - No fabrication - agents must be discovered first
 - Check session state for QUERIED vs REMAINING - don't complete until ALL targets handled
 - For file operations: use PowerShell (Set-Content, Add-Content, New-Item) on Windows agents
@@ -971,6 +977,19 @@ Now create a plan for:
     
     def _apply_guardrails(self, step: Step, session_state: SessionState) -> Step:
         """Apply guardrails to a parsed step. Returns corrected step if needed."""
+        
+        # ⛔ GUARDRAIL: Prevent calling list_agents twice
+        # If already verified, skip redundant call
+        if step.tool == "list_agents" and session_state.agents_verified:
+            logger.warning("GUARDRAIL: list_agents already called - skipping redundant call")
+            # Instead of blocking, just proceed with remote_execute_all if that's what's needed
+            # Check if there's a pending command pattern in the step reasoning
+            return Step(
+                step_id="guardrail_skip_redundant_list",
+                tool="none",
+                params={"reason": f"Agents already discovered: {', '.join(session_state.discovered_agents)}"},
+                reasoning="Skipped redundant list_agents - agents already verified",
+            )
         
         # ⛔ CRITICAL GUARDRAIL: remote_execute requires verified agents
         # If model tries remote_execute without agents, redirect to workspace tools if appropriate

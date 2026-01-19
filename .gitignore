@@ -1,9 +1,6 @@
 __pycache__/
 .DS_Store
 .eggs/
-.env
-.env.*.local
-.env.local
 .github/
 .idea/
 .project
@@ -44,9 +41,10 @@ ENV/
 logs/
 obj/
 output/
+publish-selfcontained/
 publish/
 secrets/
 Thumbs.db
 training/**/data/
+unsloth_compiled_cache/
 venv/
-publish-selfcontained/

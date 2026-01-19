@@ -93,14 +93,14 @@ TOOL_HANDLERS = {
     # No-op handler for idempotent operations
     "none": _handle_none,
     
-    "execute_code": lambda req: _get_polyglot_handler().execute(
-        language=req.params.get("language", "python"),
-        code=req.params.get("code", ""),
+    "execute_shell": lambda req: _get_shell_handler().execute(
+        command=req.params.get("command", ""),
         timeout=req.params.get("timeout", 30),
         workspace_context=req.workspace_context,
     ),
-    "execute_shell": lambda req: _get_shell_handler().execute(
-        command=req.params.get("command", ""),
+    "execute_code": lambda req: _get_polyglot_handler().execute(
+        language=req.params.get("language", "python"),
+        code=req.params.get("code", ""),
         timeout=req.params.get("timeout", 30),
         workspace_context=req.workspace_context,
     ),

@@ -533,7 +533,11 @@ async def _handle_remote_execute(params: Dict[str, Any]) -> Dict[str, Any]:
         
         # Format output with better error messages
         output_parts = []
-        output_parts.append(f"[Remote: {agent.agent_id} @ {agent.ip_address}]")
+        
+        # Show which machine and what command is being executed
+        output_parts.append(f"╔══ Executing on: {agent.agent_id} @ {agent.ip_address} ══╗")
+        output_parts.append(f"📋 Command: {command[:200]}{'...' if len(command) > 200 else ''}")
+        output_parts.append("─" * 50)
         
         # Check for specific error codes and provide helpful messages
         error_msg = None
@@ -564,7 +568,8 @@ async def _handle_remote_execute(params: Dict[str, Any]) -> Dict[str, Any]:
         if not result.success and error_msg:
             output_parts.append(f"ERROR: {error_msg}")
         
-        output_parts.append(f"[Exit code: {result.exit_code}, Duration: {result.duration_ms}ms]")
+        output_parts.append("─" * 50)
+        output_parts.append(f"✓ Exit code: {result.exit_code} | Duration: {result.duration_ms}ms")
         
         # If we got useful output, treat as success even if exit code was non-zero
         # (common with PowerShell commands that have partial permission errors)
@@ -646,7 +651,11 @@ async def _handle_remote_execute_all(params: Dict[str, Any]) -> Dict[str, Any]:
                 timeout_seconds=timeout,
             )
             
-            output_parts = [f"[{agent.agent_id} @ {agent.ip_address}]"]
+            output_parts = [
+                f"╔══ {agent.agent_id} @ {agent.ip_address} ══╗",
+                f"📋 Command: {command[:150]}{'...' if len(command) > 150 else ''}",
+                "─" * 40,
+            ]
             
             if result.stdout:
                 output_parts.append(result.stdout)
@@ -655,7 +664,8 @@ async def _handle_remote_execute_all(params: Dict[str, Any]) -> Dict[str, Any]:
             if not result.stdout and not result.stderr:
                 output_parts.append("(no output)")
             
-            output_parts.append(f"[Exit: {result.exit_code}, {result.duration_ms}ms]")
+            output_parts.append("─" * 40)
+            output_parts.append(f"✓ Exit: {result.exit_code} | {result.duration_ms}ms")
             
             return {
                 "agent_id": agent.agent_id,
@@ -685,8 +695,9 @@ async def _handle_remote_execute_all(params: Dict[str, Any]) -> Dict[str, Any]:
             if result.get("success"):
                 success_count += 1
     
-    combined_output = f"Executed on {len(agents)} agent(s) ({success_count} succeeded):\n\n"
-    combined_output += "\n\n---\n\n".join(all_outputs)
+    combined_output = f"🖥️ Remote Execution Summary: {len(agents)} agent(s) | {success_count} succeeded\n"
+    combined_output += "═" * 60 + "\n\n"
+    combined_output += "\n\n".join(all_outputs)
     
     return {
         "success": success_count > 0,
