@@ -795,10 +795,9 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
     # Stream the plan to user as markdown
     plan_markdown = task_plan.format_for_display()
     yield f"data: {json.dumps({'event_type': 'plan', 'content': plan_markdown, 'steps': plan_steps})}\n\n"
-    yield f"data: {json.dumps({'event_type': 'thinking', 'content': plan_markdown + chr(10) + chr(10)})}\n\n"
     
-    # Emit thinking blockquote prefix
-    yield f"data: {json.dumps({'event_type': 'thinking', 'content': '> 💭 '})}\n\n"
+    # NOTE: Plan is only emitted via 'plan' event - filter handles display
+    # Do NOT emit as 'thinking' to avoid duplication
     
     step_history = []
     all_results = []

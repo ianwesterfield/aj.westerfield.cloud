@@ -33,7 +33,9 @@ public class Program
       options.ServiceName = "FunnelCloud Agent";
     });
 
-    // Configure logging
+    // Configure logging - clear defaults (including EventLog which needs System.Threading.AccessControl)
+    // and explicitly add console logging only
+    builder.Logging.ClearProviders();
     builder.Logging.AddConsole();
     builder.Logging.SetMinimumLevel(LogLevel.Debug);
 

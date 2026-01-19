@@ -98,26 +98,46 @@ public class GrpcServerHost : BackgroundService
   {
     _logger.LogWarning("Running gRPC server WITHOUT mTLS - for development only!");
 
-    var builder = WebApplication.CreateBuilder();
-
-    builder.Services.AddGrpc();
-    builder.Services.AddSingleton(_capabilities);
-    builder.Services.AddSingleton(_executor);
-    builder.Services.AddSingleton<TaskServiceImpl>();
-
-    builder.WebHost.ConfigureKestrel(options =>
+    try
     {
-      options.Listen(IPAddress.Any, _port, listenOptions =>
-          {
+      var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+      {
+        ContentRootPath = AppContext.BaseDirectory,
+        ApplicationName = "FunnelCloud.Agent.GrpcServer"
+      });
+
+      // Clear default logging and add console
+      builder.Logging.ClearProviders();
+      builder.Logging.AddConsole();
+
+      builder.Services.AddGrpc();
+      builder.Services.AddSingleton(_capabilities);
+      builder.Services.AddSingleton(_executor);
+      builder.Services.AddSingleton<TaskServiceImpl>();
+
+      builder.WebHost.ConfigureKestrel(options =>
+      {
+        options.Listen(IPAddress.Any, _port, listenOptions =>
+        {
+          // HTTP/2 over cleartext (h2c) for gRPC without TLS
           listenOptions.Protocols = HttpProtocols.Http2;
         });
-    });
+      });
 
-    var app = builder.Build();
-    app.MapGrpcService<TaskServiceImpl>();
+      var app = builder.Build();
+      app.MapGrpcService<TaskServiceImpl>();
 
-    _logger.LogInformation("gRPC server (INSECURE) listening on port {Port}", _port);
-    await app.RunAsync(stoppingToken);
+      // Store reference for proper shutdown
+      _host = app;
+
+      _logger.LogInformation("gRPC server (INSECURE) listening on port {Port}", _port);
+      await app.RunAsync(stoppingToken);
+    }
+    catch (Exception ex)
+    {
+      _logger.LogError(ex, "Failed to start insecure gRPC server on port {Port}", _port);
+      throw;
+    }
   }
 
   private IHostBuilder CreateHostBuilder(X509Certificate2 serverCertificate)
@@ -127,34 +147,34 @@ public class GrpcServerHost : BackgroundService
         {
           webBuilder.ConfigureKestrel(options =>
               {
-              options.Listen(IPAddress.Any, _port, listenOptions =>
-                  {
-                  listenOptions.Protocols = HttpProtocols.Http2;
-                  listenOptions.UseHttps(httpsOptions =>
-                      {
-                      httpsOptions.ServerCertificate = serverCertificate;
-                      httpsOptions.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
-                      httpsOptions.ClientCertificateValidation = ValidateClientCertificate;
+                options.Listen(IPAddress.Any, _port, listenOptions =>
+                    {
+                      listenOptions.Protocols = HttpProtocols.Http2;
+                      listenOptions.UseHttps(httpsOptions =>
+                        {
+                          httpsOptions.ServerCertificate = serverCertificate;
+                          httpsOptions.ClientCertificateMode = ClientCertificateMode.RequireCertificate;
+                          httpsOptions.ClientCertificateValidation = ValidateClientCertificate;
+                        });
                     });
-                });
-            });
+              });
 
           webBuilder.ConfigureServices(services =>
               {
-              services.AddGrpc();
-              services.AddSingleton(_capabilities);
-              services.AddSingleton(_executor);
-              services.AddSingleton<TaskServiceImpl>();
-            });
+                services.AddGrpc();
+                services.AddSingleton(_capabilities);
+                services.AddSingleton(_executor);
+                services.AddSingleton<TaskServiceImpl>();
+              });
 
           webBuilder.Configure(app =>
               {
-              app.UseRouting();
-              app.UseEndpoints(endpoints =>
-                  {
-                  endpoints.MapGrpcService<TaskServiceImpl>();
-                });
-            });
+                app.UseRouting();
+                app.UseEndpoints(endpoints =>
+                    {
+                      endpoints.MapGrpcService<TaskServiceImpl>();
+                    });
+              });
         });
   }
 

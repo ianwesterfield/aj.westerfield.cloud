@@ -299,6 +299,28 @@ Unregister-ScheduledTask -TaskName "AJ-Westerfield-Services" -Confirm:$false
 - **Verbatim Output**: Tools produce raw output; LLM shows it unchanged
 - **Specialization Over Generalization**: Small models for specific jobs beat big models for everything
 
+### Model Training
+
+AJ includes infrastructure for fine-tuning Qwen2.5-32B with QLoRA:
+
+```bash
+# In WSL2 (recommended for CUDA support)
+cd /mnt/c/Code/aj.westerfield.cloud/training
+source venv/bin/activate
+
+# Run full training pipeline
+python scripts/train_pipeline.py
+```
+
+The pipeline:
+
+- Downloads IBM Granite 3.1 Language Instruction dataset (~20K examples)
+- Merges with 5,205 custom AJ examples across 43 domains
+- Runs QLoRA fine-tuning optimized for RTX 4090
+- Produces checkpoints ready for Ollama export
+
+See [training/README.md](training/README.md) for details.
+
 ### File Structure
 
 ```

@@ -382,6 +382,37 @@ BASIC_POWERSHELL_TASKS = [
         "command": "query user",
         "explanation": "Shows users logged into the machine"
     },
+    # Directory size commands - critical for disk analysis
+    {
+        "instruction": "List the largest directories on C: drive",
+        "command": "Get-ChildItem -Path C:\\ -Directory -ErrorAction SilentlyContinue | ForEach-Object { $size = (Get-ChildItem $_.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum; [PSCustomObject]@{Name=$_.Name; SizeMB=[math]::Round($size/1MB,2)} } | Sort-Object SizeMB -Descending | Select-Object -First 10",
+        "explanation": "Calculates actual directory sizes by summing all files recursively, then sorts by size"
+    },
+    {
+        "instruction": "Find the five largest folders on my drive",
+        "command": "Get-ChildItem -Path C:\\ -Directory | ForEach-Object { [PSCustomObject]@{Path=$_.FullName; SizeGB=[math]::Round(((Get-ChildItem $_.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum/1GB),2)} } | Sort-Object SizeGB -Descending | Select-Object -First 5",
+        "explanation": "Recursively calculates folder sizes in GB - note directories don't have a Length property, must sum files"
+    },
+    {
+        "instruction": "Show directory sizes sorted by size",
+        "command": "Get-ChildItem -Directory | ForEach-Object { $s = (Get-ChildItem $_ -Recurse -File -EA 0 | Measure-Object Length -Sum).Sum; [PSCustomObject]@{Name=$_.Name; 'Size(MB)'=[math]::Round($s/1MB,2)} } | Sort-Object 'Size(MB)' -Descending",
+        "explanation": "Lists all subdirectories with their total sizes. Uses -EA 0 shorthand for -ErrorAction SilentlyContinue"
+    },
+    {
+        "instruction": "What are the biggest folders taking up space?",
+        "command": "Get-ChildItem C:\\ -Directory -ErrorAction SilentlyContinue | ForEach-Object { $size = 0; Get-ChildItem $_.FullName -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object { $size += $_.Length }; [PSCustomObject]@{Folder=$_.Name; SizeMB=[math]::Round($size/1MB,2)} } | Sort-Object SizeMB -Descending | Select-Object -First 10",
+        "explanation": "Scans each top-level folder and calculates total size of all contained files"
+    },
+    {
+        "instruction": "Report top 5 largest directories with sizes",
+        "command": "$folders = Get-ChildItem -Path C:\\ -Directory -ErrorAction SilentlyContinue; foreach ($f in $folders) { $bytes = (Get-ChildItem -Path $f.FullName -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum; [PSCustomObject]@{Name=$f.Name; SizeGB=[math]::Round($bytes/1GB,2)} } | Sort-Object SizeGB -Descending | Select-Object -First 5",
+        "explanation": "Full directory size analysis with GB output - directories have no inherent size, must calculate from files"
+    },
+    {
+        "instruction": "Disk space analysis by folder",
+        "command": "Get-ChildItem C:\\ -Directory | Select-Object Name, @{N='SizeGB';E={[math]::Round((Get-ChildItem $_.FullName -Recurse -File -EA 0 | Measure-Object Length -Sum).Sum/1GB,2)}} | Sort-Object SizeGB -Descending",
+        "explanation": "Uses calculated property to get folder sizes. Note: Get-ChildItem -Directory returns folders but they don't have Length"
+    },
 ]
 
 ADVANCED_POWERSHELL_TASKS = [

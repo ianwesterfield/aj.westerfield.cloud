@@ -865,11 +865,33 @@ class SessionState:
         if self.completed_steps:
             # Check for repeated tools (loop detection)
             recent_tools = [s.tool for s in self.completed_steps[-5:]]
-            repeated = any(recent_tools.count(t) >= 2 for t in set(recent_tools))
+            recent_steps = self.completed_steps[-5:]
             
-            if repeated:
+            # Detect exact duplicates (same tool + same params = definitely a loop)
+            duplicate_detected = False
+            for i, step in enumerate(recent_steps):
+                for j, other in enumerate(recent_steps):
+                    if i != j and step.tool == other.tool:
+                        # For remote_execute, check if same agent
+                        if step.tool == "remote_execute":
+                            step_agent = step.params.get("agent_id") or step.params.get("agent", "")
+                            other_agent = other.params.get("agent_id") or other.params.get("agent", "")
+                            if step_agent == other_agent:
+                                duplicate_detected = True
+                                break
+                        # For idempotent tools, any repeat is a loop
+                        elif step.tool in ("list_agents", "dump_state", "scan_workspace"):
+                            duplicate_detected = True
+                            break
+                if duplicate_detected:
+                    break
+            
+            # Also check for general tool repetition
+            repeated = any(recent_tools.count(t) >= 3 for t in set(recent_tools))
+            
+            if duplicate_detected or repeated:
                 lines.append("⛔⛔⛔ LOOP DETECTED - YOU ARE REPEATING YOURSELF ⛔⛔⛔")
-                lines.append("You called the same tool multiple times. STOP and call complete.")
+                lines.append("You called the same tool/agent multiple times. STOP and call complete.")
                 lines.append("")
             
             lines.append("Completed steps (⛔ = DO NOT REPEAT):")

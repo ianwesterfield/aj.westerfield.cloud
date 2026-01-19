@@ -1,0 +1,121 @@
+# QLoRA Fine-tuning Configuration for IBM Granite 4.0-H-Small (32B MoE)
+# Optimized for RTX 4090 (24GB VRAM)
+# Model has 32B params total, 9B active (MoE + Mamba2 hybrid)
+
+model:
+  base_model: "ibm-granite/granite-4.0-h-small"
+  quantization: "4bit"  # QLoRA uses 4-bit base
+  max_seq_length: 8192  # Granite supports 128K, use 8K for training
+  dtype: "bfloat16"
+  trust_remote_code: true  # Required for Granite 4.0 architecture
+
+lora:
+  r: 64                    # LoRA rank - higher for complex tasks
+  lora_alpha: 128          # Scaling factor (usually 2x rank)
+  lora_dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+  bias: "none"
+  task_type: "CAUSAL_LM"
+
+training:
+  output_dir: "./checkpoints"
+  num_train_epochs: 2       # 2 epochs - enough for instruction tuning
+  per_device_train_batch_size: 1
+  gradient_accumulation_steps: 8  # Effective batch size = 8
+  learning_rate: 2.0e-4
+  weight_decay: 0.01
+  warmup_ratio: 0.03
+  lr_scheduler_type: "cosine"
+  logging_steps: 25
+  save_steps: 500
+  eval_steps: 500
+  save_total_limit: 3
+  fp16: false
+  bf16: true
+  gradient_checkpointing: true
+  optim: "paged_adamw_8bit"
+  max_grad_norm: 0.3
+  group_by_length: true
+  report_to: "tensorboard"
+  dataloader_num_workers: 4  # Faster data loading
+  dataloader_pin_memory: true
+
+data:
+  # Include agentic datasets + all existing training data
+  train_files:
+    # Agentic/tool-use data (external high-quality)
+    - "data/xlam_function_calling.jsonl"  # Salesforce xLAM (20K)
+    - "data/agent_instruct.jsonl"         # THUDM AgentInstruct (30K)
+    # Core agent capabilities
+    - "data/intent_classification.jsonl"
+    - "data/tool_selection.jsonl"
+    - "data/task_planning.jsonl"
+    - "data/guardrails.jsonl"
+    - "data/guardrails_extended.jsonl"
+    - "data/multistep_workflows.jsonl"
+    # System administration (PowerShell, Linux, etc.)
+    - "data/windows_admin.jsonl"
+    - "data/linux_admin.jsonl"
+    - "data/docker_containerization.jsonl"
+    - "data/cloud_devops.jsonl"
+    - "data/devops_cicd.jsonl"
+    # Programming
+    - "data/python_development.jsonl"
+    - "data/typescript_development.jsonl"
+    - "data/nodejs.jsonl"
+    - "data/dotnet.jsonl"
+    - "data/angular.jsonl"
+    # Infrastructure
+    - "data/networking.jsonl"
+    - "data/database_sql.jsonl"
+    - "data/storage_data.jsonl"
+    - "data/security.jsonl"
+    # Project-specific
+    - "data/mesosync_workspace.jsonl"
+    - "data/memory_data.jsonl"
+    - "data/qdrant_vectors.jsonl"
+    - "data/architecture_qa.jsonl"
+    # General knowledge
+    - "data/git_version_control.jsonl"
+    - "data/vscode_ide_workflows.jsonl"
+    - "data/api_development.jsonl"
+    # All other files (catch-all)
+    - "data/all_training_data.jsonl"
+  eval_split: 0.05  # 5% for validation
+  shuffle: true
+  seed: 42
+  deduplicate: true  # Remove duplicate examples
+
+# Dataset format (Granite 4.0 chat format)
+# Granite uses: <|start_of_role|>role<|end_of_role|>content<|end_of_text|>
+prompt_template: |
+  <|start_of_role|>system<|end_of_role|>{system}<|end_of_text|>
+  <|start_of_role|>user<|end_of_role|>{instruction}<|end_of_text|>
+  <|start_of_role|>assistant<|end_of_role|>{response}<|end_of_text|>
+
+export:
+  output_dir: "./output"
+  merge_weights: true
+  quantize_to: "Q4_K_M"
+  ollama_model_name: "granite-aj"
+  context_variants:
+    - name: "4k"
+      num_ctx: 4096
+    - name: "8k"
+      num_ctx: 8192
+    - name: "32k"
+      num_ctx: 32768
+    - name: "128k"
+      num_ctx: 131072  # Granite supports full 128K
+
+# Estimated training time on RTX 4090:
+# - ~55K examples (xLAM 20K + AgentInstruct 30K + local 5K)
+# - ~2 epochs
+# - ~8-12 hours total (MoE is efficient - only 9B active params)

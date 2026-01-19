@@ -1,11 +1,13 @@
-# QLoRA Fine-tuning Configuration for Qwen 2.5 AJ 32B
+# QLoRA Fine-tuning Configuration for IBM Granite 4.0-H-Small (32B MoE)
 # Optimized for agent workloads: tool calling, intent classification, planning
+# Model has built-in tool calling via <tool_call> XML format
 
 model:
-  base_model: "Qwen/Qwen2.5-32B-Instruct"
+  base_model: "ibm-granite/granite-4.0-h-small"
   quantization: "4bit"  # QLoRA uses 4-bit base
-  max_seq_length: 4096
+  max_seq_length: 8192   # Granite supports 128K, use 8K for training
   dtype: "bfloat16"
+  trust_remote_code: true  # Required for Granite 4.0 architecture
 
 lora:
   r: 64                    # LoRA rank - higher for complex tasks
@@ -50,21 +52,21 @@ data:
     - "data/task_planning.jsonl"
     - "data/guardrails.jsonl"
     - "data/architecture_qa.jsonl"
-  eval_split: 0.1
+    - "data/xlam_function_calling.jsonl"   # Salesforce xLAM tool use
+    - "data/agent_instruct.jsonl"          # THUDM agent traces
+  eval_split: 0.05  # Reduced since we have more data
   shuffle: true
   seed: 42
 
-# Dataset format (ChatML style for Qwen)
+# Dataset format (Granite 4.0 chat format)
+# Granite uses: <|start_of_role|>role<|end_of_role|>content<|end_of_text|>
 prompt_template: |
-  <|im_start|>system
-  {system}<|im_end|>
-  <|im_start|>user
-  {instruction}<|im_end|>
-  <|im_start|>assistant
-  {response}<|im_end|>
+  <|start_of_role|>system<|end_of_role|>{system}<|end_of_text|>
+  <|start_of_role|>user<|end_of_role|>{instruction}<|end_of_text|>
+  <|start_of_role|>assistant<|end_of_role|>{response}<|end_of_text|>
 
 export:
   output_dir: "./output"
   merge_weights: true
   quantize_to: "Q4_K_M"
-  ollama_model_name: "qwen2.5-aj:32b-q4"
+  ollama_model_name: "granite-aj:32b-q4"

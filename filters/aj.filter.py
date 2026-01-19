@@ -563,6 +563,9 @@ async def _orchestrate_task(
                                 "scan_workspace": "Directory listing",
                                 "read_file": "File content",
                                 "execute_shell": "Command output",
+                                "remote_execute": "remote_execute output",
+                                "remote_execute_all": "remote_execute output",
+                                "list_agents": "list_agents output",
                             }
                             label = tool_labels.get(tool, f"{tool} output")
                             
