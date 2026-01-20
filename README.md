@@ -549,4 +549,4 @@ This is a private research project. For research partnerships or questions, cont
 
 ## License
 
-MIT License — use it, fork it, learn from it. Built with AI assistance.
+MIT License — use it, fork it, learn from it. Built with the assistance of AI.

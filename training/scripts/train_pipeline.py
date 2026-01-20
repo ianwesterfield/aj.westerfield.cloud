@@ -348,9 +348,9 @@ def main():
     args = parser.parse_args()
     
     print("=" * 60)
-    print("AJ Granite 4.0-H-Small - Master Training Pipeline")
+    print("AJ Granite 3.1-8B - Master Training Pipeline")
     print("=" * 60)
-    print(f"Base Model: IBM Granite 4.0-H-Small (32B MoE, 9B active)")
+    print(f"Base Model: IBM Granite 3.1-8B-Instruct (8B params, 128K context)")
     print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     # Check requirements
