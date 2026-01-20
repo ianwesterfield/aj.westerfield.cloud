@@ -173,7 +173,7 @@ For network equipment (UniFi, Cisco, etc.), MCP servers can provide the same sel
 
 ```mermaid
 graph LR
-    M{{"AJ<br/>(Orchestrator)"}}****
+    M{{"AJ<br/>(Orchestrator)"}}
     D>"Docker<br/>(Local Tasks)"]
     W1(["Windows<br/>Machine"])
     L1(["Linux<br/>Workstation"])
@@ -308,14 +308,17 @@ AJ includes infrastructure for fine-tuning IBM Granite 3.1-8B with QLoRA:
 cd /mnt/c/Code/aj.westerfield.cloud/training
 source venv/bin/activate
 
-# Run full training pipeline
+# Run full training pipeline (downloads ALL examples by default)
 python scripts/train_pipeline.py -y
 ```
 
 The pipeline:
 
-- Downloads agentic datasets (Glaive function-calling, AgentInstruct)
-- Merges with custom AJ training examples
+- Downloads agentic datasets:
+  - Glaive function-calling (~113K examples)
+  - AgentInstruct (~1.8M examples)
+  - Toucan-1.5M MCP tool-use (~519K examples)
+- Merges with custom AJ training examples (5K+)
 - Runs QLoRA fine-tuning with Unsloth (2x faster on RTX 4090)
 - Produces checkpoints ready for Ollama export
 
