@@ -301,7 +301,7 @@ Unregister-ScheduledTask -TaskName "AJ-Westerfield-Services" -Confirm:$false
 
 ### Model Training
 
-AJ includes infrastructure for fine-tuning Qwen2.5-32B with QLoRA:
+AJ includes infrastructure for fine-tuning IBM Granite 3.1-8B with QLoRA:
 
 ```bash
 # In WSL2 (recommended for CUDA support)
@@ -309,14 +309,14 @@ cd /mnt/c/Code/aj.westerfield.cloud/training
 source venv/bin/activate
 
 # Run full training pipeline
-python scripts/train_pipeline.py
+python scripts/train_pipeline.py -y
 ```
 
 The pipeline:
 
-- Downloads IBM Granite 3.1 Language Instruction dataset (~20K examples)
-- Merges with 5,205 custom AJ examples across 43 domains
-- Runs QLoRA fine-tuning optimized for RTX 4090
+- Downloads agentic datasets (Glaive function-calling, AgentInstruct)
+- Merges with custom AJ training examples
+- Runs QLoRA fine-tuning with Unsloth (2x faster on RTX 4090)
 - Produces checkpoints ready for Ollama export
 
 See [training/README.md](training/README.md) for details.
@@ -327,41 +327,43 @@ See [training/README.md](training/README.md) for details.
 layers/
 ├── shared/               # Shared utilities (logging, schemas)
 ├── orchestrator/         # Reasoning + tool dispatch (core)
+│   └── services/
+│       ├── bash_dispatcher.py   # "All You Need is Bash" - 6 tools
+│       ├── reasoning_engine.py  # LLM planning & step generation
+│       ├── session_state.py     # Conversation state tracking
+│       └── grpc_client.py       # FunnelCloud agent communication
 ├── memory/              # Semantic storage + retrieval
 ├── pragmatics/          # Intent classification
-└── extractor/           # Media processing
+├── extractor/           # Media processing
 └── agents/              # Distributed agent network
     └── FunnelCloud/     # .NET 8 gRPC agent framework
         ├── certs/       # Certificate Authority + agent certs
         ├── FunnelCloud.Agent/   # Agent service
         └── FunnelCloud.Shared/  # Shared contracts
-└── scripts/             # Deployment automation
-    ├── New-CACertificate.ps1
-    ├── New-AgentCertificate.ps1
-    ├── Setup-FunnelCloudClient.ps1
-    └── Deploy-FunnelCloudAgent.ps1
 
 filters/
-└── aj.filter.py         # Open-WebUI entry point (1364 lines)
+└── aj.filter.py         # Open-WebUI entry point
+
+training/
+├── scripts/             # Training pipeline
+├── configs/             # QLoRA configs (4090 optimized)
+└── data/                # Training datasets
 ```
 
 ### Extending AJ
 
 **Add a new tool:**
 
+The "All You Need is Bash" philosophy means most operations are just bash commands.
+For truly custom tools, add them to `bash_dispatcher.py`:
+
 ```python
-# 1. Implement in layers/orchestrator/services/handlers.py
-class CustomHandler:
-    async def execute(self, params):
-        return {"result": "..."}
+# In layers/orchestrator/services/bash_dispatcher.py
 
-# 2. Register in tool_dispatcher.py
-HANDLERS = {
-    "custom_tool": CustomHandler(),
-}
-
-# 3. Declare in reasoning_engine.py
-AVAILABLE_TOOLS = ["custom_tool"]
+# Add to dispatch_tool():
+if tool == "custom_tool":
+    # Your custom logic here
+    return {"success": True, "output": "result", "error": None}
 ```
 
 **Retrain intent classifier:**

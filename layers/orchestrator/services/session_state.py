@@ -425,7 +425,7 @@ class SessionState:
             if self.discovered_agents:
                 summary += f" ({', '.join(self.discovered_agents)})"
         
-        elif tool == "remote_execute":
+        elif tool in ("remote_bash", "remote_execute"):  # Support both old and new names
             cmd = params.get("command", "")[:40]
             # Handle various param names for agent
             agent = (params.get("agent_id") or params.get("agent") or 
@@ -847,18 +847,18 @@ class SessionState:
                     remaining = [a for a in self.discovered_agents if a not in self.queried_agents]
                     if remaining:
                         lines.append(f"   ⏳ REMAINING: {', '.join(remaining)}")
-                        lines.append(f"   ⚠️ {len(remaining)} agent(s) still need remote_execute!")
+                        lines.append(f"   ⚠️ {len(remaining)} agent(s) still need remote_bash!")
                     else:
                         lines.append("   ✅ All agents queried - ready to summarize results")
                 else:
-                    lines.append("   ⏳ No agents queried yet - use remote_execute with agent_id")
+                    lines.append("   ⏳ No agents queried yet - use remote_bash with agent_id")
             else:
                 lines.append("🖥️ AGENTS VERIFIED: None found")
                 lines.append("   No remote execution available - tell user to start an agent")
             lines.append("")
         else:
             lines.append("🖥️ AGENTS NOT VERIFIED")
-            lines.append("   ⛔ MUST call list_agents BEFORE any remote_execute!")
+            lines.append("   ⛔ MUST call list_agents BEFORE any remote_bash!")
             lines.append("")
         
         # Completed steps - with strong warnings against repetition
@@ -872,8 +872,8 @@ class SessionState:
             for i, step in enumerate(recent_steps):
                 for j, other in enumerate(recent_steps):
                     if i != j and step.tool == other.tool:
-                        # For remote_execute, check if same agent
-                        if step.tool == "remote_execute":
+                        # For remote_bash, check if same agent
+                        if step.tool in ("remote_bash", "remote_execute"):
                             step_agent = step.params.get("agent_id") or step.params.get("agent", "")
                             other_agent = other.params.get("agent_id") or other.params.get("agent", "")
                             if step_agent == other_agent:

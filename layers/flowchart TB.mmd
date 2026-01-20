@@ -18,21 +18,25 @@ flowchart TB
         
         subgraph OrchestratorBox["Orchestrator (8004)"]
             direction TB
-            Reasoning["ReasoningEngine<br/>🧠 Devstral/Qwen"]
-            ToolDispatcher["ToolDispatcher<br/>⚙️ Unified dispatch"]
-            Handlers["Local Handlers<br/>📂 FileHandler<br/>🔧 ShellHandler<br/>▶️ PolyglotHandler"]
+            Reasoning["ReasoningEngine<br/>🧠 Granite/Qwen"]
+            BashDispatch["BashDispatcher<br/>⚙️ All You Need is Bash"]
+            Tools["6 Tools<br/>🖥️ bash, remote_bash<br/>🔄 remote_bash_all<br/>📋 list_agents<br/>💭 think, complete"]
             
-            Reasoning --> ToolDispatcher
-            ToolDispatcher --> Handlers
+            Reasoning --> BashDispatch
+            BashDispatch --> Tools
         end
         
         Extractor["Extractor (8002)<br/>LLaVA + Whisper<br/>Images/Audio/PDF"]
     end
 
+    subgraph Remote["Remote Execution"]
+        FunnelCloud["FunnelCloud Agents<br/>gRPC + mTLS<br/>Windows/Linux"]
+    end
+
     subgraph Storage["Data Layer"]
         Qdrant["Qdrant (6333)<br/>768-dim COSINE<br/>all-mpnet-base-v2"]
         Ollama["Ollama (11434)<br/>LLM inference"]
-        Workspace["Workspace Volume<br/>/workspace mount"]
+        Workspace["Local Workspace<br/>bash subprocess"]
     end
 
     LLM["LLM Response"]
@@ -52,7 +56,8 @@ flowchart TB
 
     %% Orchestrator flow
     Reasoning --> Ollama
-    Handlers -->|"file ops"| Workspace
+    Tools -->|"bash"| Workspace
+    Tools -->|"remote_bash"| FunnelCloud
     OrchestratorBox -->|"search patterns"| Memory
 
     %% Memory to Qdrant

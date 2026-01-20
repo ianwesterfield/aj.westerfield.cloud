@@ -23,7 +23,7 @@ from schemas.models import (
     WorkspaceContext,
 )
 
-from services.tool_dispatcher import dispatch_tool
+from services.bash_dispatcher import dispatch_tool  # "All You Need is Bash" - simplified tool dispatch
 
 
 logger = logging.getLogger("orchestrator.executor")
