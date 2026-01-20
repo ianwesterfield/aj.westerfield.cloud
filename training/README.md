@@ -1,53 +1,54 @@
 # AJ Fine-Tuned Models
 
-Fine-tuned LLMs for AJ agent workloads using QLoRA (4-bit quantization).
+Fine-tuned LLMs for AJ agent workloads using QLoRA (4-bit quantization) and Unsloth (2x faster training).
 
-## Available Models
+## Current Model
 
-| Model             | Base                         | Purpose                       | Ollama Name         |
-| ----------------- | ---------------------------- | ----------------------------- | ------------------- |
-| **R1-Distill-AJ** | DeepSeek-R1-Distill-Qwen-32B | Reasoning with `<think>` tags | `r1-distill-aj:32b` |
-| **Qwen2.5-AJ**    | Qwen2.5-32B-Instruct         | Direct answers, fast          | `qwen2.5-aj:32b`    |
+| Model          | Base                        | Purpose                         | Ollama Name     |
+| -------------- | --------------------------- | ------------------------------- | --------------- |
+| **Granite-AJ** | IBM Granite 3.1-8B-Instruct | Agentic tool-use (bash-centric) | `granite-aj:8b` |
 
-Each model has context window variants: `-2k`, `-4k`, `-8k`, and default (32k).
+**Why Granite 3.1-8B?**
 
-**Default model**: `r1-distill-aj:32b-4k` — reasoning + balanced context
+- **Agentic Focus**: Native function-calling capabilities from IBM's research
+- **Efficient**: 8B parameters fits comfortably in 24GB VRAM with room for longer context
+- **Open Source**: Apache 2.0 license for commercial use
+- **Fast Inference**: Smaller model = faster responses = better UX
 
 ## Overview
 
-- **Training Method**: QLoRA with 4-bit quantization (~537M trainable params, 1.6%)
-- **Total Examples**: ~25,000+ (5,000+ custom + 20,000 IBM Granite)
-- **Hardware**: RTX 4090 (24GB) via WSL2 or cloud A100
-- **Training Time**: ~6-8 hours on RTX 4090, ~3-4 hours on A100
+- **Base Model**: IBM Granite 3.1-8B-Instruct (Apache 2.0)
+- **Training Method**: QLoRA with 4-bit quantization + Unsloth (2x faster)
+- **Agentic Data**: Glaive (113K) + AgentInstruct (1.8M) + Toucan MCP (519K) + custom (5K)
+- **Tool Schema**: 6 tools (`bash`, `remote_bash`, `remote_bash_all`, `list_agents`, `think`, `complete`)
+- **Hardware**: RTX 4090 (24GB) via WSL2
+- **Training Time**: ~24-48 hours with full datasets
 - **Training Pipeline**: `train_pipeline.py` handles everything end-to-end
-- **External Data**: IBM Granite 3.1 Language Instruction dataset
 
 ## Directory Structure
 
 ```
 training/
-├── data/                    # Training datasets (45+ JSONL files)
-│   ├── all_training_data.jsonl    # Combined dataset (5,205 examples)
-│   ├── ibm_granite.jsonl          # IBM Granite filtered data (~20K)
+├── data/                    # Training datasets
+│   ├── all_training_data.jsonl    # Combined dataset
 │   ├── dataset_stats.json         # Statistics by domain
-│   └── [domain].jsonl             # Individual domain files
+│   └── [domain].jsonl             # 45+ domain-specific files
 ├── scripts/                 # Training & generation scripts
 │   ├── train_pipeline.py          # ★ Master pipeline (run this!)
-│   ├── prepare_ibm_granite.py     # Download/filter IBM Granite
+│   ├── prepare_agentic_datasets.py # Download Glaive/AgentInstruct
 │   ├── generate_all.py            # Run all domain generators
-│   ├── generate_*.py              # 43 domain generators
-│   ├── bulk_expand.py             # Expand domains to target count
+│   ├── generate_*.py              # 43+ domain generators
 │   ├── train_qlora.py             # QLoRA training (PEFT/TRL)
 │   └── merge_and_export.py        # Merge LoRA + export
-├── agentic/                 # Agentic training (trajectory format)
-│   ├── schemas/                   # JSON schemas for trajectories
-│   ├── generators/                # Trajectory & preference generators
-│   ├── converters/                # Convert existing data
-│   ├── configs/                   # SFT + DPO training configs
-│   └── tasks/                     # Task prompts for generation
+├── agentic/                 # Agentic training data
+│   ├── schemas/                   # JSON schemas for tool-use
+│   ├── generators/                # Trajectory generators
+│   ├── converters/                # Convert external datasets
+│   ├── data/                      # Generated trajectories
+│   └── tasks/                     # Task prompt templates
 ├── configs/                 # Training configurations
-│   ├── qlora_config_4090.yaml     # ★ RTX 4090 optimized config
-│   └── qlora_config.yaml          # Generic config
+│   ├── qlora_config.yaml          # ★ RTX 4090 optimized config
+│   └── qlora_config_chat.yaml     # Chat format config
 ├── checkpoints/             # Training checkpoints (auto-saved)
 └── output/                  # Final model artifacts
 ```
@@ -91,89 +92,108 @@ The easiest way to train is using the master pipeline:
 cd /mnt/c/Code/aj.westerfield.cloud/training
 source venv/bin/activate
 
-# Run full pipeline (downloads data, merges, trains)
-python scripts/train_pipeline.py
+# Run full pipeline - downloads ALL examples by default
+python scripts/train_pipeline.py -y
 
-# Or with custom settings
-python scripts/train_pipeline.py --max-download 100000 --target 30000 --epochs 3
+# Or limit dataset sizes for faster training
+python scripts/train_pipeline.py --xlam-target 50000 --toucan-target 100000 -y
 ```
 
 The pipeline handles everything:
 
-1. ✅ Checks requirements (torch, CUDA, etc.)
-2. ✅ Downloads IBM Granite dataset (if needed)
-3. ✅ Merges all training data with deduplication
-4. ✅ Runs QLoRA fine-tuning
-5. ✅ Saves checkpoints for export
+1. ✅ Checks requirements (torch, CUDA, Unsloth, etc.)
+2. ✅ Downloads agentic datasets (Glaive, AgentInstruct, Toucan-1.5M)
+3. ✅ Merges with custom AJ training examples
+4. ✅ Runs QLoRA fine-tuning with Unsloth (2x faster)
+5. ✅ Saves checkpoints for Ollama export
+
+The `-y` flag skips confirmation prompts for unattended training.
 
 ### Manual Steps (Alternative)
 
 #### Generate Training Data
 
 ```bash
-# Generate all training data (runs 43 generators)
+# Generate all training data (runs 43+ generators)
 python scripts/generate_all.py
 
-# Expand all domains to 100+ examples
-python scripts/bulk_expand.py
+# Download agentic datasets (all examples by default)
+python scripts/prepare_agentic_datasets.py -y
 
-# Download IBM Granite dataset
-python scripts/prepare_ibm_granite.py --max-download 100000 --target 20000
+# Or limit to specific counts
+python scripts/prepare_agentic_datasets.py --xlam-target 50000 --toucan-target 100000 -y
 ```
 
 #### Run Training
 
 ```bash
 # QLoRA training with config
-python scripts/train_qlora.py --config configs/qlora_config_4090.yaml
+python scripts/train_qlora.py --config configs/qlora_config.yaml
 ```
 
 ### Export to Ollama
 
-GGUF conversion requires llama.cpp. On a cloud GPU instance:
+After training completes, export to Ollama:
 
 ```bash
 # 1. Merge LoRA with base model
 python scripts/merge_and_export.py
 
 # 2. Convert to GGUF (requires llama.cpp)
-python /path/to/llama.cpp/convert_hf_to_gguf.py ./merged-model --outfile model.bf16.gguf --outtype bf16
+python /path/to/llama.cpp/convert_hf_to_gguf.py ./merged-model --outfile granite-aj.bf16.gguf --outtype bf16
 
-# 3. Quantize to Q4_K_M (~19GB)
-/path/to/llama.cpp/build/bin/llama-quantize model.bf16.gguf model-q4_k_m.gguf Q4_K_M
+# 3. Quantize to Q4_K_M (~5GB for 8B model)
+/path/to/llama.cpp/build/bin/llama-quantize granite-aj.bf16.gguf granite-aj-q4_k_m.gguf Q4_K_M
 
-# 4. Download and import to Ollama
-scp model-q4_k_m.gguf local:/path/to/ollama/
-ollama create model-name:32b -f Modelfile
+# 4. Import to Ollama
+ollama create granite-aj:8b -f Modelfile
 ```
 
 ## Training Configuration (RTX 4090)
 
-Optimized settings in `configs/qlora_config_4090.yaml`:
+Optimized settings in `configs/qlora_config.yaml`:
 
-| Parameter              | Value            | Notes                               |
-| ---------------------- | ---------------- | ----------------------------------- |
-| Epochs                 | 2                | Sufficient for instruction tuning   |
-| Batch Size             | 1                | Limited by VRAM                     |
-| Gradient Accumulation  | 8                | Effective batch = 8                 |
-| Learning Rate          | 2e-4             | With cosine scheduler               |
-| LoRA Rank              | 64               | Higher rank for complex tasks       |
-| LoRA Alpha             | 128              | Scaling factor (2x rank)            |
-| Quantization           | 4-bit NF4        | BitsAndBytes config                 |
-| Attention              | SDPA             | PyTorch native (Windows compatible) |
-| Max Seq Length         | 4096             | Context window                      |
-| Optimizer              | paged_adamw_8bit | Memory efficient                    |
-| Gradient Checkpointing | true             | Reduces VRAM usage                  |
+| Parameter              | Value                               | Notes                         |
+| ---------------------- | ----------------------------------- | ----------------------------- |
+| Base Model             | ibm-granite/granite-3.1-8b-instruct | Apache 2.0 license            |
+| Epochs                 | 2-3                                 | Depends on dataset size       |
+| Batch Size             | 2                                   | 8B model fits more in VRAM    |
+| Gradient Accumulation  | 4                                   | Effective batch = 8           |
+| Learning Rate          | 2e-4                                | With cosine scheduler         |
+| LoRA Rank              | 64                                  | Higher rank for complex tasks |
+| LoRA Alpha             | 128                                 | Scaling factor (2x rank)      |
+| Quantization           | 4-bit NF4                           | BitsAndBytes config           |
+| Max Seq Length         | 8192                                | Granite supports up to 128k   |
+| Optimizer              | paged_adamw_8bit                    | Memory efficient              |
+| Gradient Checkpointing | true                                | Reduces VRAM usage            |
 
-## External Dataset: IBM Granite
+## External Datasets: Agentic Tool-Use
 
-The pipeline downloads [IBM Granite 3.1 Language Instruction](https://huggingface.co/datasets/ibm-granite/granite-3.1-language-instruction):
+The pipeline downloads function-calling and agentic reasoning datasets (all examples by default):
 
-- **Source**: ~100K high-quality instruction examples
-- **Categories**: Coding, reasoning, math, Q&A, instruction-following
-- **Filtering**: Prioritizes coding/reasoning, removes duplicates
-- **Target**: 20K examples after filtering
-- **Format**: Converted to ChatML format for Qwen
+**Glaive Function-Calling v2** (glaiveai/glaive-function-calling-v2)
+
+- ~113K function-calling examples with tool schemas
+- Diverse tool categories: search, math, file ops, APIs
+
+**AgentInstruct** (THUDM/AgentInstruct)
+
+- ~1.8M multi-turn agentic reasoning examples
+- Planning, execution, error recovery patterns
+- Categories: OS, DB, ALFWorld, WebShop, KG, Mind2Web
+
+**Toucan-1.5M** (Agent-Ark/Toucan-1.5M)
+
+- ~519K real MCP tool-use trajectories (Kimi-K2 subset)
+- Synthesized from 495 real-world Model Context Protocols
+- 2,000+ tools across diverse categories
+- Quality-assessed with LLM-as-judge
+
+**Custom AJ Data** (local)
+
+- Domain-specific training (43+ generators, 5K+ examples)
+- FunnelCloud agent integration examples
+- Shutdown safety & target disambiguation
 
 ## Requirements
 
@@ -257,8 +277,8 @@ Upload `train_pipeline.py`, `scripts/`, `configs/`, and `data/`, then run.
 Training outputs to console with progress bars. Key metrics:
 
 - **Loss**: Should decrease from ~1.5 to ~0.5
-- **Steps**: ~6,000 total (2 epochs × 25K examples / 8 effective batch)
-- **Speed**: ~3-4 it/s on RTX 4090
+- **Speed**: ~5-8 it/s on RTX 4090 with Unsloth (8B model)
+- **TF32**: Enabled automatically for 10-15% speed boost
 
 Checkpoints saved to `checkpoints/` every 500 steps.
 
@@ -270,15 +290,18 @@ Checkpoints saved to `checkpoints/` every 500 steps.
 - Increase `gradient_accumulation_steps`
 - Enable `gradient_checkpointing=True`
 
-### Flash Attention Not Available (Windows)
+### torchao/TF32 Warnings
 
-- Use `attn_implementation="sdpa"` (PyTorch native)
-- SDPA is default in `train_standard.py`
+The pipeline suppresses these automatically. If you see warnings about `torch.int1`, they're harmless.
 
 ### Model Download Slow
 
-- Model (~65GB) is cached after first download
+- Model (~16GB for 8B) is cached after first download
 - Check `~/.cache/huggingface/hub/`
+
+### Unsloth Not Available
+
+Falls back to standard PEFT automatically. Training will be slower but still works.
 
 ## Using Docker
 

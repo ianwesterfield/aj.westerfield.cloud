@@ -2,86 +2,115 @@
 
 ## Overview
 
-Transform from instruction-following to agentic reasoning:
+Train AJ to use the "All You Need is Bash" tool philosophy:
 
 ```
-Current: "How do I X?" → "Here's how to X"
-Target:  "Do X" → [thought → action → observation → thought → ...]
+User: "List files in the project"
+AJ: → bash: ls -la /path/to/project
+
+User: "Restart nginx on webprod01"
+AJ: → remote_bash: (webprod01) sudo systemctl restart nginx
+
+User: "Deploy to all prod servers"
+AJ: → remote_bash_all: (prod-*) ./deploy.sh
 ```
 
-## Data Structure
+## Tool Schema
 
-### Phase 1: Supervised Fine-Tuning (SFT)
+AJ uses 6 core tools:
 
-```
-data/
-├── trajectories/           # Tool-use traces (50K target)
-│   ├── coding_tasks.jsonl
-│   ├── debugging_tasks.jsonl
-│   ├── refactoring_tasks.jsonl
-│   └── devops_tasks.jsonl
-├── reasoning/              # Chain-of-thought (20K target)
-│   ├── problem_solving.jsonl
-│   ├── architecture_decisions.jsonl
-│   └── tradeoff_analysis.jsonl
-├── domain/                 # Knowledge base (10K - your current data, expanded)
-│   └── ... (existing domains)
-└── conversations/          # Multi-turn agentic (5K target)
-    └── coding_sessions.jsonl
-```
+| Tool              | Purpose                   | Example                 |
+| ----------------- | ------------------------- | ----------------------- |
+| `bash`            | Local command execution   | `ls -la`, `docker ps`   |
+| `remote_bash`     | Single agent execution    | Execute on `webprod01`  |
+| `remote_bash_all` | Multi-agent execution     | Execute on all `prod-*` |
+| `list_agents`     | Discover available agents | Show FunnelCloud agents |
+| `think`           | Reasoning step (internal) | Plan before execution   |
+| `complete`        | Task completion signal    | Mark task finished      |
 
-### Phase 2: Direct Preference Optimization (DPO)
+## Data Sources
 
-```
-preferences/
-├── code_quality.jsonl      # Better vs worse implementations
-├── efficiency.jsonl        # Optimal vs suboptimal solutions
-└── safety.jsonl            # Safe vs risky approaches
-```
+### 1. Glaive Function-Calling (~113K examples)
 
-## Training Phases
+Downloaded automatically by `train_pipeline.py`.
 
-### Phase 1: SFT (3-5 days on 8xH100)
+### 2. AgentInstruct (~1.8M examples)
 
-- Full fine-tune Qwen2.5-32B (or 72B)
-- ~85K examples total
-- Learn tool use, reasoning patterns, domain knowledge
+Planning and execution patterns from THUDM's dataset.
 
-### Phase 2: DPO (1-2 days)
+### 3. Toucan-1.5M (~519K examples)
 
-- 10K preference pairs
-- Polish output quality
-- Align with desired behavior
+Real MCP tool-use trajectories from Agent-Ark:
+
+- Synthesized from 495 real-world Model Context Protocols
+- 2,000+ tools across diverse categories
+- Quality-assessed with LLM-as-judge
+
+### 4. Custom AJ Data (5K+ examples)
+
+Domain-specific training from 43+ generators in `../data/`.
+
+### 5. Shutdown Safety Trajectories (20 examples)
+
+Carefully crafted examples for target disambiguation and confirmation.
 
 ## Quick Start
 
+The main training pipeline handles everything:
+
 ```bash
-# 1. Generate trajectory data (uses Claude API)
-python generators/generate_trajectories.py --count 10000 --category coding
+cd /mnt/c/Code/aj.westerfield.cloud/training
+source venv/bin/activate
 
-# 2. Convert existing data to new format
-python converters/upgrade_domain_data.py --input ../data --output data/domain/
-
-# 3. Generate preferences
-python generators/generate_preferences.py --count 5000
-
-# 4. Validate dataset
-python utils/validate_dataset.py --data-dir data/
-
-# 5. Train (see configs/)
-python train_sft.py --config configs/sft_32b.yaml
-python train_dpo.py --config configs/dpo_32b.yaml
+# Full pipeline with agentic datasets
+python scripts/train_pipeline.py -y
 ```
 
-## Cost Estimates
+### Manual Data Generation
 
-| Phase     | Hardware  | Time        | Est. Cost       |
-| --------- | --------- | ----------- | --------------- |
-| Data Gen  | API calls | 2-3 days    | $500-2000       |
-| SFT       | 8xH100    | 3-5 days    | $3000-6000      |
-| DPO       | 8xH100    | 1-2 days    | $1000-2000      |
-| **Total** |           | **~1 week** | **$4500-10000** |
+```bash
+# Generate shutdown safety trajectories (uses Claude API)
+python generators/generate_trajectories.py --count 20 --category shutdown
+
+# Load open datasets (Toucan, Glaive, etc.)
+python generators/generate_trajectories.py --load-dataset glaive --sample 5000
+
+# Validate generated data
+python utils/validate_dataset.py --data-dir data/
+```
+
+## Data Format
+
+Training examples use ChatML format with tool calls:
+
+```json
+{
+  "messages": [
+    { "role": "system", "content": "You are AJ..." },
+    { "role": "user", "content": "List running containers" },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        { "name": "bash", "arguments": { "command": "docker ps" } }
+      ]
+    },
+    { "role": "tool", "content": "CONTAINER ID  IMAGE  ..." },
+    { "role": "assistant", "content": "Here are the running containers..." }
+  ]
+}
+```
+
+## Cost (Local Training)
+
+| Component   | Cost     | Notes                                       |
+| ----------- | -------- | ------------------------------------------- |
+| Datasets    | Free     | Open-source (Glaive, AgentInstruct, Toucan) |
+| Hardware    | ~$0      | RTX 4090 (already owned)                    |
+| Time        | 24-48h   | With full datasets (~2.4M examples)         |
+| Electricity | ~$10     | 450W × 48h                                  |
+| **Total**   | **~$10** | Just electricity                            |
 
 ## Data Format Specs
 
-See `schemas/` for JSON schemas and examples.
+See `schemas/` for JSON schemas and `generators/README.md` for open dataset guides.

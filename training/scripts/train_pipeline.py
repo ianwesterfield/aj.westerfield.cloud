@@ -108,16 +108,18 @@ def check_requirements():
     return True
 
 
-def prepare_agentic_datasets(xlam_target: int = 60000, agent_target: int = 1800000):
-    """Download and prepare agentic training datasets (xLAM, AgentInstruct)."""
+def prepare_agentic_datasets(xlam_target: int = 60000, agent_target: int = 1800000, 
+                             toucan_target: int = 50000, skip_prompts: bool = False):
+    """Download and prepare agentic training datasets (xLAM, AgentInstruct, Toucan)."""
     print("\n" + "=" * 60)
     print("Step 1: Preparing Agentic Training Datasets")
     print("=" * 60)
     
     xlam_file = DATA_DIR / "xlam_function_calling.jsonl"
     agent_file = DATA_DIR / "agent_instruct.jsonl"
+    toucan_file = DATA_DIR / "toucan_trajectories.jsonl"
     
-    # Check if both exist
+    # Check if all exist
     existing = []
     if xlam_file.exists():
         with open(xlam_file, 'r') as f:
@@ -127,25 +129,37 @@ def prepare_agentic_datasets(xlam_target: int = 60000, agent_target: int = 18000
         with open(agent_file, 'r') as f:
             count = sum(1 for _ in f)
         existing.append(f"AgentInstruct: {count}")
+    if toucan_file.exists():
+        with open(toucan_file, 'r') as f:
+            count = sum(1 for _ in f)
+        existing.append(f"Toucan: {count}")
     
-    if existing:
+    if existing and not skip_prompts:
         print(f"\n  Existing datasets: {', '.join(existing)}")
         response = input("  Re-download? [y/N]: ").strip().lower()
         if response != 'y':
             print("  Skipping download.")
             return True
+    elif existing:
+        print(f"\n  Using existing datasets: {', '.join(existing)}")
+        return True
     
     # Run preparation script
     print(f"\n  Downloading agentic datasets...")
     print(f"  xLAM target: {xlam_target} examples")
     print(f"  AgentInstruct target: {agent_target} examples")
+    print(f"  Toucan target: {toucan_target} examples (MCP tool-use)")
     
     cmd = [
         sys.executable,
         str(SCRIPT_DIR / "prepare_agentic_datasets.py"),
         "--xlam-target", str(xlam_target),
         "--agent-target", str(agent_target),
+        "--toucan-target", str(toucan_target),
     ]
+    
+    if skip_prompts:
+        cmd.append("-y")
     
     result = subprocess.run(cmd, cwd=str(PROJECT_DIR))
     
@@ -316,10 +330,10 @@ def export_to_ollama():
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Master training pipeline for AJ Granite 4.0-H-Small"
+        description="Master training pipeline for AJ Granite 3.1-8B"
     )
     parser.add_argument("--skip-agentic", action="store_true",
-                        help="Skip agentic dataset download (xLAM, AgentInstruct)")
+                        help="Skip agentic dataset download (xLAM, AgentInstruct, Toucan)")
     parser.add_argument("--skip-merge", action="store_true",
                         help="Skip dataset merging")
     parser.add_argument("--skip-train", action="store_true",
@@ -328,11 +342,13 @@ def main():
                         help="Skip Ollama export")
     parser.add_argument("--resume", action="store_true",
                         help="Resume from latest checkpoint")
-    parser.add_argument("--xlam-target", type=int, default=60000,
-                        help="Target xLAM examples (max/default: 60000)")
-    parser.add_argument("--agent-target", type=int, default=1800000,
-                        help="Target AgentInstruct examples (max/default: 1800000)")
-    parser.add_argument("--config", type=str, default="qlora_config_4090.yaml",
+    parser.add_argument("--xlam-target", type=int, default=0,
+                        help="Target xLAM examples (0 = all, default: all)")
+    parser.add_argument("--agent-target", type=int, default=0,
+                        help="Target AgentInstruct examples (0 = all, default: all)")
+    parser.add_argument("--toucan-target", type=int, default=0,
+                        help="Target Toucan-1.5M examples (0 = all, default: all)")
+    parser.add_argument("--config", type=str, default="qlora_config.yaml",
                         help="Training config file")
     parser.add_argument("--check-only", action="store_true",
                         help="Only check requirements, don't train")
@@ -357,7 +373,8 @@ def main():
     
     # Step 1: Prepare agentic datasets
     if not args.skip_agentic:
-        if not prepare_agentic_datasets(args.xlam_target, args.agent_target):
+        if not prepare_agentic_datasets(args.xlam_target, args.agent_target, 
+                                        args.toucan_target, skip_prompts=args.yes):
             print("\n⚠ Continuing with local data only...")
     
     # Step 2: Merge datasets
