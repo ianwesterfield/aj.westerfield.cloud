@@ -1,13 +1,13 @@
-# QLoRA Fine-tuning Configuration for IBM Granite 4.0-H-Small (32B MoE)
+# QLoRA Fine-tuning Configuration for IBM Granite 3.1-8B-Instruct
 # Optimized for agent workloads: tool calling, intent classification, planning
-# Model has built-in tool calling via <tool_call> XML format
+# Granite 3.1-8B: 8B params, 128K context, fits easily in 24GB VRAM
 
 model:
-  base_model: "ibm-granite/granite-4.0-h-small"
+  base_model: "ibm-granite/granite-3.1-8b-instruct"
   quantization: "4bit"  # QLoRA uses 4-bit base
   max_seq_length: 8192   # Granite supports 128K, use 8K for training
   dtype: "bfloat16"
-  trust_remote_code: true  # Required for Granite 4.0 architecture
+  trust_remote_code: false  # Not needed for Granite 3.1
 
 lora:
   r: 64                    # LoRA rank - higher for complex tasks

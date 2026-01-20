@@ -196,7 +196,7 @@ def load_model_standard(config: Dict):
 
 def main():
     """Main training pipeline."""
-    parser = argparse.ArgumentParser(description="QLoRA fine-tuning for Qwen 2.5")
+    parser = argparse.ArgumentParser(description="QLoRA fine-tuning for Granite")
     parser.add_argument("--config", type=str, default="configs/qlora_config_4090.yaml",
                         help="Path to config file")
     parser.add_argument("--resume", action="store_true",
@@ -208,7 +208,7 @@ def main():
     args = parser.parse_args()
     
     print("=" * 60)
-    print("Qwen 2.5 AJ 32B - QLoRA Fine-tuning")
+    print("AJ Granite - QLoRA Fine-tuning")
     print("=" * 60)
     
     use_unsloth = UNSLOTH_AVAILABLE and not args.no_unsloth
@@ -233,7 +233,7 @@ def main():
             print("   ⚠ WARNING: Low VRAM. May need to reduce batch size.")
     
     # Load model
-    print("\n2. Loading Qwen 2.5 32B with 4-bit quantization...")
+    print(f"\n2. Loading {config['model']['base_model']} with 4-bit quantization...")
     if use_unsloth:
         model, tokenizer = load_model_unsloth(config)
     else:
@@ -351,7 +351,7 @@ def main():
     print("\nNext steps:")
     print("  1. Run merge_and_export.py to create merged model")
     print("  2. Convert to GGUF with llama.cpp")
-    print("  3. Import to Ollama: ollama create qwen2.5-aj:32b -f Modelfile")
+    print("  3. Import to Ollama: ollama create granite-aj:8b -f Modelfile")
 
 
 if __name__ == "__main__":

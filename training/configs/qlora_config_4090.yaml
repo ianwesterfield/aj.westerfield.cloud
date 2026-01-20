@@ -1,13 +1,13 @@
-# QLoRA Fine-tuning Configuration for IBM Granite 4.0-H-Small (32B MoE)
+# QLoRA Fine-tuning Configuration for IBM Granite 3.1-8B-Instruct
 # Optimized for RTX 4090 (24GB VRAM)
-# Model has 32B params total, 9B active (MoE + Mamba2 hybrid)
+# Granite 3.1-8B: 8B params, 128K context, standard transformer
 
 model:
-  base_model: "ibm-granite/granite-4.0-h-small"
+  base_model: "ibm-granite/granite-3.1-8b-instruct"
   quantization: "4bit"  # QLoRA uses 4-bit base
   max_seq_length: 8192  # Granite supports 128K, use 8K for training
   dtype: "bfloat16"
-  trust_remote_code: true  # Required for Granite 4.0 architecture
+  trust_remote_code: false  # Not needed for Granite 3.1
 
 lora:
   r: 64                    # LoRA rank - higher for complex tasks
@@ -27,8 +27,8 @@ lora:
 training:
   output_dir: "./checkpoints"
   num_train_epochs: 2       # 2 epochs - enough for instruction tuning
-  per_device_train_batch_size: 1
-  gradient_accumulation_steps: 8  # Effective batch size = 8
+  per_device_train_batch_size: 2   # 8B model allows batch size 2
+  gradient_accumulation_steps: 4   # Effective batch size = 8
   learning_rate: 2.0e-4
   weight_decay: 0.01
   warmup_ratio: 0.03
@@ -104,7 +104,7 @@ export:
   output_dir: "./output"
   merge_weights: true
   quantize_to: "Q4_K_M"
-  ollama_model_name: "granite-aj"
+  ollama_model_name: "granite-aj:8b"
   context_variants:
     - name: "4k"
       num_ctx: 4096
@@ -116,6 +116,6 @@ export:
       num_ctx: 131072  # Granite supports full 128K
 
 # Estimated training time on RTX 4090:
-# - ~55K examples (xLAM 20K + AgentInstruct 30K + local 5K)
-# - ~2 epochs
-# - ~8-12 hours total (MoE is efficient - only 9B active params)
+# - ~25K examples (Glaive 20K + AgentInstruct 2K + local 5K)
+# - ~2 epochs, batch size 2
+# - ~1-2 hours total (8B model is fast)
