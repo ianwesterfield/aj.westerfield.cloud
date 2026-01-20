@@ -28,6 +28,9 @@ if not torch.cuda.is_available():
     print("WARNING: No CUDA GPU detected. Training will be extremely slow or fail.")
     print("For CPU-only machines, consider using cloud GPU services.")
 
+# Enable TF32 for better performance on Ampere/Ada GPUs (RTX 30xx/40xx)
+torch.set_float32_matmul_precision('high')
+
 # Try to import Unsloth (preferred for WSL2/Linux)
 UNSLOTH_AVAILABLE = False
 try:

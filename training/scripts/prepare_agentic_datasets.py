@@ -36,13 +36,13 @@ DATASETS = {
     "gorilla": {
         "name": "gorilla-llm/Berkeley-Function-Calling-Leaderboard",
         "output": XLAM_OUTPUT,  # Reuse the xlam output name
-        "target_examples": 20000,
+        "target_examples": 60000,
         "description": "Berkeley function calling benchmark data",
     },
     "agent_instruct": {
         "name": "THUDM/AgentInstruct",
         "output": AGENT_INSTRUCT_OUTPUT,
-        "target_examples": 30000,
+        "target_examples": 1800000,
         "description": "Diverse agent instruction traces from Tsinghua",
         "splits": ["os", "db", "alfworld", "webshop", "kg", "mind2web"],
     },
@@ -63,7 +63,7 @@ class DatasetStats:
     by_category: Dict[str, int] = field(default_factory=dict)
 
 
-def download_xlam_dataset(max_examples: int = 60000, target: int = 20000) -> bool:
+def download_xlam_dataset(max_examples: int = 60000, target: int = 60000) -> bool:
     """
     Download function calling datasets.
     
@@ -186,7 +186,7 @@ def convert_xlam_example(example: Dict) -> Optional[Dict]:
         return None
 
 
-def download_agent_instruct(max_examples: int = 100000, target: int = 30000) -> bool:
+def download_agent_instruct(max_examples: int = 1800000, target: int = 1800000) -> bool:
     """
     Download and prepare THUDM AgentInstruct dataset.
     
@@ -319,9 +319,9 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Download agentic training datasets")
-    parser.add_argument("--xlam-target", type=int, default=20000,
+    parser.add_argument("--xlam-target", type=int, default=60000,
                         help="Target examples from xLAM dataset")
-    parser.add_argument("--agent-target", type=int, default=30000,
+    parser.add_argument("--agent-target", type=int, default=1800000,
                         help="Target examples from AgentInstruct")
     parser.add_argument("--skip-xlam", action="store_true",
                         help="Skip xLAM dataset download")

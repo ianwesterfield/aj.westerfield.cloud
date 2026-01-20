@@ -1,22 +1,14 @@
 #!/usr/bin/env python3
 """
-Master Training Pipeline for AJ Granite 4.0-H-Small (32B MoE)
-
 This script orchestrates the full training workflow:
 1. Download/prepare agentic datasets (xLAM, AgentInstruct)
 2. Merge with existing training data
 3. Run QLoRA fine-tuning
 4. Export to Ollama format
 
-Base model: IBM Granite 4.0-H-Small (32B params, 9B active)
-- Built-in tool calling capabilities
-- 128K context length
-- Apache 2.0 license
-
 Optimized for RTX 4090 (24GB VRAM).
 """
 
-import os
 import sys
 import json
 import subprocess
@@ -81,12 +73,12 @@ def check_requirements():
                 missing.append(pkg)
     
     # Check for unsloth (optional - has Windows compatibility issues)
-    unsloth_available = False
+    
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             from unsloth import FastLanguageModel
-        unsloth_available = True
+            
         print(f"  ✓ Unsloth (2x faster training)")
     except Exception as e:
         print(f"  ⚠ Unsloth not available (optional): {str(e)[:50]}...")
@@ -116,7 +108,7 @@ def check_requirements():
     return True
 
 
-def prepare_agentic_datasets(xlam_target: int = 20000, agent_target: int = 30000):
+def prepare_agentic_datasets(xlam_target: int = 60000, agent_target: int = 1800000):
     """Download and prepare agentic training datasets (xLAM, AgentInstruct)."""
     print("\n" + "=" * 60)
     print("Step 1: Preparing Agentic Training Datasets")
@@ -336,14 +328,16 @@ def main():
                         help="Skip Ollama export")
     parser.add_argument("--resume", action="store_true",
                         help="Resume from latest checkpoint")
-    parser.add_argument("--xlam-target", type=int, default=20000,
-                        help="Target xLAM examples (default: 20000)")
-    parser.add_argument("--agent-target", type=int, default=30000,
-                        help="Target AgentInstruct examples (default: 30000)")
+    parser.add_argument("--xlam-target", type=int, default=60000,
+                        help="Target xLAM examples (max/default: 60000)")
+    parser.add_argument("--agent-target", type=int, default=1800000,
+                        help="Target AgentInstruct examples (max/default: 1800000)")
     parser.add_argument("--config", type=str, default="qlora_config_4090.yaml",
                         help="Training config file")
     parser.add_argument("--check-only", action="store_true",
                         help="Only check requirements, don't train")
+    parser.add_argument("-y", "--yes", action="store_true",
+                        help="Auto-confirm training start (non-interactive)")
     
     args = parser.parse_args()
     
@@ -373,11 +367,12 @@ def main():
     
     # Confirm before training
     if not args.skip_train:
-        print("\n" + "=" * 60)
-        response = input("Start training? [Y/n]: ").strip().lower()
-        if response == 'n':
-            print("Training cancelled.")
-            sys.exit(0)
+        if not args.yes:
+            print("\n" + "=" * 60)
+            response = input("Start training? [Y/n]: ").strip().lower()
+            if response == 'n':
+                print("Training cancelled.")
+                sys.exit(0)
         
         # Step 3: Train
         if not run_training(args.config, args.resume):

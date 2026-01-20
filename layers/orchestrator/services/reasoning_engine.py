@@ -127,47 +127,40 @@ class ThinkingStreamParser:
         return full_response.strip()
 
 
-SYSTEM_PROMPT = """You are AJ, an agentic AI assistant with thought and progress user update streaming capabilities.
+SYSTEM_PROMPT = """You are AJ, an agentic AI assistant. All You Need is Bash.
 
 FORMAT: {"tool": "name", "params": {...}, "note": "status", "reasoning": "why"}
 
 TOOLS:
-- list_agents: Discover available FunnelCloud agents (call FIRST before remote ops)
-- remote_execute: Run command on ONE specific agent {"agent_id": "name", "command": "..."}
-- remote_execute_all: Run SAME command on ALL agents at once {"command": "..."} - USE THIS when user says "each agent", "all machines", "every agent"
+- bash: Execute command locally {"command": "..."}
+- remote_bash: Execute on ONE agent {"agent_id": "name", "command": "..."}
+- remote_bash_all: Execute SAME command on ALL agents {"command": "..."}
+- list_agents: Discover available agents (call FIRST before remote ops)
+- think: Pause to reason {"thought": "..."} - for complex multi-step planning
 - complete: {"answer": "response"} when done, {"error": "msg"} on failure
-- none: {"reason": "why"} to skip
 
-⚠️ CRITICAL TOOL CHOICE FOR MULTI-AGENT OPERATIONS:
-- "ask each agent", "run on all machines", "every agent" → remote_execute_all (single call, parallel execution)
-- "reboot domain02 AND add file to workstation" → multiple remote_execute calls (DIFFERENT commands per target)
+PHILOSOPHY: The LLM generates bash/shell commands. No specialized tools needed.
+- File operations: cat, head, tail, echo, tee, sed, awk, find, ls, mkdir, rm
+- Code execution: python3 -c "...", node -e "...", pwsh -c "..."
+- System info: uname, df, ps, hostname, whoami
+- Windows agents: Use PowerShell (Get-Content, Set-Content, New-Item, etc.)
 
-WHEN TO USE remote_execute_all:
-- User says "each", "all", "every" + agents/machines → remote_execute_all
-- Same command needs to run on multiple agents → remote_execute_all
-- Example: "ask each agent to report disk space" → ONE call to remote_execute_all
-
-WHEN TO USE remote_execute (single agent):
-- Different commands for different targets
-- User specifies ONE explicit agent name
-- Example: "reboot domain02" → ONE remote_execute to domain02
+MULTI-AGENT OPERATIONS:
+- "each agent", "all machines", "every agent" → remote_bash_all (parallel)
+- Different commands per target → multiple remote_bash calls
+- Call list_agents FIRST before any remote operations
 
 TARGET IDENTIFICATION:
-- Explicit names: "domain02", "prod-api-01" -> use exact agent name
-- "my workstation", "my PC", "my machine" -> CHECK USER MEMORY for known workstation, or match agent ID containing "workstation", "desktop", or user's name like "ians-r16"
-- "the server" (ambiguous) -> list matching agents and ask for clarification
-- Match targets against discovered agents - if explicit target not found, report error
-- ALWAYS check memory context for user preferences, known machines, and prior context
+- "my workstation", "my PC" → CHECK USER MEMORY for known machines
+- Agent IDs encode purpose: "domain02" = domain controller, "ians-r16" = Ian's workstation
+- If ambiguous → list agents and ask for clarification
 
-AGENT CONTEXT HINTS:
-- Agent IDs often encode purpose: "domain02" = domain controller, "prod-api-01" = production API, "ians-r16" = Ian's workstation
-- Use these hints to match user intent to correct agent
-
-RULES:
-- Call list_agents FIRST before any remote operations
-- No fabrication - agents must be discovered first
-- Check session state for QUERIED vs REMAINING - don't complete until ALL targets handled
-- For file operations: use PowerShell (Set-Content, Add-Content, New-Item) on Windows agents
+EXAMPLES:
+- Read file: {"tool": "bash", "params": {"command": "cat /path/to/file"}}
+- Write file: {"tool": "bash", "params": {"command": "echo 'content' > /path/to/file"}}
+- Run Python: {"tool": "bash", "params": {"command": "python3 -c 'print(1+1)'"}}
+- List dir: {"tool": "bash", "params": {"command": "ls -la /path"}}
+- Remote disk space: {"tool": "remote_bash_all", "params": {"command": "df -h"}}
 """
 
 class ReasoningEngine:
@@ -722,19 +715,20 @@ Now create a plan for:
         url = f"{self.base_url}/api/chat"
         
         # JSON Schema for structured output - forces exact format
-        # MUST match SYSTEM_PROMPT tools exactly
+        # MUST match SYSTEM_PROMPT tools exactly ("All You Need is Bash")
         tool_call_schema = {
             "type": "object",
             "properties": {
                 "tool": {
                     "type": "string",
-                    "description": "Tool to call - remote agent tools for FunnelCloud operations",
+                    "description": "Tool to call",
                     "enum": [
-                        "list_agents",       # Discover available FunnelCloud agents (call FIRST)
-                        "remote_execute",    # Run command on ONE specific agent
-                        "remote_execute_all",# Run command on ALL discovered agents
+                        "bash",              # Run command locally
+                        "remote_bash",       # Run command on ONE specific agent
+                        "remote_bash_all",   # Run command on ALL discovered agents
+                        "list_agents",       # Discover available FunnelCloud agents
+                        "think",             # Reason about the problem
                         "complete",          # Task done or error
-                        "none",              # Skip step
                     ]
                 },
                 "params": {
@@ -791,19 +785,20 @@ Now create a plan for:
         url = f"{self.base_url}/api/chat"
         
         # JSON Schema for structured output - forces exact format
-        # MUST match SYSTEM_PROMPT tools exactly
+        # MUST match SYSTEM_PROMPT tools exactly ("All You Need is Bash")
         tool_call_schema = {
             "type": "object",
             "properties": {
                 "tool": {
                     "type": "string",
-                    "description": "Tool to call - remote agent tools for FunnelCloud operations",
+                    "description": "Tool to call",
                     "enum": [
-                        "list_agents",       # Discover available FunnelCloud agents (call FIRST)
-                        "remote_execute",    # Run command on ONE specific agent
-                        "remote_execute_all",# Run command on ALL discovered agents
+                        "bash",              # Run command locally
+                        "remote_bash",       # Run command on ONE specific agent
+                        "remote_bash_all",   # Run command on ALL discovered agents
+                        "list_agents",       # Discover available FunnelCloud agents
+                        "think",             # Reason about the problem
                         "complete",          # Task done or error
-                        "none",              # Skip step
                     ]
                 },
                 "params": {
@@ -991,9 +986,9 @@ Now create a plan for:
                 reasoning="Skipped redundant list_agents - agents already verified",
             )
         
-        # ⛔ CRITICAL GUARDRAIL: remote_execute requires verified agents
-        # If model tries remote_execute without agents, redirect to workspace tools if appropriate
-        if step.tool == "remote_execute":
+        # ⛔ CRITICAL GUARDRAIL: remote_bash requires verified agents
+        # If model tries remote_bash without agents, redirect to bash if appropriate
+        if step.tool in ("remote_bash", "remote_execute"):  # Support both old and new names
             agent_id = step.params.get("agent_id", "") or step.params.get("agent", "")
             # Model uses various param names: 'command', 'cmd', 'commands' (plural), 'code', etc.
             command = step.params.get("command", "") or step.params.get("cmd", "") or step.params.get("commands", "")
@@ -1007,70 +1002,61 @@ Now create a plan for:
             # /workspace/ paths and . (current dir) are workspace operations
             is_workspace_path = "/workspace" in command or command.startswith("find .") or command.startswith("ls .")
             
-            # Common workspace commands that should NOT use remote_execute
+            # Common workspace commands that should NOT use remote_bash
             workspace_commands = ["touch ", "echo ", "cat ", "mkdir ", "rm ", "cp ", "mv ", "find ", "ls "]
             is_workspace_cmd = any(command.startswith(cmd) for cmd in workspace_commands)
             
-            # If targeting workspace paths, ALWAYS redirect to workspace tools (even with agent)
+            # If targeting workspace paths, ALWAYS redirect to bash (local execution)
             if is_workspace_path:
-                logger.warning(f"GUARDRAIL: Redirecting remote_execute targeting /workspace/ - command: {command[:50]}")
-                redirected = self._redirect_workspace_command(command, code)
-                if redirected:
-                    return redirected
-                # If couldn't redirect but it's a workspace path, use scan_workspace as fallback
+                logger.warning(f"GUARDRAIL: Redirecting remote_bash targeting /workspace/ to local bash - command: {command[:50]}")
                 return Step(
-                    step_id="guardrail_redirect_workspace",
-                    tool="scan_workspace",
-                    params={"path": "."},
-                    reasoning="Redirected workspace path command to scan_workspace",
+                    step_id="guardrail_redirect_to_local",
+                    tool="bash",
+                    params={"command": command},
+                    reasoning="Redirected workspace path command to local bash",
                 )
             
             if not session_state.discovered_agents:
-                # If 'code' param contains a Python script, redirect to write_file
+                # If 'code' param contains a Python script, redirect to local bash
                 if code and ("import " in code or "def " in code or "class " in code):
-                    logger.warning(f"GUARDRAIL: Redirecting remote_execute with code to write_file")
-                    # Determine filename from code content
+                    logger.warning(f"GUARDRAIL: Redirecting remote_bash with code to local bash")
+                    # Write file then execute
                     filename = "app.py"  # Default
                     if "flask" in code.lower():
                         filename = "app.py"
                     elif "django" in code.lower():
                         filename = "manage.py"
                     return Step(
-                        step_id="guardrail_redirect_code_to_file",
-                        tool="write_file",
-                        params={"path": filename, "content": code},
-                        reasoning="Redirected remote_execute code to write_file (workspace operation)",
+                        step_id="guardrail_redirect_code_to_bash",
+                        tool="bash",
+                        params={"command": f"cat > {filename} << 'EOF'\n{code}\nEOF"},
+                        reasoning="Redirected remote_bash code to local bash (workspace operation)",
                     )
                 
                 if is_workspace_cmd or not agent_id:
-                    logger.warning(f"GUARDRAIL: Redirecting remote_execute to workspace tool - command: {command[:50]}")
-                    redirected = self._redirect_workspace_command(command, code)
-                    if redirected:
-                        return redirected
-                    # If we couldn't redirect, block it
-                    logger.error(f"GUARDRAIL BLOCK: remote_execute without agent discovery, cmd: {command[:50]}")
+                    logger.warning(f"GUARDRAIL: Redirecting remote_bash to local bash - command: {command[:50]}")
                     return Step(
-                        step_id="guardrail_require_list_agents",
-                        tool="complete",
-                        params={"error": "Cannot execute remote commands - no FunnelCloud agents discovered. For workspace files, use write_file/read_file instead. For remote machine access, call list_agents first."},
-                        reasoning="Blocked remote_execute - agent verification required",
+                        step_id="guardrail_redirect_to_local",
+                        tool="bash",
+                        params={"command": command},
+                        reasoning="Redirected workspace command to local bash",
                     )
                 else:
-                    logger.error(f"GUARDRAIL BLOCK: remote_execute without agent discovery")
+                    logger.error(f"GUARDRAIL BLOCK: remote_bash without agent discovery")
                     return Step(
                         step_id="guardrail_require_list_agents",
                         tool="complete",
-                        params={"error": "Cannot execute remote commands - no FunnelCloud agents discovered. Call list_agents first to verify target machines are available."},
-                        reasoning="Blocked remote_execute - agent verification required",
+                        params={"error": "Cannot execute remote commands - no FunnelCloud agents discovered. Use 'bash' for local execution, or call list_agents first for remote access."},
+                        reasoning="Blocked remote_bash - agent verification required",
                     )
             if agent_id and agent_id not in session_state.discovered_agents:
-                logger.error(f"GUARDRAIL BLOCK: remote_execute on unknown agent '{agent_id}'")
+                logger.error(f"GUARDRAIL BLOCK: remote_bash on unknown agent '{agent_id}'")
                 available = ", ".join(session_state.discovered_agents)
                 return Step(
                     step_id="guardrail_unknown_agent",
                     tool="complete",
                     params={"error": f"Cannot execute on '{agent_id}' - not running. Available: {available}"},
-                    reasoning=f"Blocked remote_execute - target agent '{agent_id}' unavailable",
+                    reasoning=f"Blocked remote_bash - target agent '{agent_id}' unavailable",
                 )
             
             # ⛔ GUARDRAIL: Validate PowerShell syntax before executing

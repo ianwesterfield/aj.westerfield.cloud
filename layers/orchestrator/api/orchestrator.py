@@ -41,7 +41,7 @@ from services.task_planner import TaskPlanner
 from services.parallel_executor import ParallelExecutor
 from services.memory_connector import MemoryConnector
 from services.session_state import SessionState, get_session_state, reset_session_state
-from services.tool_dispatcher import dispatch_tool
+from services.bash_dispatcher import dispatch_tool  # "All You Need is Bash" - simplified tool dispatch
 from services.agent_discovery import get_discovery_service, AgentCapabilities
 from utils.workspace_context import WorkspaceContextManager
 
