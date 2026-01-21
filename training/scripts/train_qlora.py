@@ -69,21 +69,79 @@ def load_config(config_path: Path) -> Dict[str, Any]:
 
 
 def load_training_data(merged_file: Optional[Path] = None) -> Dataset:
-    """Load training data from merged file or all JSONL files."""
-    all_examples = []
+    """Load training data from merged file or all JSONL files.
+    
+    Uses memory-efficient streaming to avoid OOM on large datasets.
+    Handles heterogeneous schemas by only keeping required columns.
+    """
+    from datasets import load_dataset
+    
+    # Required columns for training - all others are optional metadata
+    REQUIRED_COLUMNS = {"instruction", "response"}
+    OPTIONAL_COLUMNS = {"system", "category", "source"}  # Keep these if present
+    
+    def normalize_example(example):
+        """Extract only the columns we need, handling schema variations."""
+        return {
+            "system": example.get("system", "You are a helpful assistant."),
+            "instruction": example.get("instruction", ""),
+            "response": example.get("response", ""),
+        }
     
     # Prefer merged file if it exists
     if merged_file and merged_file.exists():
         print(f"  Loading merged dataset: {merged_file.name}")
-        with open(merged_file, 'r', encoding='utf-8') as f:
-            for line in f:
-                if line.strip():
-                    all_examples.append(json.loads(line))
-        print(f"  Loaded {len(all_examples):,} examples")
-        return Dataset.from_list(all_examples)
+        print(f"  (Using memory-efficient chunked loader for heterogeneous schemas)")
+        
+        # For files with inconsistent schemas, we need to load line-by-line
+        # but in a memory-efficient way using generators
+        def generate_examples():
+            with open(merged_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if line.strip():
+                        try:
+                            example = json.loads(line)
+                            # Only keep if it has the required fields
+                            if example.get("instruction") and example.get("response"):
+                                yield normalize_example(example)
+                        except json.JSONDecodeError:
+                            continue
+        
+        # Load in chunks to avoid memory issues
+        print(f"  Counting examples...")
+        chunk_size = 100_000
+        all_chunks = []
+        current_chunk = []
+        total_count = 0
+        
+        for example in generate_examples():
+            current_chunk.append(example)
+            total_count += 1
+            
+            if len(current_chunk) >= chunk_size:
+                all_chunks.append(Dataset.from_list(current_chunk))
+                print(f"    Loaded {total_count:,} examples...", end='\r')
+                current_chunk = []
+        
+        # Don't forget the last chunk
+        if current_chunk:
+            all_chunks.append(Dataset.from_list(current_chunk))
+        
+        print(f"  Loaded {total_count:,} examples total    ")
+        
+        # Concatenate all chunks
+        if len(all_chunks) == 1:
+            return all_chunks[0]
+        else:
+            from datasets import concatenate_datasets
+            return concatenate_datasets(all_chunks)
     
     # Fall back to loading all JSONL files
     jsonl_files = sorted(DATA_DIR.glob("*.jsonl"))
+    
+    # Exclude combined/merged files to avoid duplicates
+    exclude_patterns = ["all_training_data.jsonl", "all_training_data_merged.jsonl", "merged_training.jsonl"]
+    jsonl_files = [f for f in jsonl_files if f.name not in exclude_patterns]
     
     if not jsonl_files:
         raise FileNotFoundError(
@@ -91,13 +149,20 @@ def load_training_data(merged_file: Optional[Path] = None) -> Dataset:
             "Run the pipeline to generate data first."
         )
     
+    print(f"  Loading {len(jsonl_files)} JSONL files...")
+    
+    # Load each file and normalize schemas
+    all_examples = []
     for filepath in jsonl_files:
-        if filepath.name == "all_training_data.jsonl":
-            continue  # Skip combined file when loading individual
         with open(filepath, 'r', encoding='utf-8') as f:
             for line in f:
                 if line.strip():
-                    all_examples.append(json.loads(line))
+                    try:
+                        example = json.loads(line)
+                        if example.get("instruction") and example.get("response"):
+                            all_examples.append(normalize_example(example))
+                    except json.JSONDecodeError:
+                        continue
     
     print(f"  Total examples: {len(all_examples):,}")
     return Dataset.from_list(all_examples)
@@ -244,7 +309,17 @@ def main():
     
     # Load training data
     print("\n3. Loading training data...")
-    merged_file = Path(args.data) if args.data else DATA_DIR / "merged_training.jsonl"
+    # Try multiple possible merged file names in order of preference
+    if args.data:
+        merged_file = Path(args.data)
+    else:
+        possible_files = [
+            DATA_DIR / "all_training_data_merged.jsonl",  # Pipeline output
+            DATA_DIR / "merged_training.jsonl",           # Legacy name
+            DATA_DIR / "all_training_data.jsonl",         # Alternative
+        ]
+        merged_file = next((f for f in possible_files if f.exists()), None)
+    
     dataset = load_training_data(merged_file)
     
     # Format dataset
@@ -269,6 +344,13 @@ def main():
     print("\n5. Configuring training...")
     output_dir = str(PROJECT_DIR / config["training"]["output_dir"])
     
+    # Reduce dataloader workers for very large datasets to save memory
+    # Each worker loads data into separate memory space
+    num_workers = config["training"].get("dataloader_num_workers", 4)
+    if len(train_dataset) > 500_000:
+        num_workers = min(num_workers, 2)
+        print(f"   Large dataset detected - using {num_workers} dataloader workers to save memory")
+    
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=config["training"]["num_train_epochs"],
@@ -291,8 +373,9 @@ def main():
         report_to=config["training"].get("report_to", "tensorboard"),
         eval_strategy="steps",
         load_best_model_at_end=True,
-        dataloader_num_workers=config["training"].get("dataloader_num_workers", 4),
+        dataloader_num_workers=num_workers,
         dataloader_pin_memory=config["training"].get("dataloader_pin_memory", True),
+        dataloader_prefetch_factor=2 if num_workers > 0 else None,  # Limit memory buffering
     )
     
     # Find checkpoint if resuming
