@@ -322,23 +322,66 @@ def main():
     
     dataset = load_training_data(merged_file)
     
-    # Format dataset
-    print("\n4. Formatting dataset for Granite chat format...")
-    dataset = dataset.map(
-        lambda x: format_for_granite(x, tokenizer),
-        remove_columns=dataset.column_names,
-        desc="Formatting"
-    )
-    
-    # Split train/eval
+    # Split train/eval FIRST (before formatting) to reduce memory pressure
+    print("\n4. Splitting train/eval sets...")
     eval_split = config.get("data", {}).get("eval_split", 0.05)
     seed = config.get("data", {}).get("seed", 42)
     split = dataset.train_test_split(test_size=eval_split, seed=seed)
-    train_dataset = split["train"]
-    eval_dataset = split["test"]
     
-    print(f"   Train examples: {len(train_dataset):,}")
-    print(f"   Eval examples: {len(eval_dataset):,}")
+    # Clear the full dataset from memory
+    del dataset
+    import gc
+    gc.collect()
+    
+    print(f"   Train examples: {len(split['train']):,}")
+    print(f"   Eval examples: {len(split['test']):,}")
+    
+    # Format datasets with memory-efficient settings
+    print("\n5. Formatting datasets for Granite chat format...")
+    print("   (Using batched processing to reduce memory)")
+    
+    map_kwargs = {
+        "remove_columns": split["train"].column_names,
+        "desc": "Formatting train",
+        "batched": True,
+        "batch_size": 1000,
+        "num_proc": 1,  # Single process to avoid memory duplication
+        "writer_batch_size": 1000,  # Flush to disk frequently
+        "load_from_cache_file": True,  # Use cache if available
+    }
+    
+    def format_batch(examples, tokenizer):
+        """Format a batch of examples for Granite chat format."""
+        texts = []
+        for i in range(len(examples["instruction"])):
+            messages = [
+                {"role": "system", "content": examples.get("system", ["You are a helpful assistant."] * len(examples["instruction"]))[i] or "You are a helpful assistant."},
+                {"role": "user", "content": examples["instruction"][i]},
+                {"role": "assistant", "content": examples["response"][i]},
+            ]
+            text = tokenizer.apply_chat_template(
+                messages, 
+                tokenize=False, 
+                add_generation_prompt=False
+            )
+            texts.append(text)
+        return {"text": texts}
+    
+    train_dataset = split["train"].map(
+        lambda x: format_batch(x, tokenizer),
+        **map_kwargs
+    )
+    
+    map_kwargs["desc"] = "Formatting eval"
+    map_kwargs["remove_columns"] = split["test"].column_names
+    eval_dataset = split["test"].map(
+        lambda x: format_batch(x, tokenizer),
+        **map_kwargs
+    )
+    
+    # Clear split from memory
+    del split
+    gc.collect()
     
     # Training arguments
     print("\n5. Configuring training...")
