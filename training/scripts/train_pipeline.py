@@ -122,15 +122,15 @@ def prepare_agentic_datasets(xlam_target: int = 60000, agent_target: int = 18000
     # Check if all exist
     existing = []
     if xlam_file.exists():
-        with open(xlam_file, 'r') as f:
+        with open(xlam_file, 'r', encoding='utf-8', errors='ignore') as f:
             count = sum(1 for _ in f)
         existing.append(f"xLAM: {count}")
     if agent_file.exists():
-        with open(agent_file, 'r') as f:
+        with open(agent_file, 'r', encoding='utf-8', errors='ignore') as f:
             count = sum(1 for _ in f)
         existing.append(f"AgentInstruct: {count}")
     if toucan_file.exists():
-        with open(toucan_file, 'r') as f:
+        with open(toucan_file, 'r', encoding='utf-8', errors='ignore') as f:
             count = sum(1 for _ in f)
         existing.append(f"Toucan: {count}")
     
@@ -172,20 +172,39 @@ def prepare_agentic_datasets(xlam_target: int = 60000, agent_target: int = 18000
     return True
 
 
-def merge_datasets():
+def merge_datasets(force: bool = False):
     """Merge all training datasets and deduplicate."""
     print("\n" + "=" * 60)
     print("Step 2: Merging Training Datasets")
     print("=" * 60)
     
+    output_file = DATA_DIR / "all_training_data_merged.jsonl"
+    
+    # Check if merged file already exists and is recent
+    if output_file.exists() and not force:
+        file_size_mb = output_file.stat().st_size / 1024 / 1024
+        # Quick count of lines without loading into memory
+        with open(output_file, 'r', encoding='utf-8') as f:
+            line_count = sum(1 for _ in f)
+        
+        print(f"  Merged file already exists:")
+        print(f"    File: {output_file.name}")
+        print(f"    Size: {file_size_mb:.1f} MB")
+        print(f"    Examples: {line_count:,}")
+        print(f"  ✓ Skipping merge (use --force-merge to rebuild)")
+        return line_count
+    
     all_examples = []
     seen_hashes = set()
     files_loaded = 0
     
+    # Files to exclude from merging (the output file itself and old combined files)
+    exclude_files = {"all_training_data.jsonl", "all_training_data_merged.jsonl", "merged_training.jsonl"}
+    
     # Load all JSONL files
     for filepath in sorted(DATA_DIR.glob("*.jsonl")):
-        if filepath.name == "all_training_data.jsonl":
-            continue  # Skip the combined file
+        if filepath.name in exclude_files:
+            continue  # Skip combined/merged files
         
         count_before = len(all_examples)
         with open(filepath, 'r', encoding='utf-8') as f:
@@ -336,6 +355,8 @@ def main():
                         help="Skip agentic dataset download (xLAM, AgentInstruct, Toucan)")
     parser.add_argument("--skip-merge", action="store_true",
                         help="Skip dataset merging")
+    parser.add_argument("--force-merge", action="store_true",
+                        help="Force re-merge even if merged file exists")
     parser.add_argument("--skip-train", action="store_true",
                         help="Skip training (useful for just exporting)")
     parser.add_argument("--skip-export", action="store_true",
@@ -379,7 +400,7 @@ def main():
     
     # Step 2: Merge datasets
     if not args.skip_merge:
-        num_examples = merge_datasets()
+        num_examples = merge_datasets(force=args.force_merge)
         estimate_training_time(num_examples)
     
     # Confirm before training
