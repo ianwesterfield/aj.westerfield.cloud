@@ -147,6 +147,26 @@ AJ_SYSTEM_PROMPT = """# AJ
 
 AJ is an agentic-capable AI-assisted filter for Open-WebUI. It sits between the LLM and your workspace to route intent, manage semantic memory, run workspace operations, and provide a streaming UX.
 
+## CRITICAL: Response Format
+
+**NEVER output raw JSON payloads.** Respond in clean Markdown suitable for Open-WebUI chat.
+
+### Formatting Rules:
+- **Code blocks**: Use fenced blocks (```) for command output, code, or structured data
+- **Inline code**: Use backticks for `file paths`, `IP addresses`, `commands`, `variables`, `hostnames`
+- **Normal text**: Plain markdown prose - no JSON wrappers, no action objects
+- **Lists**: Use `-` or `1.` for lists, not JSON arrays
+
+### WRONG (never do this):
+```json
+{"action": "provide_markdown", "markdown": "Here is the list..."}
+```
+
+### CORRECT (always do this):
+Here is the list:
+- Item 1
+- Item 2
+
 ## What AJ Does
 
 1. **Classifies Intent** — Determine whether the user is chatting, saving info, recalling, or requesting a task.
@@ -154,14 +174,9 @@ AJ is an agentic-capable AI-assisted filter for Open-WebUI. It sits between the 
 3. **Runs Workspace Ops** — Read/list/edit files and run shell commands via the Executor.
 4. **Streaming UX** — Show "thinking + progress" while tasks run, then display results verbatim.
 
-## Key Principle (No Shortcuts)
-
-- AJ must not hardcode "patterns" (e.g., "largest files" => `du`) inside the filter. The Orchestrator decides tools, parameters, and ordering.
-- If intent == `task`, ALWAYS delegate planning and step selection to the Orchestrator.
-
 ## Intent Routing
 
-- `casual`: respond normally, no tools.
+- `casual`: respond normally in plain markdown, no tools.
 - `save`: store memory payload, then confirm saved (short).
 - `recall`: search memory, inject relevant results, answer using retrieved context.
 - `task`: orchestrate multi-step work (plan → execute → verify → complete).
@@ -170,46 +185,32 @@ AJ is an agentic-capable AI-assisted filter for Open-WebUI. It sits between the 
 
 When ANY tool/command produces output (stdout, stderr, file reads, scans, diffs):
 
-1. **Show the raw output FIRST** in a fenced code block.
-2. Output must be **EXACTLY as received**:
-   - do NOT summarize
-   - do NOT paraphrase
-   - do NOT reformat into bullet points
-   - do NOT reorder
-   - do NOT trim "unimportant" lines
-3. **No interpretation before output.** Status lines are allowed; prose is not.
-4. After output, you MAY add brief commentary (max 3 lines) limited to:
-   - the next step AJ will run (or what it needs from the user)
-   - error handling / recovery choices
-   - completion confirmation
-5. If multiple outputs occur, show them **in chronological order** as separate code blocks.
-6. If stdout and stderr both exist, show stdout first, then stderr (separate blocks).
+1. **Show the raw output FIRST** in a fenced code block with appropriate language tag.
+2. Output must be **EXACTLY as received** — do NOT summarize, paraphrase, or reformat.
+3. After output, you MAY add brief commentary (max 3 lines).
+4. If multiple outputs occur, show them **in chronological order** as separate code blocks.
 
-### CORRECT (always do this):
-```
+### CORRECT:
+```bash
 total 15
 drwxr-xr-x  4096  Dec 28 19:05  filters/
 -rw-r--r-- 38618  Dec 29 03:04  README.md
 ```
 
-### WRONG (never do this):
-- filters/: A directory containing…
-- README.md: The main documentation…
+### WRONG:
+- `filters/`: A directory containing…
+- `README.md`: The main documentation…
 
-The user wants to SEE the actual terminal output, not your interpretation of it.
-
-## File Editing Guardrails (Surgical)
+## File Editing Guardrails
 
 - Prefer `replace_in_file` / `insert_in_file` / `append_to_file` over `write_file`.
 - Do not overwrite entire files unless explicitly required.
 - Preserve existing style and formatting; make minimal edits.
-- If an overwrite is necessary, state that clearly BEFORE doing it.
 
 ## Role Boundary
 
 - The Orchestrator plans. The Executor executes. AJ presents results and manages memory.
 - Users should see the real outputs; AJ must not "translate" outputs into prose.
-- If the user requests interpretation, do it only AFTER verbatim output, and do not restate the output in a different format.
 """
 
 # File type to MIME type mapping
@@ -1483,12 +1484,14 @@ class Filter:
     
     def _extract_json_response(self, text: str) -> str:
         """
-        Extract the 'response' field from JSON structured output.
+        Extract the response content from JSON structured output.
         
         If the LLM outputs structured JSON like:
         {"action": "casual", "response": "Hi there!", "guardrail_context": "..."}
+        {"action": "provide_markdown", "markdown": "..."}
+        {"action": "list_episodes", "output": "..."}
         
-        This extracts just the "response" field value.
+        This extracts just the content field value.
         """
         import re
         
@@ -1500,29 +1503,27 @@ class Filter:
             # Try to parse as JSON
             data = json.loads(text.strip())
             
-            # Check if it has a response field
-            if isinstance(data, dict) and "response" in data:
-                response = data["response"]
-                
-                # Optionally show guardrail context as a status-like prefix
-                # (commented out for now - just return the response)
-                # guardrail = data.get("guardrail_context", "")
-                
-                return response
+            # Check for various content fields (in order of preference)
+            if isinstance(data, dict):
+                # Common content field names the model might use
+                for field in ["response", "markdown", "output", "content", "text", "answer"]:
+                    if field in data and data[field]:
+                        return str(data[field])
             
             # Not our structured format, return as-is
             return text
             
         except json.JSONDecodeError:
             # Not valid JSON, might be partial or mixed content
-            # Try to extract response field with regex as fallback
-            match = re.search(r'"response"\s*:\s*"((?:[^"\\]|\\.)*)"\s*[,}]', text)
-            if match:
-                # Unescape the JSON string
-                try:
-                    return json.loads('"' + match.group(1) + '"')
-                except:
-                    return match.group(1)
+            # Try to extract content fields with regex as fallback
+            for field in ["response", "markdown", "output", "content"]:
+                match = re.search(rf'"{field}"\s*:\s*"((?:[^"\\]|\\.)*)"\s*[,}}]', text)
+                if match:
+                    # Unescape the JSON string
+                    try:
+                        return json.loads('"' + match.group(1) + '"')
+                    except:
+                        return match.group(1)
             
             return text
     
@@ -1532,6 +1533,7 @@ class Filter:
         
         - Remove leaked tool call syntax (LLM hallucinations)
         - Remove raw JSON tool calls that leaked through
+        - Remove partial/orphaned JSON fragments
         - Wrap file/folder names in backticks
         - Wrap code references in backticks
         - Ensure code blocks are fenced
@@ -1541,6 +1543,28 @@ class Filter:
         # Skip if empty
         if not text:
             return text
+        
+        # SANITIZATION: Detect and clean partial JSON responses
+        # If response starts with JSON array/object fragment (comma, bracket, brace)
+        # it's likely a partial/truncated response from regeneration
+        stripped = text.strip()
+        if stripped and stripped[0] in ',]}':
+            # Try to extract any readable content from the mess
+            # Look for "output" or "markdown" field values
+            for field in ["output", "markdown", "response", "content"]:
+                match = re.search(rf'"{field}"\s*:\s*"((?:[^"\\]|\\.)*)"\s*[,}}]', text)
+                if match:
+                    try:
+                        text = json.loads('"' + match.group(1) + '"')
+                        break
+                    except:
+                        text = match.group(1)
+                        break
+            else:
+                # No extractable content - remove JSON fragments entirely
+                text = re.sub(r'[\[\]{},]', '', text)
+                text = re.sub(r'"[^"]*"\s*:', '', text)  # Remove JSON keys
+                text = re.sub(r'\s+', ' ', text).strip()
         
         # SANITIZATION: Remove raw JSON tool calls that leaked through
         # Pattern matches {"tool": "...", ...} or {"action": "...", ...} JSON objects
