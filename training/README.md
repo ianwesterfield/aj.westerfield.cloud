@@ -2,27 +2,81 @@
 
 Fine-tuned LLMs for AJ agent workloads using QLoRA (4-bit quantization) and Unsloth (2x faster training).
 
-## Current Model
+## Current Models
 
-| Model          | Base                        | Purpose                         | Ollama Name     |
-| -------------- | --------------------------- | ------------------------------- | --------------- |
-| **Granite-AJ** | IBM Granite 3.1-8B-Instruct | Agentic tool-use (bash-centric) | `granite-aj:8b` |
+| Model              | Base                         | Purpose                              | Ollama Name          | Status            |
+| ------------------ | ---------------------------- | ------------------------------------ | -------------------- | ----------------- |
+| **DeepSeek-R1-AJ** | DeepSeek-R1-Distill-Qwen-32B | Agentic intent + conversational flow | `deepseek-r1-aj:32b` | 📋 Ready to train |
+| **Granite-AJ**     | IBM Granite 3.1-8B-Instruct  | Agentic tool-use (bash-centric)      | `granite-aj:8b`      | ⏸️ Paused (19%)   |
 
-**Why Granite 3.1-8B?**
+**Why DeepSeek-R1-Distill-Qwen-32B?**
+
+- **R1 Reasoning**: Chain-of-thought capabilities distilled from DeepSeek R1
+- **Strong Coding**: Qwen2.5-32B base excels at code generation
+- **Conversational**: Better at adapting to user proclivities and context
+- **4090 Compatible**: Quantizes to ~18GB Q4_K_M for local inference
+- **4x Larger**: More capacity than 8B for nuanced reasoning
+
+**Why Granite 3.1-8B?** _(Lower priority)_
 
 - **Agentic Focus**: Native function-calling capabilities from IBM's research
-- **Efficient**: 8B parameters fits comfortably in 24GB VRAM with room for longer context
-- **Open Source**: Apache 2.0 license for commercial use
-- **Fast Inference**: Smaller model = faster responses = better UX
+- **Efficient**: 8B parameters fits easily in 24GB VRAM
+- **Fast Inference**: Smaller model = faster responses
+- **Status**: Training paused at 19% epoch (checkpoint-2500), loss 0.32
+
+## Training Infrastructure
+
+### Cloud Training (Recommended)
+
+| Provider | Instance        | GPUs    | VRAM  | Est. Time (1.1M examples) | Est. Cost   |
+| -------- | --------------- | ------- | ----- | ------------------------- | ----------- |
+| vast.ai  | **4x H100 SXM** | 4x H100 | 320GB | **~3-4 hours**            | **~$20-25** |
+| vast.ai  | 2x H200         | 2x H200 | 280GB | ~10-12 hours              | ~$45-55     |
+| vast.ai  | 2x A100 80GB    | 2x A100 | 160GB | ~15-20 hours              | ~$35-45     |
+| Local    | RTX 4090        | 1x 4090 | 24GB  | ~115 hours                | Electric    |
+
+**Recommended Instance (January 2026):**
+
+- **Instance**: vast.ai 4x H100 SXM (Iowa, US) @ $6.24/hr
+- **VRAM**: 320GB total (80GB × 4)
+- **DLPerf**: 1122.8 (excellent)
+- **Reliability**: 99.63%
+- **Model**: DeepSeek-R1-Distill-Qwen-32B
+- **Dataset**: 1.1M examples (xLAM + AgentInstruct + Toucan + custom)
+
+### Cloud Training Quick Start (4x H100)
+
+```powershell
+# Option 1: Use the deploy script (Windows)
+.\scripts\deploy-vastai-4xh100.ps1 -VAST_PORT <port_from_dashboard>
+
+# Option 2: Manual upload
+scp -P <port> -r training/scripts training/configs root@<host>:/workspace/training/
+scp -P <port> training/setup_vastai_4xh100.sh root@<host>:/workspace/training/
+```
+
+Then SSH in and run:
+
+```bash
+cd /workspace/training
+chmod +x setup_vastai_4xh100.sh && ./setup_vastai_4xh100.sh
+
+# Start training (use tmux to survive disconnects)
+tmux new -s train
+accelerate launch --multi_gpu --num_processes=4 \
+  scripts/train_qlora.py --config configs/qlora_config_4xh100.yaml
+```
+
+See `configs/qlora_config_4xh100.yaml` for 4x H100 settings.
 
 ## Overview
 
 - **Base Model**: IBM Granite 3.1-8B-Instruct (Apache 2.0)
 - **Training Method**: QLoRA with 4-bit quantization + Unsloth (2x faster)
-- **Agentic Data**: Glaive (113K) + AgentInstruct (1.8M) + Toucan MCP (519K) + custom (5K)
+- **Agentic Data**: xLAM (113K) + AgentInstruct (1.8M) + Toucan MCP (1.5M) + custom (5K)
 - **Tool Schema**: 6 tools (`bash`, `remote_bash`, `remote_bash_all`, `list_agents`, `think`, `complete`)
-- **Hardware**: RTX 4090 (24GB) via WSL2
-- **Training Time**: ~24-48 hours with full datasets
+- **Hardware**: RTX 4090 (24GB) local or 2x H200 (280GB) cloud
+- **Training Time**: ~10-12 hours (cloud) or ~115 hours (local)
 - **Training Pipeline**: `train_pipeline.py` handles everything end-to-end
 
 ## Directory Structure

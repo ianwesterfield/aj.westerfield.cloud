@@ -127,9 +127,9 @@ class ThinkingStreamParser:
         return full_response.strip()
 
 
-SYSTEM_PROMPT = """You are AJ, an agentic AI assistant. All You Need is Bash.
-
-FORMAT: {"tool": "name", "params": {...}, "note": "status", "reasoning": "why"}
+SYSTEM_PROMPT = """
+You are AJ, an AI coding, infrastructure and all around conversationalist. 
+FORMAT FOR TOOL CALLS: {"tool": "name", "params": {...}, "note": "status", "reasoning": "why"}
 
 TOOLS:
 - bash: Execute command locally {"command": "..."}
@@ -138,6 +138,17 @@ TOOLS:
 - list_agents: Discover available agents (call FIRST before remote ops)
 - think: Pause to reason {"thought": "..."} - for complex multi-step planning
 - complete: {"answer": "response"} when done, {"error": "msg"} on failure
+
+RESPONSE FORMAT (CRITICAL):
+- Tool calls: Output properly formatted markdown code blocks
+- complete answers: The "answer" field must be PLAIN MARKDOWN, not JSON
+- Use fenced code blocks (```) for command output, code snippets, structured data
+- Use backticks for inline `file paths`, `IP addresses`, `hostnames`, `commands`, `variables`
+- NEVER wrap your final answer in JSON - just provide clean markdown text
+
+EXAMPLE COMPLETION:
+
+{"tool": "complete", "params": {"answer": "The file contains 42 lines. Here's the output:\n```\nline 1\nline 2\n```"}}}
 
 PHILOSOPHY: The LLM generates bash/shell commands. No specialized tools needed.
 - File operations: cat, head, tail, echo, tee, sed, awk, find, ls, mkdir, rm
@@ -150,10 +161,9 @@ MULTI-AGENT OPERATIONS:
 - Different commands per target → multiple remote_bash calls
 - Call list_agents FIRST before any remote operations
 
-TARGET IDENTIFICATION:
+AGENT IDENTIFICATION:
 - "my workstation", "my PC" → CHECK USER MEMORY for known machines
-- Agent IDs encode purpose: "domain02" = domain controller, "ians-r16" = Ian's workstation
-- If ambiguous → list agents and ask for clarification
+- If ambiguous → ASK for clarification BEFORE proceeding. NEVER assume any agent.
 
 EXAMPLES:
 - Read file: {"tool": "bash", "params": {"command": "cat /path/to/file"}}
@@ -347,6 +357,12 @@ Respond with ONLY one word: task OR conversational"""},
         
         system_prompt = """You are AJ, a helpful AI assistant. Answer the user's question directly and concisely.
 
+RESPONSE FORMAT:
+- Respond in clean Markdown - NEVER output raw JSON objects or action wrappers
+- Use fenced code blocks (```) for code, commands, or structured output
+- Use backticks for `file paths`, `IP addresses`, `hostnames`, `commands`
+- Write natural prose for explanations
+
 If you have relevant context from memory, use it to personalize your response.
 If you don't know something, say so honestly.
 Keep responses focused and informative."""
@@ -387,7 +403,8 @@ Keep responses focused and informative."""
         Returns:
             List of step descriptions (strings)
         """
-        planning_prompt = """You are a task planner that helps AI assistants break down complex tasks into clear, sequential steps.
+        planning_prompt = """
+You are a task planner that helps AI assistants break down complex tasks into clear, sequential steps.
 
 OUTPUT FORMAT - CRITICAL:
 1. First, briefly explain your strategy (1-2 sentences)
@@ -974,16 +991,16 @@ Now create a plan for:
         """Apply guardrails to a parsed step. Returns corrected step if needed."""
         
         # ⛔ GUARDRAIL: Prevent calling list_agents twice
-        # If already verified, skip redundant call
+        # If already verified, skip redundant call by completing with the cached info
         if step.tool == "list_agents" and session_state.agents_verified:
-            logger.warning("GUARDRAIL: list_agents already called - skipping redundant call")
-            # Instead of blocking, just proceed with remote_execute_all if that's what's needed
-            # Check if there's a pending command pattern in the step reasoning
+            logger.warning("GUARDRAIL: list_agents already called - returning cached agents")
+            # Return the cached agent info as a completed step instead of "none"
+            agent_list = ', '.join(session_state.discovered_agents) if session_state.discovered_agents else "none found"
             return Step(
-                step_id="guardrail_skip_redundant_list",
-                tool="none",
-                params={"reason": f"Agents already discovered: {', '.join(session_state.discovered_agents)}"},
-                reasoning="Skipped redundant list_agents - agents already verified",
+                step_id="guardrail_cached_agents",
+                tool="complete",
+                params={"answer": f"Agents already discovered: {agent_list}"},
+                reasoning="Returned cached agent list - already verified this session",
             )
         
         # ⛔ CRITICAL GUARDRAIL: remote_bash requires verified agents

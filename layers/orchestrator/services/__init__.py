@@ -1,7 +1,21 @@
-# Orchestrator Services# Includes merged executor handlers for direct (non-HTTP) execution
+# Orchestrator Services
 
-from .polyglot_handler import PolyglotHandler
-from .shell_handler import ShellHandler
-from .file_handler import FileHandler
+from .agent_discovery import AgentDiscoveryService
+from .bash_dispatcher import BashExecutor
+from .grpc_client import AgentGrpcClient
+from .memory_connector import MemoryConnector
+from .parallel_executor import ParallelExecutor
+from .reasoning_engine import ReasoningEngine
+from .session_state import SessionState
+from .task_planner import TaskPlanner
 
-__all__ = ["PolyglotHandler", "ShellHandler", "FileHandler"]
+__all__ = [
+    "AgentDiscoveryService",
+    "BashExecutor",
+    "AgentGrpcClient",
+    "MemoryConnector",
+    "ParallelExecutor",
+    "ReasoningEngine",
+    "SessionState",
+    "TaskPlanner",
+]

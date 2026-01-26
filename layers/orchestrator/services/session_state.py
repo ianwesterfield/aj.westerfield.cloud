@@ -414,8 +414,9 @@ class SessionState:
             self.agents_verified = True
             if success and output:
                 # Extract agent IDs from output
+                # Format: "  - {agent_id}: {hostname} ({platform}) @ {ip}:{port}"
                 import re
-                agent_matches = re.findall(r'Agent:\s*(\S+)', output)
+                agent_matches = re.findall(r'^\s*-\s*(\S+):', output, re.MULTILINE)
                 self.discovered_agents = agent_matches
                 logger.info(f"list_agents extracted agents: {agent_matches} from output: {output[:200]}")
             else:
