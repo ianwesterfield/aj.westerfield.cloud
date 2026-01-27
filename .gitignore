@@ -41,10 +41,13 @@ ENV/
 logs/
 obj/
 output/
+processed/
 publish-selfcontained/
 publish/
+raw/
 secrets/
 Thumbs.db
 training/**/data/
 unsloth_compiled_cache/
 venv/
+datasets/

@@ -1,371 +1,368 @@
-# AJ Fine-Tuned Models
+# AJ Training Infrastructure
 
-Fine-tuned LLMs for AJ agent workloads using QLoRA (4-bit quantization) and Unsloth (2x faster training).
+> **Current Approach**: Single-GPU LoRA fine-tuning for conversational AI agents
 
-## Current Models
+Train DeepSeek-R1-Distill-Qwen-32B for agentic intent logic with conversational adaptability. Optimize model reasoning while preserving base capabilities through parameter-efficient LoRA adaptation.
 
-| Model              | Base                         | Purpose                              | Ollama Name          | Status            |
-| ------------------ | ---------------------------- | ------------------------------------ | -------------------- | ----------------- |
-| **DeepSeek-R1-AJ** | DeepSeek-R1-Distill-Qwen-32B | Agentic intent + conversational flow | `deepseek-r1-aj:32b` | 📋 Ready to train |
-| **Granite-AJ**     | IBM Granite 3.1-8B-Instruct  | Agentic tool-use (bash-centric)      | `granite-aj:8b`      | ⏸️ Paused (19%)   |
+---
 
-**Why DeepSeek-R1-Distill-Qwen-32B?**
+## Versioning
 
-- **R1 Reasoning**: Chain-of-thought capabilities distilled from DeepSeek R1
-- **Strong Coding**: Qwen2.5-32B base excels at code generation
-- **Conversational**: Better at adapting to user proclivities and context
-- **4090 Compatible**: Quantizes to ~18GB Q4_K_M for local inference
-- **4x Larger**: More capacity than 8B for nuanced reasoning
+See [datasets/README.md](datasets/README.md) for full versioning scheme.
 
-**Why Granite 3.1-8B?** _(Lower priority)_
-
-- **Agentic Focus**: Native function-calling capabilities from IBM's research
-- **Efficient**: 8B parameters fits easily in 24GB VRAM
-- **Fast Inference**: Smaller model = faster responses
-- **Status**: Training paused at 19% epoch (checkpoint-2500), loss 0.32
-
-## Training Infrastructure
-
-### Cloud Training (Recommended)
-
-| Provider | Instance        | GPUs    | VRAM  | Est. Time (1.1M examples) | Est. Cost   |
-| -------- | --------------- | ------- | ----- | ------------------------- | ----------- |
-| vast.ai  | **4x H100 SXM** | 4x H100 | 320GB | **~3-4 hours**            | **~$20-25** |
-| vast.ai  | 2x H200         | 2x H200 | 280GB | ~10-12 hours              | ~$45-55     |
-| vast.ai  | 2x A100 80GB    | 2x A100 | 160GB | ~15-20 hours              | ~$35-45     |
-| Local    | RTX 4090        | 1x 4090 | 24GB  | ~115 hours                | Electric    |
-
-**Recommended Instance (January 2026):**
-
-- **Instance**: vast.ai 4x H100 SXM (Iowa, US) @ $6.24/hr
-- **VRAM**: 320GB total (80GB × 4)
-- **DLPerf**: 1122.8 (excellent)
-- **Reliability**: 99.63%
-- **Model**: DeepSeek-R1-Distill-Qwen-32B
-- **Dataset**: 1.1M examples (xLAM + AgentInstruct + Toucan + custom)
-
-### Cloud Training Quick Start (4x H100)
-
-```powershell
-# Option 1: Use the deploy script (Windows)
-.\scripts\deploy-vastai-4xh100.ps1 -VAST_PORT <port_from_dashboard>
-
-# Option 2: Manual upload
-scp -P <port> -r training/scripts training/configs root@<host>:/workspace/training/
-scp -P <port> training/setup_vastai_4xh100.sh root@<host>:/workspace/training/
+```
+AJ-DeepSeekR1Qwen32B-v{major.minor.patch-suffix}
+│          │             │     │     │       └── lora, merged, q4km, q8
+│          │             │     │     └────────── Patch: hyperparameter tweaks
+│          │             │     └──────────────── Minor: dataset mix adjustments
+│          │             └─────────────────── Major: new base model or architecture
+│          └──────────────────────────── Base model code
+└──────────────────────────────── Project name
 ```
 
-Then SSH in and run:
+### Active Training Runs
 
-```bash
-cd /workspace/training
-chmod +x setup_vastai_4xh100.sh && ./setup_vastai_4xh100.sh
+| Version       | Dataset  | Status      | Notes                                |
+| ------------- | -------- | ----------- | ------------------------------------ |
+| `v2.0.0-lora` | Mixed-v1 | ⏳ Training | Conversational + Plants + Apothecary |
 
-# Start training (use tmux to survive disconnects)
-tmux new -s train
-accelerate launch --multi_gpu --num_processes=4 \
-  scripts/train_qlora.py --config configs/qlora_config_4xh100.yaml
-```
-
-See `configs/qlora_config_4xh100.yaml` for 4x H100 settings.
+---
 
 ## Overview
 
-- **Base Model**: IBM Granite 3.1-8B-Instruct (Apache 2.0)
-- **Training Method**: QLoRA with 4-bit quantization + Unsloth (2x faster)
-- **Agentic Data**: xLAM (113K) + AgentInstruct (1.8M) + Toucan MCP (1.5M) + custom (5K)
-- **Tool Schema**: 6 tools (`bash`, `remote_bash`, `remote_bash_all`, `list_agents`, `think`, `complete`)
-- **Hardware**: RTX 4090 (24GB) local or 2x H200 (280GB) cloud
-- **Training Time**: ~10-12 hours (cloud) or ~115 hours (local)
-- **Training Pipeline**: `train_pipeline.py` handles everything end-to-end
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        TRAINING PIPELINE                            │
+│                                                                     │
+│  High-Memory GPU (140GB+ VRAM)                                     │
+│  └── DeepSeek-R1-Distill-Qwen-32B (32.76B params)                  │
+│      └── LoRA (r=64, ~536M trainable = 1.61%)                      │
+│          └── Mixed Dataset (300K examples)                         │
+│              ├── 50% Conversational (WildChat + UltraChat)         │
+│              ├── 15% Plant/Farming (Agriculture + Gardening)       │
+│              ├── 10% Strategic (Text Adventures)                   │
+│              ├── 10% Western Apothecary (Culpeper et al.)          │
+│              └── 15% Existing AJ Data                              │
+│                                                                     │
+│  Output: Quantized GGUF for deployment                             │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
-## Directory Structure
+### Why This Setup?
+
+| Decision                 | Rationale                                                                        |
+| ------------------------ | -------------------------------------------------------------------------------- |
+| **Single-GPU LoRA**      | High-VRAM GPU fits 32B model in bf16 + LoRA. No distributed training complexity  |
+| **LoRA (not full FT)**   | 99% fewer trainable params. Preserves base model reasoning                       |
+| **Mixed datasets**       | Conversational breadth + domain knowledge (plants, apothecary, agriculture)      |
+| **Server-side download** | Avoid large local uploads; fetch 5MB scripts only, download 300K examples on GPU |
+
+---
+
+## Quick Start
+
+### 1. Provision GPU Instance
+
+Use any cloud provider with high-VRAM GPU availability (RunPod, Lambda Labs, Vast.ai, etc.):
+
+```bash
+# Requirements:
+# - 1x NVIDIA H100/H200 (140GB+ VRAM)
+# - 20+ vCPU, 200GB+ RAM
+# - 500GB+ SSD for datasets and outputs
+```
+
+### 2. Setup Training Environment
+
+SSH into your droplet and run:
+
+```bash
+# Clone repo
+git clone https://github.com/your-org/aj.westerfield.cloud
+cd aj.westerfield.cloud/training
+
+# Run pipeline (5 automatic steps)
+bash setup_and_train_v2.sh
+
+# Monitor training
+tail -f training_*.log
+```
+
+### Start Training (Automated)
+
+The `setup_and_train_v2.sh` script handles everything:
+
+1. Downloads datasets
+2. Prepares mixed dataset
+3. Starts training
+4. Logs to `training_YYYYMMDD_HHMMSS.log`
+
+**No manual steps needed!**
+
+---
+
+## Training Configuration
+
+### Hardware Requirements
+
+| Component   | Spec        | Notes                             |
+| ----------- | ----------- | --------------------------------- |
+| **GPU**     | 140GB+ VRAM | H100/H200 recommended, single GPU |
+| **CPU**     | 20+ cores   | For data loading and dataset prep |
+| **RAM**     | 200GB+      | Model loading and merging         |
+| **Storage** | 500GB+ SSD  | Datasets, checkpoints, outputs    |
+
+### LoRA Configuration
+
+```yaml
+lora_r: 64
+lora_alpha: 128
+lora_dropout: 0.05
+target_modules:
+  - q_proj, k_proj, v_proj, o_proj # Attention
+  - gate_proj, up_proj, down_proj # MLP
+
+# Results in ~536M trainable params (1.61% of 32.76B)
+```
+
+### Training Hyperparameters
+
+```yaml
+# Batch
+batch_size: 2
+gradient_accumulation_steps: 8
+effective_batch_size: 16
+
+# Duration
+max_steps: 5000
+max_seq_length: 2048
+
+# Optimizer
+learning_rate: 2e-5
+weight_decay: 0.01
+warmup_steps: 100
+lr_scheduler: cosine
+
+# Precision
+bf16: true
+tf32: true
+gradient_checkpointing: true
+```
+
+---
+
+## Time Estimate
+
+| Phase                 | Duration      | Notes                         |
+| --------------------- | ------------- | ----------------------------- |
+| Data Download         | ~10 min       | 7 HuggingFace datasets (~2GB) |
+| Dataset Preparation   | ~5 min        | Merging 127K examples         |
+| Training (5000 steps) | ~11 hours     | ~2.2s/step on H100/H200       |
+| Model Merge + Convert | ~1 hour       | LoRA adapter + quantization   |
+| **Total**             | **~12 hours** | Start-to-finish on GPU        |
+
+---
+
+## Dataset: Mixed v1.0 (v2.0.0 Training)
+
+Combines 7 curated datasets for conversational breadth + domain knowledge:
+
+```
+127,366 total examples (99:1 train/eval split):
+├── 50% Conversational (82K WildChat + 45K UltraChat)
+├── 15% Plant/Farming (25K Agriculture + Gardening + StackExchange)
+├── 10% Strategic (14.6K Skein text adventures)
+├── 10% Western Apothecary (89 public domain herbalism Q&A)
+└── 15% Custom AJ Data (45K domain-specific conversations)
+```
+
+**Format**: ChatML multi-turn conversations with tool calls
+
+**Example**:
+
+```json
+{
+  "messages": [
+    { "role": "system", "content": "You are AJ..." },
+    { "role": "user", "content": "List running containers" },
+    {
+      "role": "assistant",
+      "tool_calls": [
+        { "name": "bash", "arguments": { "command": "docker ps" } }
+      ]
+    },
+    { "role": "tool", "content": "CONTAINER ID  IMAGE  ..." },
+    { "role": "assistant", "content": "Here are 3 running containers..." }
+  ]
+}
+```
+
+---
+
+## File Structure
 
 ```
 training/
-├── data/                    # Training datasets
-│   ├── all_training_data.jsonl    # Combined dataset
-│   ├── dataset_stats.json         # Statistics by domain
-│   └── [domain].jsonl             # 45+ domain-specific files
-├── scripts/                 # Training & generation scripts
-│   ├── train_pipeline.py          # ★ Master pipeline (run this!)
-│   ├── prepare_agentic_datasets.py # Download Glaive/AgentInstruct
-│   ├── generate_all.py            # Run all domain generators
-│   ├── generate_*.py              # 43+ domain generators
-│   ├── train_qlora.py             # QLoRA training (PEFT/TRL)
-│   └── merge_and_export.py        # Merge LoRA + export
-├── agentic/                 # Agentic training data
-│   ├── schemas/                   # JSON schemas for tool-use
-│   ├── generators/                # Trajectory generators
-│   ├── converters/                # Convert external datasets
-│   ├── data/                      # Generated trajectories
-│   └── tasks/                     # Task prompt templates
-├── configs/                 # Training configurations
-│   ├── qlora_config.yaml          # ★ RTX 4090 optimized config
-│   └── qlora_config_chat.yaml     # Chat format config
-├── checkpoints/             # Training checkpoints (auto-saved)
-└── output/                  # Final model artifacts
+├── scripts/
+│   ├── train_mixed_h200.py     # Main v2.0.0 training script
+│   └── merge_adapters.py       # Merge LoRA → full model
+├── configs/
+│   ├── mixed_v1_h200.yaml      # v2.0.0 training config
+│   └── merge_config.yaml       # Merge configuration
+├── datasets/
+│   ├── download_datasets.py    # HuggingFace dataset loader
+│   ├── prepare_mixed_v1.py     # Build 300K mixed dataset
+│   ├── extract_apothecary.py   # Parse public domain herbalism texts
+│   └── raw/ & processed/       # Dataset cache
+└── data/
+    └── *.jsonl                 # Custom AJ training data
 ```
 
-**Note**: GGUF conversion requires llama.cpp (build on training server or use pre-built binaries).
+---
 
-## Training Data Domains (43 Generators, 5,205 Examples)
+## Scripts Reference
 
-| Domain              | Examples | Description                                |
-| ------------------- | -------- | ------------------------------------------ |
-| Git Version Control | 302      | Git operations, workflows, troubleshooting |
-| Windows Admin       | 275      | PowerShell, system admin, WSL              |
-| VS Code IDE         | 242      | Editor workflows, extensions, settings     |
-| Cloud/DevOps        | 196      | AWS, Azure, GCP, Terraform                 |
-| Linux Admin         | 179      | System administration, services            |
-| Python Development  | 168      | Libraries, debugging, best practices       |
-| Angular             | 151      | Components, services, RxJS                 |
-| Docker              | 139      | Containers, compose, orchestration         |
-| Database/SQL        | 131      | PostgreSQL, MySQL, query optimization      |
-| Networking          | 129      | TCP/IP, DNS, troubleshooting               |
-| Node.js             | 127      | Express, npm, async patterns               |
-| Security            | 110      | Authentication, encryption, hardening      |
-| AI/ML/LLM           | 107      | Model training, inference, RAG             |
-| Firewalla/Storage   | 100      | Network security appliance                 |
-| Multistep Workflows | 100      | Complex task orchestration                 |
-| TypeScript          | 100      | Types, generics, patterns                  |
-| .NET/C#             | 100      | ASP.NET, Entity Framework                  |
-| API Development     | 100      | REST, GraphQL, OpenAPI                     |
-| And 25 more...      | ~2,500   | See `data/dataset_stats.json`              |
+### train_mixed_h200.py
 
-All domains now have 100+ examples for balanced training coverage.
-
-## Quick Start (Recommended)
-
-### Run Full Training Pipeline
-
-The easiest way to train is using the master pipeline:
+Main training script for v2.0.0 mixed dataset:
 
 ```bash
-# In WSL2 (recommended for CUDA compatibility)
-cd /mnt/c/Code/aj.westerfield.cloud/training
-source venv/bin/activate
+# Automatically called by setup_and_train_v2.sh
+python scripts/train_mixed_h200.py --config configs/mixed_v1_h200.yaml
 
-# Run full pipeline - downloads ALL examples by default
-python scripts/train_pipeline.py -y
-
-# Or limit dataset sizes for faster training
-python scripts/train_pipeline.py --xlam-target 50000 --toucan-target 100000 -y
+# Resume from checkpoint if needed
+python scripts/train_mixed_h200.py --config configs/mixed_v1_h200.yaml \
+    --resume ./mixed-v1-output/checkpoint-2500
 ```
 
-The pipeline handles everything:
+**Output**: `mixed-v1-output/` with LoRA adapter files
 
-1. ✅ Checks requirements (torch, CUDA, Unsloth, etc.)
-2. ✅ Downloads agentic datasets (Glaive, AgentInstruct, Toucan-1.5M)
-3. ✅ Merges with custom AJ training examples
-4. ✅ Runs QLoRA fine-tuning with Unsloth (2x faster)
-5. ✅ Saves checkpoints for Ollama export
+### merge_adapters.py
 
-The `-y` flag skips confirmation prompts for unattended training.
-
-### Manual Steps (Alternative)
-
-#### Generate Training Data
+Merge LoRA adapters back into base model:
 
 ```bash
-# Generate all training data (runs 43+ generators)
-python scripts/generate_all.py
-
-# Download agentic datasets (all examples by default)
-python scripts/prepare_agentic_datasets.py -y
-
-# Or limit to specific counts
-python scripts/prepare_agentic_datasets.py --xlam-target 50000 --toucan-target 100000 -y
+python scripts/merge_adapters.py \
+    --base-model deepseek-ai/DeepSeek-R1-Distill-Qwen-32B \
+    --adapter-path ./mixed-v1-output \
+    --output-path ./aj-dsr1q32b-v2.0.0-merged
 ```
 
-#### Run Training
-
-```bash
-# QLoRA training with config
-python scripts/train_qlora.py --config configs/qlora_config.yaml
-```
-
-### Export to Ollama
-
-After training completes, export to Ollama:
-
-```bash
-# 1. Merge LoRA with base model
-python scripts/merge_and_export.py
-
-# 2. Convert to GGUF (requires llama.cpp)
-python /path/to/llama.cpp/convert_hf_to_gguf.py ./merged-model --outfile granite-aj.bf16.gguf --outtype bf16
-
-# 3. Quantize to Q4_K_M (~5GB for 8B model)
-/path/to/llama.cpp/build/bin/llama-quantize granite-aj.bf16.gguf granite-aj-q4_k_m.gguf Q4_K_M
-
-# 4. Import to Ollama
-ollama create granite-aj:8b -f Modelfile
-```
-
-## Training Configuration (RTX 4090)
-
-Optimized settings in `configs/qlora_config.yaml`:
-
-| Parameter              | Value                               | Notes                         |
-| ---------------------- | ----------------------------------- | ----------------------------- |
-| Base Model             | ibm-granite/granite-3.1-8b-instruct | Apache 2.0 license            |
-| Epochs                 | 2-3                                 | Depends on dataset size       |
-| Batch Size             | 2                                   | 8B model fits more in VRAM    |
-| Gradient Accumulation  | 4                                   | Effective batch = 8           |
-| Learning Rate          | 2e-4                                | With cosine scheduler         |
-| LoRA Rank              | 64                                  | Higher rank for complex tasks |
-| LoRA Alpha             | 128                                 | Scaling factor (2x rank)      |
-| Quantization           | 4-bit NF4                           | BitsAndBytes config           |
-| Max Seq Length         | 8192                                | Granite supports up to 128k   |
-| Optimizer              | paged_adamw_8bit                    | Memory efficient              |
-| Gradient Checkpointing | true                                | Reduces VRAM usage            |
-
-## External Datasets: Agentic Tool-Use
-
-The pipeline downloads function-calling and agentic reasoning datasets (all examples by default):
-
-**Glaive Function-Calling v2** (glaiveai/glaive-function-calling-v2)
-
-- ~113K function-calling examples with tool schemas
-- Diverse tool categories: search, math, file ops, APIs
-
-**AgentInstruct** (THUDM/AgentInstruct)
-
-- ~1.8M multi-turn agentic reasoning examples
-- Planning, execution, error recovery patterns
-- Categories: OS, DB, ALFWorld, WebShop, KG, Mind2Web
-
-**Toucan-1.5M** (Agent-Ark/Toucan-1.5M)
-
-- ~519K real MCP tool-use trajectories (Kimi-K2 subset)
-- Synthesized from 495 real-world Model Context Protocols
-- 2,000+ tools across diverse categories
-- Quality-assessed with LLM-as-judge
-
-**Custom AJ Data** (local)
-
-- Domain-specific training (43+ generators, 5K+ examples)
-- FunnelCloud agent integration examples
-- Shutdown safety & target disambiguation
-
-## Requirements
-
-- **Python**: 3.10+ (3.13 works in WSL)
-- **CUDA**: 12.0+ (cuDNN 8.9+)
-- **VRAM**: 24GB recommended (RTX 4090 or better)
-- **System RAM**: 32GB+ recommended
-- **Storage**: ~100GB (model cache + checkpoints)
-- **Platform**: WSL2 recommended for Windows (better CUDA support)
-
-### Python Dependencies
-
-```bash
-pip install torch>=2.1.0 transformers>=4.36.0 peft>=0.7.0 trl>=0.7.0 \
-    bitsandbytes>=0.41.0 accelerate>=0.25.0 datasets>=2.16.0 \
-    sentencepiece tiktoken pyyaml
-```
-
-### Unsloth (Recommended - 2x Faster Training)
-
-Unsloth provides optimized training with 2x speed and 50% less VRAM. Install in WSL2:
-
-```bash
-# Install Unsloth (requires Linux/WSL2 - won't work on native Windows)
-pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
-
-# Or with conda (alternative)
-conda install -c conda-forge unsloth
-```
-
-The training script automatically uses Unsloth when available, falling back to standard PEFT if not.
-
-**Unsloth Benefits:**
-
-- 2x faster training speed
-- 50% less VRAM usage
-- Better gradient checkpointing
-- Works great on RTX 4090
-
-### WSL2 Setup (Recommended for Windows)
-
-Training works best in WSL2 due to better CUDA/bitsandbytes/unsloth support:
-
-```bash
-# In WSL terminal
-cd /mnt/c/Code/aj.westerfield.cloud/training
-
-# Create venv and install
-python3 -m venv venv
-source venv/bin/activate
-pip install --upgrade pip
-
-# Install PyTorch with CUDA
-pip install torch --index-url https://download.pytorch.org/whl/cu121
-
-# Install training dependencies (including unsloth for 2x speed)
-pip install transformers datasets peft trl bitsandbytes accelerate sentencepiece tiktoken pyyaml
-pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"
-
-# Verify GPU
-python -c "import torch; print(torch.cuda.get_device_name(0))"
-
-# Verify Unsloth
-python -c "from unsloth import FastLanguageModel; print('Unsloth OK')"
-```
-
-## Cloud Training (Faster)
-
-For faster training, consider cloud GPU options:
-
-| Provider    | GPU       | Est. Time | Est. Cost |
-| ----------- | --------- | --------- | --------- |
-| RunPod      | A100 80GB | 3-4 hours | $8-12     |
-| Lambda Labs | A100 80GB | 3-4 hours | $8-12     |
-| RunPod      | H100      | 2 hours   | $6-10     |
-
-Upload `train_pipeline.py`, `scripts/`, `configs/`, and `data/`, then run.
-
-## Monitoring Training
-
-Training outputs to console with progress bars. Key metrics:
-
-- **Loss**: Should decrease from ~1.5 to ~0.5
-- **Speed**: ~5-8 it/s on RTX 4090 with Unsloth (8B model)
-- **TF32**: Enabled automatically for 10-15% speed boost
-
-Checkpoints saved to `checkpoints/` every 500 steps.
+---
 
 ## Troubleshooting
 
 ### Out of Memory
 
-- Reduce `per_device_train_batch_size` to 1
-- Increase `gradient_accumulation_steps`
-- Enable `gradient_checkpointing=True`
+If you see CUDA OOM errors:
 
-### torchao/TF32 Warnings
+1. **Reduce batch size** in `configs/mixed_v1.yaml`:
 
-The pipeline suppresses these automatically. If you see warnings about `torch.int1`, they're harmless.
+   ```yaml
+   batch_size: 1 # Down from 2
+   gradient_accumulation_steps: 16 # Double to maintain effective batch
+   ```
 
-### Model Download Slow
+2. **Reduce sequence length**:
+   ```yaml
+   max_seq_length: 1024 # Down from 2048
+   ```
 
-- Model (~16GB for 8B) is cached after first download
-- Check `~/.cache/huggingface/hub/`
+### Training Stalls
 
-### Unsloth Not Available
+If loss stops decreasing:
 
-Falls back to standard PEFT automatically. Training will be slower but still works.
+1. Check learning rate isn't too high/low
+2. Verify data loading (watch GPU utilization)
+3. Review gradient norms in logs
 
-## Using Docker
+### Connection Lost
+
+If SSH disconnects:
+
+1. Use `tmux` or `screen` before training
+2. Resume from latest checkpoint with `--resume`
 
 ```bash
-# Build training container
-docker build -t aj-training .
+# Before training
+tmux new -s training
+python scripts/train_mixed.py ...
 
-# Run with GPU passthrough
-docker run --gpus all \
-    -v $(pwd)/output:/app/output \
-    -v $(pwd)/checkpoints:/app/checkpoints \
-    aj-training
+# Detach: Ctrl+B, then D
+# Reattach after reconnect:
+tmux attach -t training
 ```
+
+---
+
+## Reference: Tool Schema
+
+AJ uses 6 core tools for the "All You Need is Bash" philosophy:
+
+| Tool              | Purpose                   | Example                 |
+| ----------------- | ------------------------- | ----------------------- |
+| `bash`            | Local command execution   | `ls -la`, `docker ps`   |
+| `remote_bash`     | Single agent execution    | Execute on `webprod01`  |
+| `remote_bash_all` | Multi-agent execution     | Execute on all `prod-*` |
+| `list_agents`     | Discover available agents | Show FunnelCloud agents |
+| `think`           | Reasoning step (internal) | Plan before execution   |
+| `complete`        | Task completion signal    | Mark task finished      |
+
+### Data Sources
+
+| Source                  | Size  | Content                                  |
+| ----------------------- | ----- | ---------------------------------------- |
+| Conversational datasets | 127K  | WildChat + UltraChat (HuggingFace)       |
+| Plant/Farming datasets  | 70K   | Agriculture QA + Gardening (HuggingFace) |
+| Strategic/Adventure     | 14.6K | Skein text adventures (HuggingFace)      |
+| Western Apothecary      | 89    | Public domain herbalism texts            |
+| Custom AJ Data          | 45K+  | Domain-specific conversational data      |
+
+### Generate Custom Data
+
+```bash
+# The v2.0.0 pipeline downloads and prepares datasets automatically
+# No manual data generation needed for basic training
+cd training
+bash setup_and_train_v2.sh
+```
+
+---
+
+## Local Development (RTX 4090)
+
+For experimentation on local hardware:
+
+### WSL2 Setup (Windows)
+
+```powershell
+# Enable WSL2
+wsl --install -d Ubuntu-22.04
+
+# Inside WSL
+sudo apt update && sudo apt install -y python3-pip python3-venv
+cd /mnt/c/Code/aj.westerfield.cloud/training
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+### Limitations
+
+RTX 4090 (24GB) cannot train 32B models even with LoRA. Use it for:
+
+- Testing training scripts with smaller models (7B)
+- Running inference on quantized models
+- Data preprocessing and validation
+
+---
+
+## Previous Approaches (Historical)
+
+Earlier iterations tried different approaches that proved less reliable:
+
+1. **4x H100 + DeepSpeed ZeRO-3** (alternative providers): Complex distributed training, frequent crashes
+2. **FSDP + LoRA**: Optimizer state sharding incompatible with LoRA
+3. **Full Fine-tuning**: Required 8+ GPUs, expensive
+
+The single-GPU high-memory approach eliminates distributed training complexity while remaining cost-effective.
