@@ -39,10 +39,13 @@ AJ-DeepSeekR1Qwen32B-v{major.minor.patch-suffix}
 │      └── LoRA (r=64, ~536M trainable = 1.61%)                      │
 │          └── Mixed Dataset (300K examples)                         │
 │              ├── 50% Conversational (WildChat + UltraChat)         │
-│              ├── 15% Plant/Farming (Agriculture + Gardening)       │
-│              ├── 10% Strategic (Text Adventures)                   │
-│              ├── 10% Western Apothecary (Culpeper et al.)          │
-│              └── 15% Existing AJ Data                              │
+│              ├── 40% Domain Knowledge (~26K from training/data/)   │
+│              │   ├── CLI (Linux, Windows, cross-platform)          │
+│              │   ├── Development (Python, TS, Node, .NET, etc.)    │
+│              │   ├── Infrastructure (Docker, Cloud, Security)      │
+│              │   ├── Agentic (AJ persona, Guardrails, Intent)      │
+│              │   └── Specialized
+│              └── 10% Strategic Reasoning (Skein text adventures)   │
 │                                                                     │
 │  Output: Quantized GGUF for deployment                             │
 └─────────────────────────────────────────────────────────────────────┘
