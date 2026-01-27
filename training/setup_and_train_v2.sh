@@ -17,17 +17,19 @@ echo "AJ-DSR1Q32B-v2.0.0-lora Training Setup"
 echo "============================================================"
 
 # Configuration
-WORKSPACE="${WORKSPACE:-/workspace/training}"
-DATASETS_DIR="$WORKSPACE/datasets"
-OUTPUT_DIR="$WORKSPACE/mixed-v1-output"
-PROGRESS_FILE="$WORKSPACE/.setup_progress"
+# Note: WORKSPACE is often preset by cloud providers (Vast.ai, RunPod)
+# so we use TRAINING_DIR to avoid conflicts
+TRAINING_DIR="${TRAINING_DIR:-/workspace/training}"
+DATASETS_DIR="$TRAINING_DIR/datasets"
+OUTPUT_DIR="$TRAINING_DIR/mixed-v1-output"
+PROGRESS_FILE="$TRAINING_DIR/.setup_progress"
 
 # Target dataset sizes
 TOTAL_EXAMPLES=300000
 WILDCHAT_SAMPLE=100000
 ULTRACHAT_SAMPLE=50000
 
-cd $WORKSPACE
+cd $TRAINING_DIR
 
 # Helper function to track progress
 mark_step_complete() {
@@ -64,7 +66,7 @@ else
     cd $DATASETS_DIR
     
     # The download script has skip-if-exists logic built in
-    python download_datasets.py --config mixed_v1
+    python3 download_datasets.py --config mixed_v1
     
     mark_step_complete "$STEP"
     echo -e "${GREEN}[2/5] Datasets downloaded ✓${NC}"
@@ -80,7 +82,7 @@ else
     echo ""
     echo "[3/5] Extracting Western apothecary data..."
     cd $DATASETS_DIR
-    python extract_apothecary.py --download --parse --output raw/apothecary
+    python3 extract_apothecary.py --download --parse --output raw/apothecary
     
     mark_step_complete "$STEP"
     echo -e "${GREEN}[3/5] Apothecary data extracted ✓${NC}"
@@ -98,7 +100,7 @@ else
     echo ""
     echo "[4/5] Building mixed dataset..."
     cd $DATASETS_DIR
-    python prepare_mixed_v1.py \
+    python3 prepare_mixed_v1.py \
         --output processed/mixed_v1 \
         --total $TOTAL_EXAMPLES \
         --eval-ratio 0.01
@@ -119,10 +121,10 @@ echo "  Dataset: ~$TOTAL_EXAMPLES examples"
 echo "  LoRA: r=64, alpha=128 (1.61% trainable)"
 echo "  Output: $OUTPUT_DIR"
 echo "============================================================"
-cd $WORKSPACE
+cd $TRAINING_DIR
 
 # Log to file and console with timestamps
-python scripts/train_mixed_h200.py \
+python3 scripts/train_mixed_h200.py \
     --config configs/mixed_v1_h200.yaml \
     2>&1 | tee -a "training_$(date +%Y%m%d_%H%M%S).log"
 

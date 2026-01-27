@@ -57,13 +57,14 @@ base_model_code: "DSR1Q32B"
 
 # In addition to the inherent DeepSeek-R1 capabilities, this configuration enhances:
 # - 50% conversational patterns (WildChat 82K + UltraChat 45K from HuggingFace)
-# - 40% domain knowledge (loaded from training/data/*.jsonl):
-#     * Development: Angular, TypeScript, Python, Node.js, API, Web fundamentals
+# - 40% domain knowledge (loaded from training/data/*.jsonl - ~26K examples):
+#     * Development: Angular, TypeScript, Python, Node.js, .NET, API, Web fundamentals
 #     * Infrastructure: Docker, Linux, Windows, Cloud/DevOps, Networking, Security
 #     * Data: SQL, Qdrant vectors, Storage patterns
 #     * Quality: Code review, Refactoring, Testing, Architecture
-#     * Agentic: xLAM function calling, Agent instruct, Tool selection, Guardrails
-#     * Planning: Project/task planning, Multi-step workflows
+#     * Agentic: AJ persona, Intent classification, Guardrails
+#     * Planning: Project/task planning, Multi-step workflows, Multi-turn conversations
 #     * IDE: VSCode workflows, Git version control
 #     * Project-specific: Mesosync workspace, AI/ML patterns
+#     * Specialized: Advanced horticulture, Apothecary, Herbalism, Fermentation
 # - 10% strategic reasoning (Skein text adventures 14.6K)

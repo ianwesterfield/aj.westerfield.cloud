@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    Upload only essential training files to GPU server (excludes large data files)
+    Upload training files to GPU server (scripts + domain knowledge data)
 
 .DESCRIPTION
-    Uploads ~5 MB of scripts/configs instead of ~24 GB of data.
-    All training data is downloaded/generated on the server from HuggingFace.
+    Uploads scripts, configs, and domain knowledge (~50MB).
+    Large HuggingFace datasets (WildChat, UltraChat, Skein) are downloaded on the server.
 
 .PARAMETER Server
     SSH connection string (e.g., "root@gpu-server.example.com" or "user@192.168.1.100")
@@ -41,7 +41,7 @@ $TempDir = Join-Path $env:TEMP "aj-training-upload"
 $TempZip = Join-Path $env:TEMP "aj-training-minimal.tar.gz"
 
 Write-Host "============================================" -ForegroundColor Cyan
-Write-Host "AJ Training Minimal Upload" -ForegroundColor Cyan
+Write-Host "AJ Training Upload" -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -51,7 +51,7 @@ if (Test-Path $TempDir) {
 }
 New-Item -ItemType Directory -Path $TempDir | Out-Null
 
-Write-Host "Copying essential files (excluding large data)..." -ForegroundColor Yellow
+Write-Host "Copying training files..." -ForegroundColor Yellow
 
 # Files/folders to include
 $includes = @(
@@ -63,6 +63,7 @@ $includes = @(
   "pytest.ini",
   "configs",
   "scripts",
+  "data",                           # Domain knowledge JSONL files (~20K examples)
   "datasets/*.py",
   "datasets/README.md",
   "agentic/configs",

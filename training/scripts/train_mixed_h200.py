@@ -117,15 +117,29 @@ def main():
     print(f"\nLoading model in bf16...")
     print(f"H200's 141GB VRAM can hold the full 32B model + LoRA")
     
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        torch_dtype=torch.bfloat16,
-        trust_remote_code=True,
-        device_map="auto",
-        low_cpu_mem_usage=True,
-        use_cache=False,
-        attn_implementation="flash_attention_2",
-    )
+    # Try flash_attention_2 first, fall back to sdpa if not available
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+            device_map="auto",
+            low_cpu_mem_usage=True,
+            use_cache=False,
+            attn_implementation="flash_attention_2",
+        )
+        print("Using Flash Attention 2")
+    except ImportError:
+        print("Flash Attention 2 not available, using SDPA (PyTorch native)")
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
+            device_map="auto",
+            low_cpu_mem_usage=True,
+            use_cache=False,
+            attn_implementation="sdpa",
+        )
     
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Model loaded! Total parameters: {total_params:,}")
