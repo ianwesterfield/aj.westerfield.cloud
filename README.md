@@ -301,28 +301,14 @@ Unregister-ScheduledTask -TaskName "AJ-Westerfield-Services" -Confirm:$false
 
 ### Model Training
 
-AJ includes infrastructure for fine-tuning IBM Granite 3.1-8B with QLoRA:
+AJ includes infrastructure for fine-tuning DeepSeek-R1-Distill-Qwen-32B with LoRA:
 
-```bash
-# In WSL2 (recommended for CUDA support)
-cd /mnt/c/Code/aj.westerfield.cloud/training
-source venv/bin/activate
+- **Hardware**: DigitalOcean H200 GPU Droplet (141GB VRAM, $3.44/hr)
+- **Dataset**: Toucan-1.5M (real MCP tool-use trajectories, 118K examples)
+- **Method**: Single-GPU LoRA (no distributed training complexity)
+- **Output**: Q4_K_M GGUF for RTX 4090 deployment (~18GB)
 
-# Run full training pipeline (downloads ALL examples by default)
-python scripts/train_pipeline.py -y
-```
-
-The pipeline:
-
-- Downloads agentic datasets:
-  - Glaive function-calling (~113K examples)
-  - AgentInstruct (~1.8M examples)
-  - Toucan-1.5M MCP tool-use (~519K examples)
-- Merges with custom AJ training examples (5K+)
-- Runs QLoRA fine-tuning with Unsloth (2x faster on RTX 4090)
-- Produces checkpoints ready for Ollama export
-
-See [training/README.md](training/README.md) for details.
+See [training/README.md](training/README.md) for complete instructions.
 
 ### File Structure
 
