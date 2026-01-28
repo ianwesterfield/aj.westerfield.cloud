@@ -1,11 +1,30 @@
 #!/usr/bin/env python3
 """
-Single-GPU LoRA Training for DeepSeek-R1-Distill-Qwen-32B
+LoRA Training for DeepSeek-R1-Distill-Qwen-32B
 Mixed Dataset v1 (Conversational + Plant/Farming + Apothecary + Strategic)
 
-AJ-DSR1Q32B-v2.0.0-lora
+AJ-DeepSeekR1Qwen32B-v2.1.0-lora
 
-Optimized for NVIDIA H200 (141GB VRAM) on DigitalOcean
+Supports both Single-GPU and Multi-GPU (DDP) training.
+Optimized for NVIDIA H200 (141GB VRAM).
+
+=== MULTI-GPU (DDP) REQUIREMENTS ===
+When using `accelerate launch` for multi-GPU training, these settings are CRITICAL:
+
+1. device_map=None (NOT 'auto')
+   - Accelerate handles device placement, not AutoModelForCausalLM
+   - 'auto' causes: "ValueError: You can't train a model that has been loaded with device_map='auto'"
+
+2. use_reentrant=False in gradient_checkpointing_kwargs
+   - Prevents: "RuntimeError: Expected to have finished reduction in the prior iteration"
+   - Required when combining gradient checkpointing + DDP
+
+3. ddp_find_unused_parameters=False in SFTConfig
+   - LoRA only trains ~1.6% of params; base model params are frozen but still in compute graph
+   - Setting True causes unnecessary overhead and potential gradient sync issues
+
+Launch DDP training:
+    accelerate launch --config_file accelerate_config.yaml scripts/train_mixed_h200.py --config configs/mixed_v1_2xh200.yaml
 """
 
 import os
@@ -81,12 +100,12 @@ def main():
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
     
-    version = config.get('version', 'v2.0.0-lora')
+    version = config.get('version', 'v2.1.0-lora')
     dataset_version = config.get('dataset_version', 'mixed_v1')
     
     print(f"\n{'='*60}")
     print(f"Single-GPU LoRA Training (H200)")
-    print(f"AJ-DSR1Q32B-{version}")
+    print(f"AJ-DeepSeekR1Qwen32B-{version}")
     print(f"Dataset: {dataset_version}")
     print(f"{'='*60}\n")
     
@@ -100,7 +119,7 @@ def main():
     print(f"VRAM: {gpu_mem:.1f} GB")
     
     model_name = config.get('model_name', 'deepseek-ai/DeepSeek-R1-Distill-Qwen-32B')
-    output_dir = config.get('output_dir', './mixed-v1-output')
+    output_dir = config.get('output_dir', './AJ-DeepSeekR1Qwen32B-v2.1.0-lora')
     
     # Load tokenizer
     print(f"\nLoading tokenizer from {model_name}...")
@@ -123,7 +142,7 @@ def main():
             model_name,
             torch_dtype=torch.bfloat16,
             trust_remote_code=True,
-            device_map="auto",
+            device_map=None,  # Must be None for DDP multi-GPU
             low_cpu_mem_usage=True,
             use_cache=False,
             attn_implementation="flash_attention_2",
@@ -135,7 +154,7 @@ def main():
             model_name,
             torch_dtype=torch.bfloat16,
             trust_remote_code=True,
-            device_map="auto",
+            device_map=None,  # Must be None for DDP multi-GPU
             low_cpu_mem_usage=True,
             use_cache=False,
             attn_implementation="sdpa",
@@ -164,8 +183,8 @@ def main():
     all_params = sum(p.numel() for p in model.parameters())
     print(f"Trainable parameters: {trainable_params:,} ({100*trainable_params/all_params:.2f}%)")
     
-    # Enable gradient checkpointing
-    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": True})
+    # Enable gradient checkpointing (use_reentrant=False required for DDP)
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.enable_input_require_grads()
     
     # Load local dataset
@@ -232,7 +251,10 @@ def main():
         
         # Memory optimization
         gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={"use_reentrant": True},
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+        
+        # DDP settings (for multi-GPU)
+        ddp_find_unused_parameters=False,
         
         # Logging
         logging_steps=int(config.get('logging_steps', 10)),
@@ -269,7 +291,7 @@ def main():
     
     print(f"\n{'='*60}")
     print(f"Starting Training!")
-    print(f"AJ-DSR1Q32B-{version}")
+    print(f"AJ-DeepSeekR1Qwen32B-{version}")
     print(f"{'='*60}")
     eff_batch = training_config.per_device_train_batch_size * training_config.gradient_accumulation_steps
     print(f"Effective batch size: {eff_batch}")

@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# AJ Training Setup Script - Mixed Dataset v2.0.0
+# AJ Training Setup Script - Mixed Dataset v2.1.0
 # Run this on the GPU instance to download, prepare, and train
 # =============================================================================
 
@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 echo "============================================================"
-echo "AJ-DSR1Q32B-v2.0.0-lora Training Setup"
+echo "AJ-DeepSeekR1Qwen32B-v2.1.0-lora Training Setup"
 echo "============================================================"
 
 # Configuration
@@ -21,7 +21,7 @@ echo "============================================================"
 # so we use TRAINING_DIR to avoid conflicts
 TRAINING_DIR="${TRAINING_DIR:-/workspace/training}"
 DATASETS_DIR="$TRAINING_DIR/datasets"
-OUTPUT_DIR="$TRAINING_DIR/mixed-v1-output"
+OUTPUT_DIR="$TRAINING_DIR/AJ-DeepSeekR1Qwen32B-v2.1.0-lora"
 PROGRESS_FILE="$TRAINING_DIR/.setup_progress"
 
 # Target dataset sizes
@@ -49,7 +49,20 @@ if is_step_complete "$STEP"; then
 else
     echo ""
     echo "[1/5] Installing dependencies..."
-    pip install -q datasets huggingface_hub tqdm requests pyyaml beautifulsoup4 unsloth transformers bitsandbytes
+    
+    # Check if PyTorch is already installed (from Docker image)
+    if python -c "import torch" 2>/dev/null; then
+        echo "PyTorch already installed from Docker image"
+    else
+        echo "Installing PyTorch 2.5 + CUDA 12.4..."
+        pip install -q torch==2.5.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+    fi
+    
+    # Verify CUDA is available
+    python -c "import torch; print(f'PyTorch {torch.__version__}, CUDA: {torch.cuda.is_available()}, GPUs: {torch.cuda.device_count()}')"
+    
+    # Install remaining dependencies
+    pip install -q datasets huggingface_hub tqdm requests pyyaml beautifulsoup4 unsloth transformers bitsandbytes accelerate peft trl sentencepiece protobuf
     mark_step_complete "$STEP"
     echo -e "${GREEN}[1/5] Dependencies installed ✓${NC}"
 fi

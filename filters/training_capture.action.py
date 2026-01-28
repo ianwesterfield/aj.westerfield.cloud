@@ -1,6 +1,6 @@
 """
 title: Capture Training Data
-author: AJ
+author: Agentic
 version: 0.4.0
 required_open_webui_version: 0.4.0
 icon_url: data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iY3VycmVudENvbG9yIj48cGF0aCBkPSJNMTIgMkM2LjQ4IDIgMiA2LjQ4IDIgMTJzNC40OCAxMCAxMCAxMCAxMC00LjQ4IDEwLTEwUzE3LjUyIDIgMTIgMnptLTEgMTdIOVYxM2gydjZoLTJ2LTZ6bTQgMGgtMnYtNGgydjR6bTAtNmgtMlY5aDJ2NHoiLz48L3N2Zz4=

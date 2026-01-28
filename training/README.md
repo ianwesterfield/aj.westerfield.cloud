@@ -1,8 +1,10 @@
 # AJ Training Infrastructure
 
-> **Current Approach**: Single-GPU LoRA fine-tuning for conversational AI agents
+> **Current Approach**: Single or Multi-GPU LoRA fine-tuning for conversational AI agents
 
 Train DeepSeek-R1-Distill-Qwen-32B for agentic intent logic with conversational adaptability. Optimize model reasoning while preserving base capabilities through parameter-efficient LoRA adaptation.
+
+**Multi-GPU Support**: DDP (Distributed Data Parallel) training is now fully supported on 2+ GPUs using HuggingFace Accelerate. See [Multi-GPU Training](#multi-gpu-training-ddp) section.
 
 ---
 
@@ -11,20 +13,21 @@ Train DeepSeek-R1-Distill-Qwen-32B for agentic intent logic with conversational 
 See [datasets/README.md](datasets/README.md) for full versioning scheme.
 
 ```
-AJ-DeepSeekR1Qwen32B-v{major.minor.patch-suffix}
-│          │             │     │     │       └── lora, merged, q4km, q8
-│          │             │     │     └────────── Patch: hyperparameter tweaks
-│          │             │     └──────────────── Minor: dataset mix adjustments
-│          │             └─────────────────── Major: new base model or architecture
-│          └──────────────────────────── Base model code
+AJ-DeepSeekR1Qwen32B-v2.1.0-lora
+│         │          │ │ │   │
+│         │          │ │ │   └─── Suffix: lora, merged, q4km, q8
+│         │          │ │ └─────── Patch: hyperparameter tweaks
+│         │          │ └───────── Minor: dataset mix adjustments
+│         │          └─────────── Major: new base model or architecture
+│         └────────────────────── Base model (no spaces)
 └──────────────────────────────── Project name
 ```
 
 ### Active Training Runs
 
-| Version       | Dataset  | Status      | Notes                                |
-| ------------- | -------- | ----------- | ------------------------------------ |
-| `v2.0.0-lora` | Mixed-v1 | ⏳ Training | Conversational + Plants + Apothecary |
+| Version       | Dataset  | Status     | Notes                                      |
+| ------------- | -------- | ---------- | ------------------------------------------ |
+| `v2.1.0-lora` | Mixed-v1 | ⏳ Pending | + Context Switching (Manchurian Candidate) |
 
 ---
 
@@ -58,6 +61,7 @@ AJ-DeepSeekR1Qwen32B-v{major.minor.patch-suffix}
 | **Single-GPU LoRA**      | High-VRAM GPU fits 32B model in bf16 + LoRA. No distributed training complexity  |
 | **LoRA (not full FT)**   | 99% fewer trainable params. Preserves base model reasoning                       |
 | **Mixed datasets**       | Conversational breadth + domain knowledge (plants, apothecary, agriculture)      |
+| **Context Switching**    | `contextType` signal teaches model to output conversational vs JSON as needed    |
 | **Server-side download** | Avoid large local uploads; fetch 5MB scripts only, download 300K examples on GPU |
 
 ---
@@ -108,12 +112,13 @@ The `setup_and_train_v2.sh` script handles everything:
 
 ### Hardware Requirements
 
-| Component   | Spec        | Notes                             |
-| ----------- | ----------- | --------------------------------- |
-| **GPU**     | 140GB+ VRAM | H100/H200 recommended, single GPU |
-| **CPU**     | 20+ cores   | For data loading and dataset prep |
-| **RAM**     | 200GB+      | Model loading and merging         |
-| **Storage** | 500GB+ SSD  | Datasets, checkpoints, outputs    |
+| Component   | Single-GPU         | Multi-GPU (2×H200) | Notes                             |
+| ----------- | ------------------ | ------------------ | --------------------------------- |
+| **GPU**     | 1× 140GB+ VRAM     | 2× 140GB+ VRAM     | H100/H200 recommended             |
+| **CPU**     | 20+ cores          | 32+ cores          | For data loading and dataset prep |
+| **RAM**     | 200GB+             | 400GB+             | Model loading and merging         |
+| **Storage** | 500GB+ SSD         | 500GB+ SSD         | Datasets, checkpoints, outputs    |
+| **ETA**     | ~50 hours/2 epochs | ~35 hours/2 epochs | DDP ~30% faster                   |
 
 ### LoRA Configuration
 
@@ -156,17 +161,18 @@ gradient_checkpointing: true
 
 ## Time Estimate
 
-| Phase                 | Duration      | Notes                         |
-| --------------------- | ------------- | ----------------------------- |
-| Data Download         | ~10 min       | 7 HuggingFace datasets (~2GB) |
-| Dataset Preparation   | ~5 min        | Merging 127K examples         |
-| Training (5000 steps) | ~11 hours     | ~2.2s/step on H100/H200       |
-| Model Merge + Convert | ~1 hour       | LoRA adapter + quantization   |
-| **Total**             | **~12 hours** | Start-to-finish on GPU        |
+| Phase                          | Single-GPU    | Multi-GPU (2×H200) | Notes                                     |
+| ------------------------------ | ------------- | ------------------ | ----------------------------------------- |
+| Data Download                  | ~10 min       | ~10 min            | 7 HuggingFace datasets (~2GB)             |
+| Dataset Preparation            | ~5 min        | ~10 min            | Each process tokenizes independently      |
+| Training (5000 steps)          | ~11 hours     | ~7 hours           | ~2.2s/step vs ~5s/step (but 2 GPUs)       |
+| Training (25K steps, 2 epochs) | ~50 hours     | ~35 hours          | Production training for context switching |
+| Model Merge + Convert          | ~1 hour       | ~1 hour            | LoRA adapter + quantization               |
+| **Total (5K steps)**           | **~12 hours** | **~8 hours**       | Start-to-finish                           |
 
 ---
 
-## Dataset: Mixed v1.0 (v2.0.0 Training)
+## Dataset: Mixed v1.0 (v2.1.0 Training)
 
 Combines 7 curated datasets for conversational breadth + domain knowledge:
 
@@ -202,15 +208,50 @@ Combines 7 curated datasets for conversational breadth + domain knowledge:
 
 ---
 
+## Context Switching ("Manchurian Candidate")
+
+The model learns to switch output modes based on a `contextType` signal in the system prompt:
+
+| contextType | Output Mode                         | Use Case                      |
+| ----------- | ----------------------------------- | ----------------------------- |
+| `external`  | Conversational, friendly, markdown  | User-facing chat (Open WebUI) |
+| `internal`  | Structured JSON with action objects | Agent/tool orchestration      |
+
+**Training Data**: `data/context_switching.jsonl` (999 examples, 50/50 split, weighted 3x)
+
+**Example pairs** (same question, different output):
+
+```json
+// contextType: external
+{"messages": [
+  {"role": "system", "content": "...contextType: external"},
+  {"role": "user", "content": "How do I list Docker containers?"},
+  {"role": "assistant", "content": "# Listing Docker Containers\\n\\nHere's how..."}
+]}
+
+// contextType: internal
+{"messages": [
+  {"role": "system", "content": "...contextType: internal"},
+  {"role": "user", "content": "How do I list Docker containers?"},
+  {"role": "assistant", "content": "{\"action\": \"provide_command\", \"command\": \"docker ps\", ...}"}
+]}
+```
+
+**Filter Integration**: The Open WebUI filter (`filters/aj.filter.py`) injects `contextType` based on intent classification before each request reaches the model.
+
+**Validation**: Run `python scripts/test_context_switching.py` to verify the behavior with a trained adapter.
+
+---
+
 ## File Structure
 
 ```
 training/
 ├── scripts/
-│   ├── train_mixed_h200.py     # Main v2.0.0 training script
+│   ├── train_mixed_h200.py     # Main training script
 │   └── merge_adapters.py       # Merge LoRA → full model
 ├── configs/
-│   ├── mixed_v1_h200.yaml      # v2.0.0 training config
+│   ├── mixed_v1_h200.yaml      # v2.1.0 training config
 │   └── merge_config.yaml       # Merge configuration
 ├── datasets/
 │   ├── download_datasets.py    # HuggingFace dataset loader
@@ -227,7 +268,7 @@ training/
 
 ### train_mixed_h200.py
 
-Main training script for v2.0.0 mixed dataset:
+Main training script for v2.1.0 mixed dataset:
 
 ```bash
 # Automatically called by setup_and_train_v2.sh
@@ -235,10 +276,10 @@ python scripts/train_mixed_h200.py --config configs/mixed_v1_h200.yaml
 
 # Resume from checkpoint if needed
 python scripts/train_mixed_h200.py --config configs/mixed_v1_h200.yaml \
-    --resume ./mixed-v1-output/checkpoint-2500
+    --resume ./AJ-DeepSeekR1Qwen32B-v2.1.0-lora/checkpoint-2500
 ```
 
-**Output**: `mixed-v1-output/` with LoRA adapter files
+**Output**: `AJ-DeepSeekR1Qwen32B-v2.1.0-lora/` with LoRA adapter files
 
 ### merge_adapters.py
 
@@ -247,8 +288,8 @@ Merge LoRA adapters back into base model:
 ```bash
 python scripts/merge_adapters.py \
     --base-model deepseek-ai/DeepSeek-R1-Distill-Qwen-32B \
-    --adapter-path ./mixed-v1-output \
-    --output-path ./aj-dsr1q32b-v2.0.0-merged
+    --adapter-path ./AJ-DeepSeekR1Qwen32B-v2.1.0-lora \
+    --output-path ./AJ-DeepSeekR1Qwen32B-v2.1.0-merged
 ```
 
 ---
@@ -324,7 +365,7 @@ AJ uses 6 core tools for the "All You Need is Bash" philosophy:
 ### Generate Custom Data
 
 ```bash
-# The v2.0.0 pipeline downloads and prepares datasets automatically
+# The v2.1.0 pipeline downloads and prepares datasets automatically
 # No manual data generation needed for basic training
 cd training
 bash setup_and_train_v2.sh
@@ -368,4 +409,137 @@ Earlier iterations tried different approaches that proved less reliable:
 2. **FSDP + LoRA**: Optimizer state sharding incompatible with LoRA
 3. **Full Fine-tuning**: Required 8+ GPUs, expensive
 
-The single-GPU high-memory approach eliminates distributed training complexity while remaining cost-effective.
+**Update (Jan 2026)**: DDP with HuggingFace Accelerate now works reliably with specific settings. See [Multi-GPU Training](#multi-gpu-training-ddp).
+
+---
+
+## Multi-GPU Training (DDP)
+
+Distributed Data Parallel (DDP) training is now fully supported. This provides ~30% speedup with 2 GPUs.
+
+### Prerequisites
+
+1. **Multiple GPUs** (2× H200 tested, H100 should also work)
+2. **HuggingFace Accelerate** installed (`pip install accelerate`)
+
+### Critical DDP Settings
+
+These settings are **REQUIRED** for DDP to work with LoRA fine-tuning:
+
+```python
+# In train_mixed_h200.py
+
+# 1. device_map MUST be None (not 'auto')
+# Accelerate handles device placement, not AutoModelForCausalLM
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    device_map=None,  # CRITICAL: Must be None for DDP
+    torch_dtype=torch.bfloat16,
+    ...
+)
+
+# 2. use_reentrant MUST be False
+# Prevents "parameter marked ready twice" error with gradient checkpointing + DDP
+gradient_checkpointing_kwargs={"use_reentrant": False}
+
+# 3. ddp_find_unused_parameters MUST be False
+# LoRA only trains ~1.6% of params; base model params are frozen but still in graph
+SFTConfig(
+    ...
+    ddp_find_unused_parameters=False,
+)
+```
+
+### Accelerate Configuration
+
+Create `training/accelerate_config.yaml`:
+
+```yaml
+compute_environment: LOCAL_MACHINE
+distributed_type: MULTI_GPU
+downcast_bf16: "no"
+machine_rank: 0
+main_training_function: main
+mixed_precision: bf16
+num_machines: 1
+num_processes: 2 # Number of GPUs
+rdzv_backend: static
+same_network: true
+tpu_env: []
+tpu_use_cluster: false
+tpu_use_sudo: false
+use_cpu: false
+```
+
+### Training Config for 2 GPUs
+
+Create `training/configs/mixed_v1_2xh200.yaml`:
+
+```yaml
+model_name: deepseek-ai/DeepSeek-R1-Distill-Qwen-32B
+dataset_path: ./datasets/processed/mixed_v1_final.jsonl
+output_dir: ./AJ-DeepSeekR1Qwen32B-v2.1.0-lora
+
+# LoRA
+lora_r: 64
+lora_alpha: 128
+lora_dropout: 0.05
+
+# Training - adjusted for 2 GPUs
+batch_size: 2 # Per GPU
+gradient_accumulation_steps: 4 # Effective batch = 2 * 2 * 4 = 16
+num_train_epochs: 2
+max_seq_length: 2048
+learning_rate: 2e-5
+warmup_steps: 100
+```
+
+### Launch DDP Training
+
+```bash
+# Start tmux session (protects against SSH disconnect)
+tmux new -s train
+
+# Launch with accelerate
+cd /workspace/training
+accelerate launch \
+    --config_file accelerate_config.yaml \
+    scripts/train_mixed_h200.py \
+    --config configs/mixed_v1_2xh200.yaml \
+    2>&1 | tee training_2gpu.log
+
+# Detach: Ctrl+B, then D
+# Reattach: tmux attach -t train
+```
+
+### DDP Troubleshooting
+
+| Error                                                                                                | Cause                                            | Fix                                                       |
+| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------ | --------------------------------------------------------- |
+| `ValueError: You can't train a model that has been loaded with device_map='auto'`                    | `device_map='auto'` incompatible with DDP        | Set `device_map=None`                                     |
+| `RuntimeError: Expected to have finished reduction in the prior iteration before starting a new one` | `use_reentrant=True` with gradient checkpointing | Set `use_reentrant=False`                                 |
+| `Gradient norms exploding (>10)`                                                                     | DDP gradient sync issues                         | Ensure `ddp_find_unused_parameters=False`                 |
+| Both GPUs show 0% utilization                                                                        | Model not distributed                            | Check accelerate config `num_processes` matches GPU count |
+
+### Monitoring DDP Training
+
+```bash
+# Check GPU utilization (both should be >90%)
+nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv
+
+# Watch training progress
+tail -f /workspace/training/training_2gpu.log
+
+# Check grad norms (should be <1.0 for stable training)
+grep grad_norm training_2gpu.log | tail -5
+```
+
+### Expected DDP Metrics
+
+| Metric          | Healthy Range    | Notes                                |
+| --------------- | ---------------- | ------------------------------------ |
+| GPU Memory      | ~88GB each (61%) | Both GPUs should be similar          |
+| GPU Utilization | 95-100%          | Both GPUs actively computing         |
+| Grad Norm       | 0.3-0.8          | Much lower than single-GPU (1.5-3.0) |
+| Step Time       | ~5-6 sec         | With 2× H200                         |
+| Loss            | Decreasing       | Should drop from ~1.6 to <1.0        |
