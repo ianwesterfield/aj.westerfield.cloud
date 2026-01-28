@@ -50,5 +50,10 @@ raw/
 secrets/
 Thumbs.db
 training/**/data/
+training/models/
+training/logs/
+training/datasets/raw/
+training/datasets/processed/
+training/datasets/__pycache__/
 unsloth_compiled_cache/
 venv/

@@ -304,7 +304,8 @@ Unregister-ScheduledTask -TaskName "AJ-Westerfield-Services" -Confirm:$false
 AJ includes infrastructure for fine-tuning DeepSeek-R1-Distill-Qwen-32B with LoRA:
 
 - **Hardware**: DigitalOcean H200 GPU Droplet (141GB VRAM, $3.44/hr)
-- **Dataset**: Toucan-1.5M (real MCP tool-use trajectories, 118K examples)
+- **Dataset**: Mixed-v1 (~300K examples: 50% conversational, 40% domain knowledge, 10% strategic reasoning)
+- **Context Switching**: Model learns `contextType: external/internal` signal for output mode control
 - **Method**: Single-GPU LoRA (no distributed training complexity)
 - **Output**: Q4_K_M GGUF for RTX 4090 deployment (~18GB)
 

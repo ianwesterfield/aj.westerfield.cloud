@@ -1122,9 +1122,18 @@ class Filter:
             "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iY3VycmVudENvbG9yIj4KICA8IS0tIEhlYWQgLS0+CiAgPGNpcmNsZSBjeD0iMTIiIGN5PSI2IiByPSIzLjUiLz4KICA8IS0tIEJvdyB0aWUgLS0+CiAgPHBhdGggZD0iTTkgMTJsLTIgMS41TDkgMTVoNmwyLTEuNUwxNSAxMkg5eiIvPgogIDwhLS0gQm9keSAtLT4KICA8cGF0aCBkPSJNNiAxNWMwLTEgMS41LTIgNi0yIDQuNSAwIDYgMSA2IDJ2NmMwIC41LS41IDEtMSAxSDdjLS41IDAtMS0uNS0xLTF2LTZ6Ii8+Cjwvc3ZnPgo="
         )
     
-    def _inject_context(self, body: dict, context_items: List[dict], orchestrator_context: Optional[str] = None) -> dict:
-        """Inject system prompt, retrieved memories, and orchestrator analysis into conversation."""
+    def _inject_context(self, body: dict, context_items: List[dict], orchestrator_context: Optional[str] = None, intent: str = "casual") -> dict:
+        """Inject system prompt, retrieved memories, and orchestrator analysis into conversation.
+        
+        Also injects contextType signal for Manchurian Candidate behavior:
+        - contextType: external (casual, recall, save intents) → conversational response
+        - contextType: internal (task intent) → structured JSON response
+        """
         messages = body.get("messages", [])
+        
+        # Determine contextType based on intent
+        # Task intent goes through orchestrator which needs JSON, others are direct user chat
+        context_type = "internal" if intent == "task" else "external"
         
         # Inject AJ system prompt if not already present
         has_aj_system = any(
@@ -1133,10 +1142,11 @@ class Filter:
         )
         
         if not has_aj_system:
-            # Add AJ system prompt at the beginning
+            # Add AJ system prompt with contextType signal at the beginning
+            system_content = f"contextType: {context_type}\n\n{AJ_SYSTEM_PROMPT}"
             aj_system = {
                 "role": "system",
-                "content": AJ_SYSTEM_PROMPT
+                "content": system_content
             }
             # Insert after any existing system messages, or at start
             insert_idx = 0
@@ -1146,6 +1156,14 @@ class Filter:
                 else:
                     break
             messages.insert(insert_idx, aj_system)
+        else:
+            # System prompt exists, prepend contextType to it
+            for m in messages:
+                if m.get("role") == "system" and "AJ" in m.get("content", ""):
+                    existing_content = m.get("content", "")
+                    if "contextType:" not in existing_content:
+                        m["content"] = f"contextType: {context_type}\n\n{existing_content}"
+                    break
         
         if not context_items and not orchestrator_context:
             body["messages"] = messages
@@ -1226,6 +1244,10 @@ class Filter:
             model = body.get("model", "unknown")
             metadata = body.get("metadata", {})
             
+            # Model routing based on intent (will be set after classification)
+            # aj-chat for conversational, aj-agent for task execution
+            original_model = model
+            
             if not messages or not isinstance(messages, list):
                 return body
             
@@ -1287,6 +1309,18 @@ class Filter:
                     if should_upgrade:
                         print(f"[aj] Upgrading intent from casual to task (continuation detected)")
                         intent = "task"
+                
+                # MODEL ROUTING: Auto-select model based on intent
+                # aj-chat for conversational, aj-agent for task execution
+                if original_model.startswith("aj-"):
+                    if intent == "task":
+                        model = "aj-agent"
+                        body["model"] = model
+                        print(f"[aj] Model routed: {original_model} → {model} (task intent)")
+                    else:
+                        model = "aj-chat"
+                        body["model"] = model
+                        print(f"[aj] Model routed: {original_model} → {model} ({intent} intent)")
             
             # Search memory for context (needed for tasks and recall)
             context = []
@@ -1358,19 +1392,23 @@ class Filter:
                         create_status_dict("Ready", LogCategory.FILTER, LogLevel.READY, done=True)
                     )
                 
-                body = self._inject_context(body, context or [], orchestrator_context)
+                body = self._inject_context(body, context or [], orchestrator_context, intent=intent)
             
             elif saved:
                 await __event_emitter__(
                     create_status_dict("Saved", LogCategory.FILTER, LogLevel.SAVED, done=True)
                 )
+                # Still inject contextType even without memory context
+                body = self._inject_context(body, [], None, intent=intent)
             
             else:
                 await __event_emitter__(
                     create_status_dict("Ready", LogCategory.FILTER, LogLevel.READY, done=True, hidden=True)
                 )
+                # Still inject contextType even without memory context
+                body = self._inject_context(body, [], None, intent=intent)
             
-            print(f"[aj] user={user_id} intent={intent} saved={saved} context={len(context or [])} chunks={chunks_saved}")
+            print(f"[aj] user={user_id} intent={intent} saved={saved} context={len(context or [])} chunks={chunks_saved} contextType={'internal' if intent == 'task' else 'external'}")
             return body
         
         except Exception as e:
