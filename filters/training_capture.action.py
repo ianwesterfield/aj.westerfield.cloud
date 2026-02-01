@@ -316,7 +316,11 @@ class Action:
         """Configuration for the training capture action."""
         orchestrator_url: str = Field(
             default="http://orchestrator_api:8004",
-            description="URL of the orchestrator API"
+            description="URL of the orchestrator API (server-side, Docker internal)"
+        )
+        browser_orchestrator_url: str = Field(
+            default="http://localhost:8004",
+            description="URL of the orchestrator API (client-side, browser accessible)"
         )
         enable_session_capture: bool = Field(
             default=True,
@@ -370,6 +374,7 @@ class Action:
         user_id = __user__.get("id", "") if __user__ else ""
         
         # Generate form with embedded context
+        # Use browser_orchestrator_url since form runs client-side in the browser
         form_html = generate_form_html(
             session_id=session_id,
             message_id=message_id,
@@ -377,7 +382,7 @@ class Action:
             model_response=message_content,
             model_id=model_id,
             user_id=user_id,
-            orchestrator_url=self.valves.orchestrator_url
+            orchestrator_url=self.valves.browser_orchestrator_url
         )
         
         # Emit the HTML form as an embed - no popup, form handles everything
