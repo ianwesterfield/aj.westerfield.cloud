@@ -1,138 +1,31 @@
 """
-Bash Dispatcher - "All You Need is Bash" Philosophy
+Bash Dispatcher - FunnelCloud Remote Execute Only
 
-The core principle: Let the LLM generate bash commands for everything.
-No file handlers, no polyglot routers, no over-engineering.
+The core principle: The LLM reasons and generates commands from its training.
+Only remote_execute is provided as a tool - everything else is LLM reasoning.
 
 Tools:
-  - bash: Execute any command locally
-  - remote_bash: Execute command on a FunnelCloud agent
+  - remote_execute: Execute command on a FunnelCloud agent (the ONLY execution tool)
+  - list_agents: Discover available FunnelCloud agents  
   - think: Chain-of-thought reasoning (no execution)
   - complete: Signal task completion
 
-File operations? The LLM generates:
-  - cat file.txt (read)
-  - echo "content" > file.txt (write)
-  - sed -i 's/old/new/g' file.txt (replace)
-  - rm file.txt (delete)
-  - ls -la (list)
-
-Code execution? The LLM generates:
-  - python -c "print('hello')"
-  - node -e "console.log('hello')"
-  - pwsh -c "Get-Process"
+All file operations, code execution, etc. are handled by remote_execute
+on the appropriate FunnelCloud agent. The LLM generates:
+  - Windows: PowerShell commands (Get-Content, Set-Content, etc.)
+  - Linux: Bash commands (cat, echo, sed, etc.)
 """
 
 import asyncio
 import logging
-import shlex
-import os
 from typing import Any, Dict, List, Optional
-from dataclasses import dataclass
 
 from schemas.models import WorkspaceContext
 from services.grpc_client import get_grpc_client, TaskResult
 from services.agent_discovery import get_discovery_service, AgentCapabilities
 
 
-logger = logging.getLogger("orchestrator.bash")
-
-
-@dataclass
-class BashResult:
-    """Result of a bash command execution."""
-    success: bool
-    stdout: str
-    stderr: str
-    exit_code: int
-    
-
-class BashExecutor:
-    """
-    Simple bash command executor.
-    
-    No blocklists, no tokenization complexity.
-    The LLM is responsible for generating safe commands.
-    Workspace context can limit permissions if needed.
-    """
-    
-    def __init__(self, workspace_root: Optional[str] = None):
-        self.workspace_root = workspace_root or os.getcwd()
-    
-    async def execute(
-        self,
-        command: str,
-        timeout: int = 60,
-        cwd: Optional[str] = None,
-        env: Optional[Dict[str, str]] = None,
-    ) -> BashResult:
-        """
-        Execute a bash command.
-        
-        Args:
-            command: The bash command to execute
-            timeout: Timeout in seconds
-            cwd: Working directory (defaults to workspace root)
-            env: Additional environment variables
-            
-        Returns:
-            BashResult with stdout, stderr, exit_code
-        """
-        work_dir = cwd or self.workspace_root
-        
-        # Merge environment
-        full_env = os.environ.copy()
-        if env:
-            full_env.update(env)
-        
-        try:
-            # Use bash -c for full shell capabilities (pipes, redirects, etc.)
-            process = await asyncio.create_subprocess_exec(
-                "bash", "-c", command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=work_dir,
-                env=full_env,
-            )
-            
-            stdout, stderr = await asyncio.wait_for(
-                process.communicate(),
-                timeout=timeout
-            )
-            
-            return BashResult(
-                success=process.returncode == 0,
-                stdout=stdout.decode("utf-8", errors="replace").strip(),
-                stderr=stderr.decode("utf-8", errors="replace").strip(),
-                exit_code=process.returncode or 0,
-            )
-            
-        except asyncio.TimeoutError:
-            return BashResult(
-                success=False,
-                stdout="",
-                stderr=f"Command timed out after {timeout}s",
-                exit_code=-1,
-            )
-        except Exception as e:
-            return BashResult(
-                success=False,
-                stdout="",
-                stderr=str(e),
-                exit_code=-1,
-            )
-
-
-# Singleton executor
-_bash_executor: Optional[BashExecutor] = None
-
-
-def get_bash_executor(workspace_root: Optional[str] = None) -> BashExecutor:
-    """Get or create singleton BashExecutor."""
-    global _bash_executor
-    if _bash_executor is None:
-        _bash_executor = BashExecutor(workspace_root)
-    return _bash_executor
+logger = logging.getLogger("orchestrator.dispatch")
 
 
 async def get_available_agents() -> List[AgentCapabilities]:
@@ -156,47 +49,22 @@ async def dispatch_tool(
     workspace_context: Optional[WorkspaceContext] = None,
 ) -> Dict[str, Any]:
     """
-    Dispatch tool execution - simplified to just bash.
+    Dispatch tool execution - only remote_execute for FunnelCloud agents.
     
     Tools:
-      - bash: Execute command locally
-      - remote_bash: Execute command on agent
+      - remote_execute: Execute command on agent (THE ONLY execution tool)
+      - list_agents: Get available agents
       - think: Reasoning step (no execution)
       - complete: Signal completion
-      - list_agents: Get available agents
     """
     
-    # === BASH: Local command execution ===
-    if tool == "bash":
-        command = params.get("command", "")
-        if not command:
-            return {"success": False, "output": "", "error": "No command provided"}
-        
-        timeout = params.get("timeout", 60)
-        cwd = params.get("cwd")
-        
-        executor = get_bash_executor()
-        result = await executor.execute(command, timeout=timeout, cwd=cwd)
-        
-        # Combine stdout/stderr for output
-        output = result.stdout
-        if result.stderr and result.success:
-            output = f"{output}\n{result.stderr}" if output else result.stderr
-        
-        return {
-            "success": result.success,
-            "output": output,
-            "error": result.stderr if not result.success else None,
-            "exit_code": result.exit_code,
-        }
-    
-    # === REMOTE_BASH: Execute on FunnelCloud agent ===
-    if tool == "remote_bash":
+    # === REMOTE_EXECUTE: Execute on FunnelCloud agent ===
+    if tool == "remote_execute":
         agent_id = params.get("agent_id", "")
         command = params.get("command", "")
         
         if not agent_id:
-            return {"success": False, "output": "", "error": "No agent_id provided"}
+            return {"success": False, "output": "", "error": "No agent_id provided. Use list_agents first to discover available agents."}
         if not command:
             return {"success": False, "output": "", "error": "No command provided"}
         
@@ -228,6 +96,7 @@ async def dispatch_tool(
                 "output": result.stdout or result.stderr or "",
                 "error": result.stderr if not result.success else None,
                 "agent_id": agent_id,
+                "platform": agent.platform,  # windows or linux
             }
         except Exception as e:
             return {
@@ -237,15 +106,15 @@ async def dispatch_tool(
                 "agent_id": agent_id,
             }
     
-    # === REMOTE_BASH_ALL: Execute on ALL agents ===
-    if tool == "remote_bash_all":
+    # === REMOTE_EXECUTE_ALL: Execute on ALL agents ===
+    if tool == "remote_execute_all":
         command = params.get("command", "")
         if not command:
             return {"success": False, "output": "", "error": "No command provided"}
         
         agents = await get_available_agents()
         if not agents:
-            return {"success": False, "output": "", "error": "No agents available"}
+            return {"success": False, "output": "", "error": "No agents available. Use list_agents first."}
         
         # Execute on all agents in parallel
         grpc_client = get_grpc_client()
@@ -318,48 +187,39 @@ async def dispatch_tool(
     return {
         "success": False,
         "output": "",
-        "error": f"Unknown tool: {tool}. Available: bash, remote_bash, remote_bash_all, think, complete, list_agents",
+        "error": f"Unknown tool: {tool}. Available: remote_execute, remote_execute_all, list_agents, think, complete",
     }
 
 
-# Tool definitions for the LLM
-BASH_TOOLS = """
+# Tool definitions for the LLM - ONLY remote_execute
+REMOTE_EXECUTE_TOOLS = """
 Available tools (use JSON format):
 
-1. bash - Execute any command locally
-   {"tool": "bash", "command": "ls -la"}
-   {"tool": "bash", "command": "cat file.txt"}
-   {"tool": "bash", "command": "echo 'content' > newfile.txt"}
-   {"tool": "bash", "command": "python -c 'print(1+1)'"}
-   {"tool": "bash", "command": "sed -i 's/old/new/g' file.txt"}
+1. remote_execute - Execute command on a specific FunnelCloud agent
+   {"tool": "remote_execute", "params": {"agent_id": "workstation01", "command": "hostname"}}
+   
+   This is the ONLY execution tool. Use it for ALL operations:
+   - File operations (read/write/list)
+   - Code execution
+   - System commands
+   - Everything that requires running on a machine
 
-2. remote_bash - Execute command on a specific agent
-   {"tool": "remote_bash", "agent_id": "workstation01", "command": "hostname"}
+2. remote_execute_all - Execute same command on ALL agents (parallel)
+   {"tool": "remote_execute_all", "params": {"command": "uptime"}}
 
-3. remote_bash_all - Execute same command on ALL agents
-   {"tool": "remote_bash_all", "command": "uptime"}
+3. list_agents - Discover available FunnelCloud agents (CALL FIRST)
+   {"tool": "list_agents", "params": {}}
 
 4. think - Reason through a problem (no execution)
-   {"tool": "think", "thought": "I need to first check if the file exists..."}
+   {"tool": "think", "params": {"thought": "I need to first check if the file exists..."}}
 
-5. complete - Signal task completion
-   {"tool": "complete", "message": "Successfully updated the config"}
+5. complete - Signal task completion with answer
+   {"tool": "complete", "params": {"answer": "Successfully updated the config"}}
 
-6. list_agents - Get available remote agents
-   {"tool": "list_agents"}
-
-File operations are just bash:
-  - Read: cat file.txt
-  - Write: echo 'content' > file.txt (or cat << 'EOF' > file.txt for multiline)
-  - Append: echo 'content' >> file.txt
-  - Delete: rm file.txt
-  - List: ls -la
-  - Find: find . -name "*.py"
-  - Replace: sed -i 's/old/new/g' file.txt
-  - Create dir: mkdir -p path/to/dir
-
-Code execution is just bash:
-  - Python: python -c "code" or python script.py
-  - Node: node -e "code" or node script.js
-  - PowerShell: pwsh -c "code"
+WORKFLOW:
+1. ALWAYS call list_agents FIRST to discover available machines
+2. Use remote_execute with the appropriate agent_id for ALL operations
+3. Generate the correct commands based on agent platform:
+   - Windows agents: PowerShell (Get-ChildItem, Get-Content, Set-Content, etc.)
+   - Linux agents: Bash (ls, cat, echo, sed, etc.)
 """

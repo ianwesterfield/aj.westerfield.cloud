@@ -20,7 +20,7 @@ COPY shared /app/shared
 COPY orchestrator .
 
 # Default model fallback (overridden by Open-WebUI selection)
-ENV OLLAMA_MODEL=qwen2.5-aj:32b-4k
+ENV OLLAMA_MODEL=aj-deepseek-r1-32b
 
 # Expose port
 EXPOSE 8004

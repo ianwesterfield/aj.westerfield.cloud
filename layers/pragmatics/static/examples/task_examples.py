@@ -610,4 +610,55 @@ TASK_EXAMPLES = [
     "Update firewall rules",
     "Generate SSL cert",
     "Encrypt the file",
+    
+    # =======================================================================
+    # ACTIVE DIRECTORY / IDENTITY OPERATIONS
+    # =======================================================================
+    
+    # Group membership queries
+    "What AD groups am I in?",
+    "Check which AD groups my account belongs to",
+    "List my Active Directory groups",
+    "What groups does ian@westerfield.cloud belong to?",
+    "Show AD group membership for my user",
+    "What security groups is my account in?",
+    "Check AD group membership",
+    "List groups for user ian",
+    "What groups am I a member of?",
+    "Show my group memberships",
+    
+    # User queries
+    "Look up user info in AD",
+    "Get AD user details for ian",
+    "Check if user exists in Active Directory",
+    "Show AD attributes for my account",
+    "What's my AD account status?",
+    "Get user properties from AD",
+    "Look up ian@westerfield.cloud in AD",
+    "Show Active Directory info for my user",
+    
+    # AD administrative tasks
+    "Add user to group",
+    "Remove user from AD group",
+    "Create new AD user",
+    "Reset AD password",
+    "Unlock AD account",
+    "Disable user account",
+    "Enable AD account",
+    "Move user to different OU",
+    
+    # Computer/device queries
+    "List computers in AD",
+    "What machines are in this OU?",
+    "Show AD computer accounts",
+    "Find computer in Active Directory",
+    "List domain-joined machines",
+    
+    # DNS and domain queries
+    "Check DNS records",
+    "Look up A record for server",
+    "What's the IP for this hostname?",
+    "Query DNS for domain",
+    "List domain controllers",
+    "Which DC is primary?",
 ]

@@ -12,7 +12,7 @@ services:
     network_mode: host
     environment:
       - OLLAMA_HOST=0.0.0.0
-      - OLLAMA_KEEP_ALIVE=24h # Keep models loaded for 24 hours (ensures persistent loading)
+      - OLLAMA_KEEP_ALIVE=-1 # Keep models loaded forever (never unload)
       - OLLAMA_NUM_PARALLEL=1 # CRITICAL: Only 1 concurrent request to prevent double-loads
       - OLLAMA_MAX_LOADED_MODELS=1 # CRITICAL: Maximum 1 model loaded at a time
     volumes:

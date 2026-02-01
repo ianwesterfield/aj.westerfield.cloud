@@ -2,10 +2,10 @@
 AJ Filter - Agentic Reasoning & Memory
 
 Open-WebUI filter that handles:
-  - Intent classification (recall, save, task)
+  - Intent classification (task vs casual - 2 class)
   - Multi-step reasoning via orchestrator
-  - Code execution via executor
-  - Semantic memory storage and retrieval
+  - Code execution via FunnelCloud agents
+  - Semantic memory storage and retrieval (automatic)
 """
 import os
 import re
@@ -143,9 +143,25 @@ PRAGMATICS_API_URL = os.getenv("PRAGMATICS_API_URL", "http://pragmatics_api:8001
 
 # System prompt describing AJ capabilities and output contracts
 # This is injected into the chat LLM that presents results to users
-AJ_SYSTEM_PROMPT = """# AJ
+AJ_SYSTEM_PROMPT = """# AJ — Identity
 
-AJ is an agentic-capable AI-assisted filter for Open-WebUI. It sits between the LLM and your workspace to route intent, manage semantic memory, run workspace operations, and provide a streaming UX.
+You ARE AJ. First-person. You speak AS yourself, not ABOUT yourself.
+
+## ABSOLUTE RULES — VIOLATING THESE IS FAILURE
+
+1. **NEVER explain what AJ is** — You don't describe yourself in third person. You just ARE.
+2. **NEVER mention "intent classification", "semantic memory", "workspace operations", "streaming UX"** — These are internal implementation details. Users don't care.
+3. **NEVER say "AJ is an AI-assisted filter"** — This is documentation. You're not a manual.
+4. **When greeted, GREET BACK** — "Hello!" → "Hey! What can I help you with?" NOT a lecture about your architecture.
+5. **Be conversational** — Short, helpful, human-like responses for simple questions.
+
+## WHO YOU ARE (for your behavior, not to recite)
+
+- Created by Ian Westerfield
+- Helpful, capable, slightly witty
+- You can run commands, manage files, remember things, work with remote agents
+- You prefer CLI tools over GUIs
+- You show real output, then brief commentary
 
 ## CRITICAL: Response Format
 
@@ -169,17 +185,15 @@ Here is the list:
 
 ## What AJ Does
 
-1. **Classifies Intent** — Determine whether the user is chatting, saving info, recalling, or requesting a task.
-2. **Manages Memory** — Save facts/docs/notes and retrieve relevant context later.
-3. **Runs Workspace Ops** — Read/list/edit files and run shell commands via the Executor.
+1. **Classifies Intent** — Determine whether the user needs a task (agent execution) or just conversation.
+2. **Manages Memory** — Automatically save facts/docs/notes and retrieve relevant context.
+3. **Runs Remote Commands** — Execute commands on Windows agents via FunnelCloud.
 4. **Streaming UX** — Show "thinking + progress" while tasks run, then display results verbatim.
 
-## Intent Routing
+## Intent Routing (2-class)
 
-- `casual`: respond normally in plain markdown, no tools.
-- `save`: store memory payload, then confirm saved (short).
-- `recall`: search memory, inject relevant results, answer using retrieved context.
-- `task`: orchestrate multi-step work (plan → execute → verify → complete).
+- `casual`: respond normally in plain markdown, no tools. Memory search happens automatically.
+- `task`: orchestrate FunnelCloud agent execution (plan → execute → complete).
 
 ## Output Contract (VERBATIM-FIRST) — CRITICAL
 
@@ -232,20 +246,21 @@ CONTENT_TYPE_MAP = {
 }
 
 # ============================================================================
-# Intent Classification
+# Intent Classification (2-class: task vs casual)
 # ============================================================================
 
 def _classify_intent(text: str) -> Dict[str, Any]:
     """
-    Classify user intent via pragmatics 4-class model.
+    Classify user intent via pragmatics 2-class model.
     
-    All intent detection is handled by the pragmatics API - no hardcoded
-    patterns in the filter. This follows the architecture principle:
-    "Orchestrator owns all reasoning — Filter routes by intent but NEVER
-    hardcodes tool selection patterns."
+    Two intents only:
+      - task: Requires execution (remote commands, file ops, queries to agents)
+      - casual: Conversation, questions, chitchat
+    
+    Memory search/save happens automatically regardless of intent.
     
     Returns:
-        {"intent": "recall"|"save"|"task"|"casual", "confidence": float}
+        {"intent": "task"|"casual", "confidence": float}
     """
     try:
         resp = requests.post(
@@ -257,7 +272,13 @@ def _classify_intent(text: str) -> Dict[str, Any]:
             result = resp.json()
             intent = result.get("intent", "casual")
             confidence = result.get("confidence", 0.5)
-            print(f"[aj] Pragmatics: {intent} ({confidence:.2f})")
+            
+            # Map old 4-class intents to 2-class
+            # recall/save → casual (memory happens automatically)
+            if intent in ("recall", "save"):
+                intent = "casual"
+            
+            print(f"[aj] Intent: {intent} ({confidence:.2f})")
             return {"intent": intent, "confidence": confidence}
     except Exception as e:
         print(f"[aj] Pragmatics API error: {e}")
@@ -1078,10 +1099,10 @@ class Filter:
     AJ - Agentic Assistant Filter for Open-WebUI.
     
     Provides:
-      - Intent classification (recall, save, task, casual)
+      - Intent classification (task vs casual - 2 class)
       - Multi-step reasoning via orchestrator
-      - Code execution via executor
-      - Semantic memory retrieval and storage
+      - Remote command execution via FunnelCloud agents
+      - Semantic memory retrieval and storage (automatic)
       - Document/image extraction
     """
     
@@ -1126,7 +1147,7 @@ class Filter:
         """Inject system prompt, retrieved memories, and orchestrator analysis into conversation.
         
         Also injects contextType signal for Manchurian Candidate behavior:
-        - contextType: external (casual, recall, save intents) → conversational response
+        - contextType: external (casual intent) → conversational response
         - contextType: internal (task intent) → structured JSON response
         """
         messages = body.get("messages", [])
@@ -1244,10 +1265,6 @@ class Filter:
             model = body.get("model", "unknown")
             metadata = body.get("metadata", {})
             
-            # Model routing based on intent (will be set after classification)
-            # aj-chat for conversational, aj-agent for task execution
-            original_model = model
-            
             if not messages or not isinstance(messages, list):
                 return body
             
@@ -1309,18 +1326,6 @@ class Filter:
                     if should_upgrade:
                         print(f"[aj] Upgrading intent from casual to task (continuation detected)")
                         intent = "task"
-                
-                # MODEL ROUTING: Auto-select model based on intent
-                # aj-chat for conversational, aj-agent for task execution
-                if original_model.startswith("aj-"):
-                    if intent == "task":
-                        model = "aj-agent"
-                        body["model"] = model
-                        print(f"[aj] Model routed: {original_model} → {model} (task intent)")
-                    else:
-                        model = "aj-chat"
-                        body["model"] = model
-                        print(f"[aj] Model routed: {original_model} → {model} ({intent} intent)")
             
             # Search memory for context (needed for tasks and recall)
             context = []
@@ -1336,21 +1341,6 @@ class Filter:
                     }
                     for r in search_results
                 ]
-            
-            # SAVE based on intent classification
-            saved = False
-            if intent == "save" and user_text:
-                await __event_emitter__(
-                    create_status_dict("Saving to memory...", LogCategory.MEMORY, LogLevel.PROCESSING)
-                )
-                saved = await _save_to_memory(
-                    user_id,
-                    messages,
-                    source_type="prompt",
-                    source_name=user_text[:50] if len(user_text) > 50 else user_text,
-                )
-                if saved:
-                    print(f"[aj] Saved memory for user={user_id}")
             
             # For task intents, engage orchestrator (pass memory context for user info)
             if intent == "task" and self.user_valves.enable_orchestrator:
@@ -1394,13 +1384,6 @@ class Filter:
                 
                 body = self._inject_context(body, context or [], orchestrator_context, intent=intent)
             
-            elif saved:
-                await __event_emitter__(
-                    create_status_dict("Saved", LogCategory.FILTER, LogLevel.SAVED, done=True)
-                )
-                # Still inject contextType even without memory context
-                body = self._inject_context(body, [], None, intent=intent)
-            
             else:
                 await __event_emitter__(
                     create_status_dict("Ready", LogCategory.FILTER, LogLevel.READY, done=True, hidden=True)
@@ -1408,7 +1391,8 @@ class Filter:
                 # Still inject contextType even without memory context
                 body = self._inject_context(body, [], None, intent=intent)
             
-            print(f"[aj] user={user_id} intent={intent} saved={saved} context={len(context or [])} chunks={chunks_saved} contextType={'internal' if intent == 'task' else 'external'}")
+            print(f"[aj] user={user_id} intent={intent} context={len(context or [])} chunks={chunks_saved} contextType={'internal' if intent == 'task' else 'external'}")
+            return body
             return body
         
         except Exception as e:
@@ -1569,6 +1553,7 @@ class Filter:
         """
         Format response text for better markdown rendering.
         
+        - Remove leaked internal markers/instructions
         - Remove leaked tool call syntax (LLM hallucinations)
         - Remove raw JSON tool calls that leaked through
         - Remove partial/orphaned JSON fragments
@@ -1581,6 +1566,88 @@ class Filter:
         # Skip if empty
         if not text:
             return text
+        
+        # SANITIZATION: Remove leaked internal markers and instructions
+        # These are internal prompts the model should follow, not output
+        
+        # First, remove SUMMARIZATION instruction blocks (can be multi-line)
+        # Match from ⚠️ SUMMARIZATION: until double newline or end
+        text = re.sub(r'⚠️ SUMMARIZATION:.*?(?=\n\n[A-Z]|\n\n-|\Z)', '', text, flags=re.DOTALL)
+        
+        # Remove various internal markers (can appear anywhere, not just at boundaries)
+        internal_markers = [
+            r'### End Result ###',
+            r'### End Action Log ###',
+            r'### Action Log ###',
+            r'### End Memories ###',
+            r'### Task Plan ###',
+            r'<think>',
+            r'</think>',
+            r'</context>',
+            r'<context>',
+        ]
+        for pattern in internal_markers:
+            text = re.sub(re.escape(pattern) if not pattern.startswith('<') else pattern, '', text, flags=re.IGNORECASE)
+        
+        # Remove Retrieved Memories blocks entirely (including content)
+        text = re.sub(r'### Retrieved Memories ###.*?(?=### End Memories ###|$)', '', text, flags=re.DOTALL)
+        
+        # Remove context blocks
+        text = re.sub(r'<context>.*?</context>', '', text, flags=re.DOTALL)
+        
+        # LOOP DETECTION: Remove repeated lines (model hallucination)
+        # If the same line appears 3+ times, it's looping - remove all but first
+        lines = text.split('\n')
+        line_counts = {}
+        for line in lines:
+            stripped = line.strip()
+            if stripped and len(stripped) > 10:  # Only count substantial lines
+                line_counts[stripped] = line_counts.get(stripped, 0) + 1
+        
+        # Remove lines that appear 3+ times (keep first occurrence)
+        looping_lines = {line for line, count in line_counts.items() if count >= 3}
+        if looping_lines:
+            seen_looping = set()
+            filtered_lines = []
+            for line in lines:
+                stripped = line.strip()
+                if stripped in looping_lines:
+                    if stripped not in seen_looping:
+                        seen_looping.add(stripped)
+                        filtered_lines.append(line)
+                    # Skip duplicates
+                else:
+                    filtered_lines.append(line)
+            text = '\n'.join(filtered_lines)
+        
+        # DEDUPE: Remove duplicate Task Plan blocks
+        # The plan may appear twice - once from streaming, once from LLM response
+        # Match blockquote plan: "> 📋 **Task Plan:**\n> • step\n> • step"
+        # Match inline plan: "📋 **Task Plan:**\n• step\n• step"
+        plan_pattern = r'(?:>?\s*)?📋\s*\*?\*?Task Plan:?\*?\*?\s*\n(?:[>•\s\-\*]+[^\n]+\n?)+'
+        plan_matches = re.findall(plan_pattern, text, flags=re.IGNORECASE)
+        if len(plan_matches) > 1:
+            # Keep only the first occurrence (usually the streamed blockquote version)
+            for match in plan_matches[1:]:
+                text = text.replace(match, '', 1)
+        
+        # Remove repeated content blocks (model looping)
+        # If the same 100+ char block appears multiple times, dedupe
+        lines = text.split('\n\n')
+        seen_blocks = set()
+        deduped_blocks = []
+        for block in lines:
+            block_key = block.strip()[:150] if len(block.strip()) > 150 else block.strip()
+            if block_key and block_key not in seen_blocks:
+                seen_blocks.add(block_key)
+                deduped_blocks.append(block)
+            elif not block_key:
+                deduped_blocks.append(block)
+        text = '\n\n'.join(deduped_blocks)
+        
+        # Clean up excessive whitespace from removals
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        text = text.strip()
         
         # SANITIZATION: Detect and clean partial JSON responses
         # If response starts with JSON array/object fragment (comma, bracket, brace)

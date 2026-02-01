@@ -1,6 +1,6 @@
 # AJ: Knowledge-Centric AI Infrastructure
 
-> **AJ** = **A**gent **J**ournalist
+> **AJ** = **A**gentic **J**ournalist
 
 **AJ learns learns as you go.** based on a pragmatic and agentic approach. AJ's focus is on:
 
@@ -13,18 +13,17 @@
 
 The AI tooling ecosystem is crowded. Here's where AJ sits — and why it exists.
 
-### The "All You Need is Bash" Philosophy
+### The "FunnelCloud Remote Execute" Philosophy
 
-At its core, AJ boils most tasks down to commands. Files, shell, code execution, remote calls — it's all just commands on machines. Not every piece of infrastructure can run an agent, but nearly everything can be reached:
+At its core, AJ relies on LLM reasoning and a single tool: `remote_execute`. The LLM generates commands from its training — PowerShell for Windows, Bash for Linux — and the orchestrator runs them on FunnelCloud agents.
 
 - **FunnelCloud agents** on Windows/Linux machines (full capability detection)
-- **SSH/shell access** to network equipment (switches, routers, firewalls)
-- **REST/API calls** to services and appliances (storage arrays, cloud APIs, smart devices)
-- **Local execution** in Docker containers
+- **LLM-generated commands**: The model knows how to construct commands from its training
+- **No local execution**: All commands run on remote agents, never in the orchestrator container
 
-The orchestrator doesn't care _how_ it reaches infrastructure — only that it can issue commands and observe results. A Cisco switch responds to `show running-config` the same way a Windows server responds to `Get-Process`.
+The orchestrator doesn't provide bash, file read/write, or code execution tools. Instead, the LLM reasons about what commands to run and uses `remote_execute` to dispatch them to the appropriate agent.
 
-The trick is not only knowing _what_ to do, but also _where_ and _when_. That's where AJ differs from pure tool-exposure protocols.
+The trick is not only knowing _what_ command to generate, but also _which agent_ to run it on. That's where AJ differs from pure tool-exposure protocols.
 
 ### Brain vs. Protocol
 
@@ -318,7 +317,7 @@ layers/
 ├── shared/               # Shared utilities (logging, schemas)
 ├── orchestrator/         # Reasoning + tool dispatch (core)
 │   └── services/
-│       ├── bash_dispatcher.py   # "All You Need is Bash" - 6 tools
+│       ├── bash_dispatcher.py   # FunnelCloud Remote Execute - 5 tools
 │       ├── reasoning_engine.py  # LLM planning & step generation
 │       ├── session_state.py     # Conversation state tracking
 │       └── grpc_client.py       # FunnelCloud agent communication
@@ -344,7 +343,8 @@ training/
 
 **Add a new tool:**
 
-The "All You Need is Bash" philosophy means most operations are just bash commands.
+The "FunnelCloud Remote Execute" philosophy means most operations are commands run on agents.
+The LLM generates appropriate commands (PowerShell/Bash) from its training.
 For truly custom tools, add them to `bash_dispatcher.py`:
 
 ```python

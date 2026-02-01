@@ -16,8 +16,10 @@ WORKDIR /app
 COPY . /app
 
 # Move trained models if present
-# Priority: 4-class intent model > binary memory model
-RUN if [ -d /app/static/distilbert_intent ]; then \
+# Priority: 2-class intent_classifier > 4-class distilbert_intent > binary distilbert_memory
+RUN if [ -d /app/static/intent_classifier ]; then \
+  mv /app/static/intent_classifier /app/distilbert_intent; \
+  elif [ -d /app/static/distilbert_intent ]; then \
   mv /app/static/distilbert_intent /app/distilbert_intent; \
   fi && \
   if [ -d /app/static/distilbert_memory ]; then \

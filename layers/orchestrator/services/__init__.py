@@ -1,7 +1,7 @@
 # Orchestrator Services
 
 from .agent_discovery import AgentDiscoveryService
-from .bash_dispatcher import BashExecutor
+from .bash_dispatcher import dispatch_tool
 from .grpc_client import AgentGrpcClient
 from .memory_connector import MemoryConnector
 from .parallel_executor import ParallelExecutor
@@ -11,7 +11,7 @@ from .task_planner import TaskPlanner
 
 __all__ = [
     "AgentDiscoveryService",
-    "BashExecutor",
+    "dispatch_tool",
     "AgentGrpcClient",
     "MemoryConnector",
     "ParallelExecutor",
