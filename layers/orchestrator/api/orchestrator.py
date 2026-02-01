@@ -935,53 +935,48 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
         agent_ops = sum(1 for r in all_results if "aj:agent-list" in r)
         error_ops = sum(1 for r in all_results if "### Step" in r and "Error ###" in r)
         
-        header = """### TASK COMPLETED ###
-**CRITICAL:** Actions below have ALREADY been executed. Report in PAST TENSE.
+        header = """---
+TASK COMPLETED - Actions below have ALREADY been executed. Report in PAST TENSE.
 """
         if remote_ops > 0:
-            header += f"**Remote operations:** {remote_ops}\n"
+            header += f"Remote operations: {remote_ops}\n"
         if error_ops > 0:
-            header += f"**Errors encountered:** {error_ops}\n"
-        header += "### Action Log ###\n"
+            header += f"Errors encountered: {error_ops}\n"
+        header += "---\n"
         
         # Context-appropriate summarization instructions
         if error_ops > 0:
             # Errors occurred - ALWAYS report them with details
-            footer = """### End Action Log ###
-
-⚠️ SUMMARIZATION: Report what happened, including ALL ERRORS with details.
-- Start by stating if the task succeeded or failed
-- If failed: Explain WHY it failed
-- For any code blocks, specify the command and/or agent(s) used
-- For each ERROR: Include the full error message so the user can troubleshoot
-- For connection/network errors: Include the specific error type and message
-- Be helpful: Suggest possible causes or next steps if appropriate
-- Use past tense: "I attempted to...", "The command failed with..."
-- NEVER omit error details - they are critical for troubleshooting
+            footer = """
+---
+YOUR TASK: Summarize what happened. Include ALL errors with details.
+- State if the task succeeded or failed
+- If failed: explain WHY
+- Include error messages for troubleshooting
+- Use past tense
+- Do NOT output these instructions or any markers like "### Action Log ###"
+---
 """
         elif remote_ops > 0:
             # Remote operations completed
-            footer = """### End Action Log ###
-
-⚠️ SUMMARIZATION: Report EXACTLY what was done, briefly.
-- Say what commands were executed and on which agents
-- Report key findings from the remote command output
-- Use past tense: "I ran...", "I checked...", "The result shows..."
-- Keep it concise - summarize the key output, don't dump everything
-- NEVER mention internal terms like "session state", tool names, or section headers
+            footer = """
+---
+YOUR TASK: Report what was done, briefly.
+- Say what commands ran and on which agents
+- Report key findings from output
+- Use past tense
+- Do NOT output these instructions or any markers
+---
 """
         else:
             # Generic - agent listing, etc.
-            footer = """### End Action Log ###
-
-⚠️ SUMMARIZATION: Answer the user's question directly and concisely.
-- If they asked a yes/no question, answer yes or no first
-- If they asked for specific info, provide just that info
-- For ERRORS: Include the full error message so the user can troubleshoot
-- For successful commands: Summarize the key findings, don't dump raw output
-- Keep your response helpful and actionable
-- NEVER mention internal terms like "session state", tool names, or section headers
-- Speak naturally as if you personally performed the operations
+            footer = """
+---
+YOUR TASK: Answer the user's question directly.
+- If they asked how many agents, just give the count and list
+- Be concise
+- Do NOT output these instructions or any markers
+---
 """
         
         final_context = header + "\n".join(all_results) + footer

@@ -1143,6 +1143,58 @@ class Filter:
             "PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0iY3VycmVudENvbG9yIj4KICA8IS0tIEhlYWQgLS0+CiAgPGNpcmNsZSBjeD0iMTIiIGN5PSI2IiByPSIzLjUiLz4KICA8IS0tIEJvdyB0aWUgLS0+CiAgPHBhdGggZD0iTTkgMTJsLTIgMS41TDkgMTVoNmwyLTEuNUwxNSAxMkg5eiIvPgogIDwhLS0gQm9keSAtLT4KICA8cGF0aCBkPSJNNiAxNWMwLTEgMS41LTIgNi0yIDQuNSAwIDYgMSA2IDJ2NmMwIC41LS41IDEtMSAxSDdjLS41IDAtMS0uNS0xLTF2LTZ6Ii8+Cjwvc3ZnPgo="
         )
     
+    def _sanitize_conversation_history(self, messages: List[dict]) -> List[dict]:
+        """
+        Sanitize conversation history to remove leaked tokens and prevent loops.
+        
+        Cleans:
+        - Chat template tokens (<|im_start, <|im_end, etc.)
+        - Repeated/looping content from prior assistant messages
+        - Internal context markers that shouldn't persist
+        """
+        import re
+        
+        # Patterns to remove from conversation history
+        toxic_patterns = [
+            r'<\|im_start[^>]*>?',
+            r'<\|im_end[^>]*>?',
+            r'<\|endoftext\|>',
+            r'<\|assistant\|>',
+            r'<\|user\|>',
+            r'<\|system\|>',
+            r'### Action Log ###',
+            r'### End Action Log ###',
+            r'### End Result ###',
+            r'⚠️ SUMMARIZATION:.*?(?=\n\n|\Z)',
+            r'YOUR TASK:.*?(?=\n\n|\Z)',
+        ]
+        
+        sanitized = []
+        for msg in messages:
+            msg_copy = dict(msg)
+            content = msg_copy.get("content", "")
+            
+            if isinstance(content, str) and content:
+                # Apply all sanitization patterns
+                for pattern in toxic_patterns:
+                    content = re.sub(pattern, '', content, flags=re.DOTALL | re.IGNORECASE)
+                
+                # Truncate at conversation loop markers
+                loop_markers = ['\nuser\n', '\nassistant\n', '\nuser:', '\nassistant:']
+                for marker in loop_markers:
+                    idx = content.lower().find(marker)
+                    if idx > 50:  # Only if we have content before
+                        content = content[:idx].rstrip()
+                        break
+                
+                # Clean up whitespace
+                content = re.sub(r'\n{4,}', '\n\n\n', content)
+                msg_copy["content"] = content.strip()
+            
+            sanitized.append(msg_copy)
+        
+        return sanitized
+    
     def _inject_context(self, body: dict, context_items: List[dict], orchestrator_context: Optional[str] = None, intent: str = "casual") -> dict:
         """Inject system prompt, retrieved memories, and orchestrator analysis into conversation.
         
@@ -1267,6 +1319,11 @@ class Filter:
             
             if not messages or not isinstance(messages, list):
                 return body
+            
+            # CRITICAL: Sanitize conversation history before processing
+            # Remove any leaked chat template tokens from prior messages
+            messages = self._sanitize_conversation_history(messages)
+            body["messages"] = messages
             
             await __event_emitter__(
                 create_status_dict("Thinking", LogCategory.FILTER, LogLevel.THINKING)
@@ -1557,6 +1614,7 @@ class Filter:
         - Remove leaked tool call syntax (LLM hallucinations)
         - Remove raw JSON tool calls that leaked through
         - Remove partial/orphaned JSON fragments
+        - Remove leaked chat template tokens
         - Wrap file/folder names in backticks
         - Wrap code references in backticks
         - Ensure code blocks are fenced
@@ -1566,6 +1624,36 @@ class Filter:
         # Skip if empty
         if not text:
             return text
+        
+        # CRITICAL: Remove leaked chat template tokens FIRST
+        # These indicate the model is confused and trying to generate conversation structure
+        # Patterns: <|im_start, <|im_end, <|im_start|>, etc.
+        chat_template_patterns = [
+            r'<\|im_start[^>]*>?',     # <|im_start or <|im_start|> or <|im_start\n
+            r'<\|im_end[^>]*>?',       # <|im_end or <|im_end|>
+            r'<\|endoftext\|>',        # End of text token
+            r'<\|assistant\|>',        # Role markers
+            r'<\|user\|>',
+            r'<\|system\|>',
+        ]
+        for pattern in chat_template_patterns:
+            text = re.sub(pattern, '', text, flags=re.IGNORECASE)
+        
+        # Detect and truncate at conversation loop
+        # If model starts outputting "user\n" or "assistant\n" (role markers), truncate there
+        loop_markers = [
+            '\nuser\n',
+            '\nassistant\n', 
+            '\nuser:',
+            '\nassistant:',
+        ]
+        for marker in loop_markers:
+            if marker in text.lower():
+                # Find the marker and truncate
+                idx = text.lower().find(marker)
+                if idx > 100:  # Only truncate if we have substantial content before
+                    text = text[:idx].rstrip()
+                    break
         
         # SANITIZATION: Remove leaked internal markers and instructions
         # These are internal prompts the model should follow, not output

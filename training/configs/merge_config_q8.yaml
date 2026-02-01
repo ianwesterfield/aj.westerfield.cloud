@@ -1,5 +1,6 @@
-# Adapter Merge Configuration for AJ
-# Combines agentic (tool/reasoning) and conversational (personality/chat) adapters
+# Adapter Merge Configuration for AJ - Q8_0 (High Quality)
+# ~32GB model - requires CPU offloading on 24GB VRAM cards
+# Recommended for: 48GB+ VRAM, or when quality > speed
 
 base_model: "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
 
@@ -14,8 +15,8 @@ method: "linear"    # "linear" or "ties"
 # ties_density: 0.5  # Only used if method=ties
 
 # Output
-output: "./output/deepseek-r1-distill-qwen-32b-aj-merged"
+output: "./output/deepseek-r1-distill-qwen-32b-aj-Q8_0"
 
 # Post-merge conversion
 convert_to_gguf: true
-gguf_quantization: "Q8_0"  # Options: Q4_0, Q4_K_M, Q5_K_M, Q8_0, f16
+gguf_quantization: "Q8_0"

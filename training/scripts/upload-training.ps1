@@ -15,11 +15,18 @@
 .PARAMETER KeyFile
     Optional SSH key file path
 
-.EXAMPLE
-    .\upload-training-minimal.ps1 -Server root@gpu.runpod.io -RemotePath /workspace/training
+.PARAMETER Port
+    SSH port (default: 22)
 
 .EXAMPLE
-    .\upload-training-minimal.ps1 -Server user@vast-ai-host -KeyFile ~/.ssh/vast_key
+    .\upload-training.ps1 -Server root@gpu.runpod.io -RemotePath /workspace/training
+
+.EXAMPLE
+    .\upload-training.ps1 -Server user@vast-ai-host -KeyFile ~/.ssh/vast_key
+
+.EXAMPLE
+    # From project root via deploy.ps1:
+    .\scripts\deploy.ps1 -Action training -Server root@gpu.runpod.io
 #>
 
 param(
@@ -27,22 +34,29 @@ param(
   [string]$Server,
     
   [Parameter(Mandatory = $false)]
-  [string]$RemotePath = "/workspace/training",
+  [string]$RemotePath = "../training",
     
   [Parameter(Mandatory = $false)]
-  [string]$KeyFile
+  [string]$KeyFile,
+
+  [Parameter(Mandatory = $false)]
+  [int]$Port = 22
 )
 
 $ErrorActionPreference = "Stop"
 
-# Paths
-$TrainingDir = Join-Path $PSScriptRoot "..\training"
+# Paths - script is now in training/scripts/
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$TrainingDir = Split-Path -Parent $ScriptDir
 $TempDir = Join-Path $env:TEMP "aj-training-upload"
-$TempZip = Join-Path $env:TEMP "aj-training-minimal.tar.gz"
 
-Write-Host "============================================" -ForegroundColor Cyan
-Write-Host "AJ Training Upload" -ForegroundColor Cyan
-Write-Host "============================================" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "╔════════════════════════════════════════════╗" -ForegroundColor Cyan
+Write-Host "║  AJ Training Upload                        ║" -ForegroundColor Cyan
+Write-Host "╚════════════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "Server: $Server" -ForegroundColor White
+Write-Host "Remote: $RemotePath" -ForegroundColor White
 Write-Host ""
 
 # Clean up temp directory
@@ -51,21 +65,34 @@ if (Test-Path $TempDir) {
 }
 New-Item -ItemType Directory -Path $TempDir | Out-Null
 
-Write-Host "Copying training files..." -ForegroundColor Yellow
+Write-Host "▶ Collecting training files..." -ForegroundColor Yellow
 
 # Files/folders to include
 $includes = @(
+  # Setup scripts
   "setup_and_train_v2.sh",
   "setup_digitalocean_h200.sh",
   "requirements.txt",
+    
+  # Documentation
   "DEPLOY_V2.md",
   "README.md",
   "pytest.ini",
+    
+  # Configs (LoRA, merge, etc.)
   "configs",
+    
+  # Training scripts (this folder)
   "scripts",
-  "data",                           # Domain knowledge JSONL files (~20K examples)
+    
+  # Domain knowledge JSONL files (~26K examples, ~15MB)
+  "data",
+    
+  # Dataset processing scripts
   "datasets/*.py",
   "datasets/README.md",
+    
+  # Agentic training data generation
   "agentic/configs",
   "agentic/converters",
   "agentic/generators",
@@ -115,12 +142,11 @@ foreach ($dir in $datasetDirs) {
 $totalSize = (Get-ChildItem -Recurse -Path $TempDir -File | Measure-Object -Property Length -Sum).Sum
 $sizeMB = [math]::Round($totalSize / 1MB, 2)
 
-Write-Host ""
-Write-Host "Package size: $sizeMB MB" -ForegroundColor Green
+Write-Host "  Package size: $sizeMB MB" -ForegroundColor Green
 Write-Host ""
 
 # Build SSH/SCP options
-$sshOpts = @()
+$sshOpts = @("-p", $Port)
 if ($KeyFile) {
   $sshOpts += "-i", $KeyFile
 }
@@ -129,34 +155,41 @@ if ($KeyFile) {
 $useRsync = Get-Command rsync -ErrorAction SilentlyContinue
 
 if ($useRsync) {
-  Write-Host "Uploading via rsync to $Server`:$RemotePath ..." -ForegroundColor Yellow
+  Write-Host "▶ Uploading via rsync..." -ForegroundColor Yellow
     
   $rsyncOpts = @("-avz", "--progress")
   if ($KeyFile) {
-    $rsyncOpts += "-e", "ssh -i $KeyFile"
+    $rsyncOpts += "-e", "ssh -p $Port -i $KeyFile"
+  }
+  else {
+    $rsyncOpts += "-e", "ssh -p $Port"
   }
     
   & rsync @rsyncOpts "$TempDir/" "${Server}:${RemotePath}/"
 }
 else {
-  Write-Host "Uploading via scp to $Server`:$RemotePath ..." -ForegroundColor Yellow
-  Write-Host "(Install rsync for faster uploads with progress)" -ForegroundColor DarkGray
+  Write-Host "▶ Uploading via scp..." -ForegroundColor Yellow
+  Write-Host "  (Install rsync for faster uploads with progress)" -ForegroundColor DarkGray
     
   # Create remote directory
   & ssh @sshOpts $Server "mkdir -p $RemotePath"
     
   # Upload
-  & scp @sshOpts -r "$TempDir\*" "${Server}:${RemotePath}/"
+  $scpOpts = @("-P", $Port, "-r")
+  if ($KeyFile) {
+    $scpOpts += "-i", $KeyFile
+  }
+  & scp @scpOpts "$TempDir\*" "${Server}:${RemotePath}/"
 }
 
 if ($LASTEXITCODE -eq 0) {
   Write-Host ""
-  Write-Host "============================================" -ForegroundColor Green
-  Write-Host "Upload complete!" -ForegroundColor Green
-  Write-Host "============================================" -ForegroundColor Green
+  Write-Host "╔════════════════════════════════════════════╗" -ForegroundColor Green
+  Write-Host "║  Upload Complete!                          ║" -ForegroundColor Green
+  Write-Host "╚════════════════════════════════════════════╝" -ForegroundColor Green
   Write-Host ""
   Write-Host "Next steps on the server:" -ForegroundColor Cyan
-  Write-Host "  ssh $Server" -ForegroundColor White
+  Write-Host "  ssh -p $Port $Server" -ForegroundColor White
   Write-Host "  cd $RemotePath" -ForegroundColor White
   Write-Host "  chmod +x setup_and_train_v2.sh" -ForegroundColor White
   Write-Host "  ./setup_and_train_v2.sh" -ForegroundColor White

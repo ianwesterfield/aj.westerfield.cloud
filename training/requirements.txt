@@ -21,6 +21,3 @@ sentencepiece
 protobuf
 pyyaml
 tqdm
-
-# For GGUF conversion (optional, can use llama.cpp instead)
-# gguf
