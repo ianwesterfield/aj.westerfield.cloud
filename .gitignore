@@ -57,3 +57,4 @@ training/datasets/processed/
 training/datasets/__pycache__/
 unsloth_compiled_cache/
 venv/
+publish-linux/

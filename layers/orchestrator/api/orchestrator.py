@@ -41,7 +41,7 @@ from services.task_planner import TaskPlanner
 from services.parallel_executor import ParallelExecutor
 from services.memory_connector import MemoryConnector
 from services.session_state import SessionState, get_session_state, reset_session_state
-from services.bash_dispatcher import dispatch_tool  # "All You Need is Bash" - simplified tool dispatch
+from services.bash_dispatcher import dispatch_tool  # FunnelCloud Remote Execute - LLM-generated commands on agents
 from services.agent_discovery import get_discovery_service, AgentCapabilities
 from utils.workspace_context import WorkspaceContextManager
 
@@ -505,7 +505,7 @@ async def _execute_tool(workspace_root: str, tool: str, params: dict) -> dict:
     try:
         # FunnelCloud remote tools operate on the HOST machine, not the container
         # DO NOT resolve paths for these - they use Windows paths like C:\
-        remote_tools = {"remote_execute", "list_agents"}
+        remote_tools = {"remote_execute", "remote_execute_all", "list_agents"}
         
         # Resolve relative paths in params (only for local tools)
         resolved_params = params.copy()
@@ -563,101 +563,64 @@ async def _execute_tool(workspace_root: str, tool: str, params: dict) -> dict:
         return {"success": False, "output": None, "error": str(e)}
 
 
-def _format_result_block(tool: str, params: dict, output: str, reasoning: str) -> str:
-    """Format tool result as context block for LLM."""
-    if tool == "scan_workspace":
-        # Count lines to decide on collapsing
-        line_count = output.count('\n') if output else 0
-        # Unique marker for continuation detection
-        marker = "<!-- aj:workspace-scan -->"
-        if line_count > 30:
-            # Collapse long listings
-            return f"""{marker}
-**Directory listing:**
-<details>
-<summary>📂 Click to expand ({line_count} lines)</summary>
-
-```
-{output or "(no files found)"}
-```
-</details>
-"""
-        else:
-            return f"""{marker}
-**Directory listing:**
-```
-{output or "(no files found)"}
-```
-"""
+def _format_result_block(tool: str, params: dict, output: str, reasoning: str, result: dict = None) -> str:
+    """Format tool result as context block for LLM.
     
-    elif tool == "read_file":
-        path = params.get("path", "file")
-        line_count = output.count('\n') if output else 0
-        marker = "<!-- aj:file-read -->"
-        if line_count > 50:
-            # Collapse long file contents
-            return f"""{marker}
-**File: {path}**
-<details>
-<summary>📄 Click to expand ({line_count} lines)</summary>
-
-```
-{output or "(empty)"}
-```
-</details>
-"""
-        else:
-            return f"""{marker}
-**File: {path}**
-```
-{output or "(empty)"}
-```
-"""
+    Args:
+        tool: Tool name
+        params: Tool parameters
+        output: Tool output string
+        reasoning: Step reasoning
+        result: Full result dict from dispatcher (contains platform info)
+    """
+    result = result or {}
     
-    elif tool in ("write_file", "append_to_file", "replace_in_file", "insert_in_file"):
-        path = params.get("path", "file")
-        content = params.get("content") or params.get("text") or params.get("new_text") or ""
-        content_snippet = content[:200] + "..." if len(content) > 200 else content
-        return f"""<!-- aj:file-edit -->
-**Edited: {path}**
-✅ {tool}: `{content_snippet}`
-"""
+    # Get shell type from agent platform (set by dispatcher)
+    def get_shell_type() -> str:
+        platform = result.get("platform", "windows")  # Default windows for current agents
+        return "powershell" if platform == "windows" else "bash"
     
-    elif tool == "execute_shell":
+    if tool == "remote_execute":
         cmd = params.get("command", "")
-        return f"""<!-- aj:shell-exec -->
-**Command:** `{cmd}`
-```
+        agent = params.get("agent_id", "unknown")
+        shell_type = get_shell_type()
+        return f"""<!-- aj:remote-exec -->
+Execute `{cmd}` on `{agent}`:
+```{shell_type}
 {output or "(no output)"}
 ```
 """
     
-    elif tool == "remote_execute":
+    elif tool == "remote_execute_all":
         cmd = params.get("command", "")
-        agent = params.get("agent_id", "host")
-        return f"""<!-- aj:remote-exec -->
-**Remote ({agent}):** `{cmd}`
-```
+        # For all agents, check if any result indicates linux, otherwise default powershell
+        shell_type = get_shell_type()
+        return f"""<!-- aj:remote-exec-all -->
+Execute `{cmd}` on **all agents**:
+```{shell_type}
 {output or "(no output)"}
 ```
 """
     
     elif tool == "list_agents":
-        return f"""<!-- aj:agent-list -->
-**Available Agents:**
+        return f"""**list_agents output:**
 ```
 {output or "(no agents found)"}
 ```
 """
     
+    elif tool == "think":
+        thought = params.get("thought", params.get("reasoning", ""))
+        return f"""<!-- aj:think -->
+**Thinking:** {thought}
+"""
+    
     else:
-        return f"""### {tool} Result ###
-**Reasoning:** {reasoning}
-
+        return f"""<!-- aj:{tool} -->
+**{tool} output:**
 ```
 {output or "(no output)"}
 ```
-### End Result ###
 """
 
 
@@ -688,8 +651,13 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
         reset_session_state()
         session_state = get_session_state()
     else:
-        # Preserve scan results but clear completed steps for new task
+        # Preserve scan results but clear completed steps and ledger entries for new task
         session_state.completed_steps.clear()
+        # Clear ledger action entries (keep extracted values for reference)
+        session_state.ledger.entries = [
+            e for e in session_state.ledger.entries 
+            if e.entry_type == "extracted"  # Keep only extracted values
+        ]
         logger.info(f"Preserving session state: {len(session_state.files)} files, {len(session_state.dirs)} dirs indexed")
     
     # Log user request to the conversation ledger
@@ -734,7 +702,7 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
     # === INTENT CLASSIFICATION PHASE ===
     # Determine if this is a conversational question or an actionable task
     # Conversational questions skip the OODA loop entirely
-    yield f"data: {json.dumps({'event_type': 'status', 'status': '🎯 Classifying intent...', 'done': False})}\n\n"
+    # yield f"data: {json.dumps({'event_type': 'status', 'status': '🎯 Classifying intent...', 'done': False})}\n\n"
     
     intent_result = await reasoning_engine.classify_intent(request.task)
     logger.info(f"Intent classification: {intent_result}")
@@ -742,9 +710,10 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
     # === MEMORY CONTEXT PHASE ===
     # Query memory for workspace/user context BEFORE planning
     # This implements the OODA loop's "Learn" phase - recall what we already know
-    yield f"data: {json.dumps({'event_type': 'status', 'status': '📚 Checking memory...', 'done': False})}\n\n"
+    # yield f"data: {json.dumps({'event_type': 'status', 'status': '📚 Checking memory...', 'done': False})}\n\n"
     
     memory_connector = _get_memory_connector()
+    
     try:
         # Search memory for patterns related to this task
         # This provides learned approaches from previous similar tasks
@@ -766,7 +735,7 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
     # If intent is conversational, skip OODA loop entirely
     if intent_result.get("intent") == "conversational":
         logger.info("Conversational intent detected - skipping OODA loop")
-        yield f"data: {json.dumps({'event_type': 'status', 'status': '💬 Answering...', 'done': False})}\n\n"
+        # yield f"data: {json.dumps({'event_type': 'status', 'status': '💬 Answering...', 'done': False})}\n\n"
         
         # Get direct answer from LLM with memory context
         answer = await reasoning_engine.answer_conversational(
@@ -776,12 +745,12 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
         
         # Stream the answer
         yield f"data: {json.dumps({'event_type': 'content', 'content': answer})}\n\n"
-        yield f"data: {json.dumps({'event_type': 'status', 'status': '✅ Done', 'done': True, 'content': answer})}\n\n"
+        yield f"data: {json.dumps({'event_type': 'status', 'status': 'Tasks Complete', 'done': True, 'content': answer})}\n\n"
         return
     
     # === PLANNING PHASE (Task intent only) ===
     # Generate task plan BEFORE execution to show user what will happen
-    yield f"data: {json.dumps({'event_type': 'status', 'status': '📋 Planning...', 'done': False})}\n\n"
+    # yield f"data: {json.dumps({'event_type': 'status', 'status': '📋 Planning...', 'done': False})}\n\n"
     
     plan_steps = await reasoning_engine.generate_task_plan(request.task)
     
@@ -801,7 +770,6 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
     
     step_history = []
     all_results = []
-    edit_tools = ("write_file", "replace_in_file", "insert_in_file", "append_to_file")
     
     # Queue for status updates from background model checker
     status_queue: asyncio.Queue = asyncio.Queue()
@@ -882,76 +850,19 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
             
             # Handle completion
             if tool == "complete":
-                if params.get("error"):
-                    all_results.append(f"""<!-- aj:error -->
-⚠️ {params.get('error')}
-""")
-                elif params.get("answer"):
-                    # LLM provided an answer directly from cached state
-                    all_results.append(f"""<!-- aj:direct-answer -->
-{params.get('answer')}
-""")
+                yield f"data: {json.dumps({'event_type': 'status', 'step_num': step_num, 'tool': tool, 'status': 'Completed all tasks', 'done': True})}\n\n"
+                logger.info("Task marked as complete by reasoning engine")
                 break
             
             # Build status message
             tool_path = params.get("path", "")
             short_path = tool_path.split("/")[-1].split("\\")[-1] if tool_path else ""
-            
-            # Descriptive icons for each tool type
-            tool_icons = {
-                "scan_workspace": "📂",
-                "list_dir": "📁",
-                "read_file": "📖",
-                "write_file": "📝",
-                "replace_in_file": "✏️",
-                "insert_in_file": "✏️",
-                "append_to_file": "➕",
-                "delete_file": "🗑️",
-                "execute_shell": "🔧",
-                "execute_code": "▶️",
-                "search_files": "🔎",
-                "grep": "🔎",
-                "remote_execute": "🖥️",
-                "list_agents": "🔍",
-            }
-            icon = tool_icons.get(tool, "⚙️")
-            
-            # Build action description
-            if tool == "scan_workspace":
-                action = f"Scanning {short_path or 'workspace'}"
-            elif tool == "list_dir":
-                action = f"Listing {short_path or 'directory'}"
-            elif tool == "read_file":
-                action = f"Reading {short_path}"
-            elif tool in edit_tools:
-                action = f"Editing {short_path}"
-            elif tool == "delete_file":
-                action = f"Deleting {short_path}"
-            elif tool == "execute_shell":
-                cmd = params.get("command", "")[:25]
-                action = f"Running `{cmd}`"
-            elif tool == "remote_execute":
-                cmd = params.get("command", "")[:30]
-                action = f"Remote: `{cmd}`"
-            elif tool == "list_agents":
-                action = "Discovering agents"
-            elif tool == "execute_code":
-                lang = params.get("language", "code")
-                action = f"Executing {lang}"
-            elif tool in ("search_files", "grep"):
-                query = params.get("query", params.get("pattern", ""))[:20]
-                action = f"Searching for `{query}`"
-            else:
-                action = tool
+        
+            cmd = params.get("command", "")[:30]
+            action = f"Remote: `{cmd}`"
             
             # Status is succinct: just icon + action (no reasoning/notes)
-            status = f"{icon} {action}"
-            
-            # Silence batch edits after the first
-            if tool in edit_tools:
-                edit_count = sum(1 for h in step_history if h["tool"] in edit_tools and h.get("success"))
-                if edit_count > 0:
-                    status = None  # Silent for batch edits
+            status = f"{action}"
             
             if status:
                 yield f"data: {json.dumps({'event_type': 'status', 'step_num': step_num, 'tool': tool, 'status': status, 'done': False})}\n\n"
@@ -986,7 +897,7 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
             
             # Format result for context
             if success:
-                result_block = _format_result_block(tool, params, output.__str__(), reasoning)
+                result_block = _format_result_block(tool, params, output.__str__(), reasoning, result)
                 all_results.append(result_block)
                 
                 # Yield result event with appropriate output length
@@ -1020,16 +931,15 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
     
     # Build final context
     if all_results:
-        file_ops = sum(1 for r in all_results if "File Operation Result" in r)
-        scan_ops = sum(1 for r in all_results if "Workspace Files" in r)
-        read_ops = sum(1 for r in all_results if "File Content:" in r)
+        remote_ops = sum(1 for r in all_results if "aj:remote-exec" in r)
+        agent_ops = sum(1 for r in all_results if "aj:agent-list" in r)
         error_ops = sum(1 for r in all_results if "### Step" in r and "Error ###" in r)
         
         header = """### TASK COMPLETED ###
 **CRITICAL:** Actions below have ALREADY been executed. Report in PAST TENSE.
 """
-        if file_ops > 0:
-            header += f"**Files modified:** {file_ops}\n"
+        if remote_ops > 0:
+            header += f"**Remote operations:** {remote_ops}\n"
         if error_ops > 0:
             header += f"**Errors encountered:** {error_ops}\n"
         header += "### Action Log ###\n"
@@ -1049,31 +959,19 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
 - Use past tense: "I attempted to...", "The command failed with..."
 - NEVER omit error details - they are critical for troubleshooting
 """
-        elif scan_ops > 0 and file_ops == 0 and read_ops == 0:
-            # User just asked to list files - give a brief summary
-            footer = """### End Action Log ###
-
-⚠️ SUMMARIZATION: Give a BRIEF answer appropriate to the question.
-- For "list files" / "what's in workspace": Just say "The workspace contains X directories and Y files" 
-  then list only TOP-LEVEL items (not full paths). Example: "filters/, layers/, README.md, etc."
-- Do NOT list every single file path - that's what the raw output is for
-- Keep your summary to 2-3 sentences max for simple queries
-- NEVER mention internal terms like "session state", "scan_workspace", "LARGEST FILES section", etc.
-- Speak naturally: "I found..." or "The largest files are..." NOT "The state shows..."
-"""
-        elif file_ops > 0:
-            # User made edits - confirm what was done
+        elif remote_ops > 0:
+            # Remote operations completed
             footer = """### End Action Log ###
 
 ⚠️ SUMMARIZATION: Report EXACTLY what was done, briefly.
-- Say what files were created/modified and what content was added
-- Use past tense: "I added...", "I created...", "I updated..."
-- Keep it concise - 1-2 sentences per file operation
-- Do NOT dump the entire file content in your response
+- Say what commands were executed and on which agents
+- Report key findings from the remote command output
+- Use past tense: "I ran...", "I checked...", "The result shows..."
+- Keep it concise - summarize the key output, don't dump everything
 - NEVER mention internal terms like "session state", tool names, or section headers
 """
         else:
-            # Generic - read operations, shell commands, etc.
+            # Generic - agent listing, etc.
             footer = """### End Action Log ###
 
 ⚠️ SUMMARIZATION: Answer the user's question directly and concisely.
@@ -1083,7 +981,7 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
 - For successful commands: Summarize the key findings, don't dump raw output
 - Keep your response helpful and actionable
 - NEVER mention internal terms like "session state", tool names, or section headers
-- Speak naturally as if you personally explored the files
+- Speak naturally as if you personally performed the operations
 """
         
         final_context = header + "\n".join(all_results) + footer

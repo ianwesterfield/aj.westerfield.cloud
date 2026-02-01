@@ -193,11 +193,14 @@ Combines 7 curated datasets for conversational breadth + domain knowledge:
 {
   "messages": [
     { "role": "system", "content": "You are AJ..." },
-    { "role": "user", "content": "List running containers" },
+    { "role": "user", "content": "List running containers on domain01" },
     {
       "role": "assistant",
       "tool_calls": [
-        { "name": "bash", "arguments": { "command": "docker ps" } }
+        {
+          "name": "remote_execute",
+          "arguments": { "agent_id": "domain01", "command": "docker ps" }
+        }
       ]
     },
     { "role": "tool", "content": "CONTAINER ID  IMAGE  ..." },
@@ -341,16 +344,17 @@ tmux attach -t training
 
 ## Reference: Tool Schema
 
-AJ uses 6 core tools for the "All You Need is Bash" philosophy:
+AJ uses 5 core tools for the "FunnelCloud Remote Execute" philosophy:
 
-| Tool              | Purpose                   | Example                 |
-| ----------------- | ------------------------- | ----------------------- |
-| `bash`            | Local command execution   | `ls -la`, `docker ps`   |
-| `remote_bash`     | Single agent execution    | Execute on `webprod01`  |
-| `remote_bash_all` | Multi-agent execution     | Execute on all `prod-*` |
-| `list_agents`     | Discover available agents | Show FunnelCloud agents |
-| `think`           | Reasoning step (internal) | Plan before execution   |
-| `complete`        | Task completion signal    | Mark task finished      |
+| Tool                 | Purpose                   | Example                       |
+| -------------------- | ------------------------- | ----------------------------- |
+| `remote_execute`     | Execute on ONE agent      | Run PowerShell on `domain01`  |
+| `remote_execute_all` | Execute on ALL agents     | Get hostname from every agent |
+| `list_agents`        | Discover available agents | Show FunnelCloud agents       |
+| `think`              | Reasoning step (internal) | Plan before execution         |
+| `complete`           | Task completion signal    | Mark task finished            |
+
+**Note**: All commands are LLM-generated from training. The orchestrator does NOT provide bash, file read/write, or code execution tools. The LLM knows how to construct PowerShell (Windows) or Bash (Linux) commands.
 
 ### Data Sources
 

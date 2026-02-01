@@ -347,96 +347,95 @@ public class Program
     var roles = new List<string>();
 
     // Service-based detection using systemctl
-    var serviceRoleMapping = new Dictionary<string, string>
+    var serviceRoleMapping = new Dictionary<string, string[]>
     {
       // DNS
-      { "named", "role:dns-server" },
-      { "bind9", "role:dns-server" },
-      { "dnsmasq", "role:dns-server" },
-      { "unbound", "role:dns-server" },
+      { "named", new[] { "role:dns-server" } },
+      { "bind9", new[] { "role:dns-server" } },
+      { "dnsmasq", new[] { "role:dns-server", "role:dhcp-server" } },  // dnsmasq can do both
+      { "unbound", new[] { "role:dns-server" } },
       
       // DHCP
-      { "isc-dhcp-server", "role:dhcp-server" },
-      { "dhcpd", "role:dhcp-server" },
-      { "dnsmasq", "role:dhcp-server" },  // dnsmasq can do both
-      { "kea-dhcp4", "role:dhcp-server" },
-      { "kea-dhcp6", "role:dhcp-server" },
+      { "isc-dhcp-server", new[] { "role:dhcp-server" } },
+      { "dhcpd", new[] { "role:dhcp-server" } },
+      { "kea-dhcp4", new[] { "role:dhcp-server" } },
+      { "kea-dhcp6", new[] { "role:dhcp-server" } },
       
       // Web Servers
-      { "nginx", "role:web-server" },
-      { "apache2", "role:web-server" },
-      { "httpd", "role:web-server" },
-      { "caddy", "role:web-server" },
-      { "lighttpd", "role:web-server" },
+      { "nginx", new[] { "role:web-server" } },
+      { "apache2", new[] { "role:web-server" } },
+      { "httpd", new[] { "role:web-server" } },
+      { "caddy", new[] { "role:web-server" } },
+      { "lighttpd", new[] { "role:web-server" } },
       
       // Database Servers
-      { "mysql", "role:database-server" },
-      { "mysqld", "role:database-server" },
-      { "mariadb", "role:database-server" },
-      { "postgresql", "role:database-server" },
-      { "mongod", "role:database-server" },
-      { "redis-server", "role:cache-server" },
-      { "redis", "role:cache-server" },
-      { "memcached", "role:cache-server" },
+      { "mysql", new[] { "role:database-server" } },
+      { "mysqld", new[] { "role:database-server" } },
+      { "mariadb", new[] { "role:database-server" } },
+      { "postgresql", new[] { "role:database-server" } },
+      { "mongod", new[] { "role:database-server" } },
+      { "redis-server", new[] { "role:cache-server" } },
+      { "redis", new[] { "role:cache-server" } },
+      { "memcached", new[] { "role:cache-server" } },
       
       // Mail Servers
-      { "postfix", "role:mail-server" },
-      { "sendmail", "role:mail-server" },
-      { "exim4", "role:mail-server" },
-      { "dovecot", "role:mail-server" },
+      { "postfix", new[] { "role:mail-server" } },
+      { "sendmail", new[] { "role:mail-server" } },
+      { "exim4", new[] { "role:mail-server" } },
+      { "dovecot", new[] { "role:mail-server" } },
       
       // File Sharing
-      { "smbd", "role:file-server" },
-      { "nmbd", "role:file-server" },
-      { "nfs-server", "role:nfs-server" },
-      { "nfs-kernel-server", "role:nfs-server" },
-      { "vsftpd", "role:ftp-server" },
-      { "proftpd", "role:ftp-server" },
+      { "smbd", new[] { "role:file-server" } },
+      { "nmbd", new[] { "role:file-server" } },
+      { "nfs-server", new[] { "role:nfs-server" } },
+      { "nfs-kernel-server", new[] { "role:nfs-server" } },
+      { "vsftpd", new[] { "role:ftp-server" } },
+      { "proftpd", new[] { "role:ftp-server" } },
       
       // Directory Services
-      { "slapd", "role:ldap-server" },
-      { "sssd", "role:directory-client" },
-      { "winbind", "role:ad-member" },
-      { "samba-ad-dc", "role:domain-controller" },
+      { "slapd", new[] { "role:ldap-server" } },
+      { "sssd", new[] { "role:directory-client" } },
+      { "winbind", new[] { "role:ad-member" } },
+      { "samba-ad-dc", new[] { "role:domain-controller" } },
       
       // Virtualization & Containers
-      { "docker", "role:container-host" },
-      { "containerd", "role:container-host" },
-      { "podman", "role:container-host" },
-      { "libvirtd", "role:hypervisor" },
-      { "qemu-kvm", "role:hypervisor" },
-      { "kubelet", "role:kubernetes-node" },
+      { "docker", new[] { "role:container-host" } },
+      { "containerd", new[] { "role:container-host" } },
+      { "podman", new[] { "role:container-host" } },
+      { "libvirtd", new[] { "role:hypervisor" } },
+      { "qemu-kvm", new[] { "role:hypervisor" } },
+      { "kubelet", new[] { "role:kubernetes-node" } },
       
       // Monitoring & Logging
-      { "prometheus", "role:monitoring-server" },
-      { "grafana-server", "role:monitoring-server" },
-      { "zabbix-server", "role:monitoring-server" },
-      { "nagios", "role:monitoring-server" },
-      { "elasticsearch", "role:log-server" },
-      { "logstash", "role:log-server" },
-      { "rsyslog", "role:syslog-server" },
+      { "prometheus", new[] { "role:monitoring-server" } },
+      { "grafana-server", new[] { "role:monitoring-server" } },
+      { "zabbix-server", new[] { "role:monitoring-server" } },
+      { "nagios", new[] { "role:monitoring-server" } },
+      { "elasticsearch", new[] { "role:log-server" } },
+      { "logstash", new[] { "role:log-server" } },
+      { "rsyslog", new[] { "role:syslog-server" } },
       
       // Proxy & Load Balancing
-      { "haproxy", "role:load-balancer" },
-      { "squid", "role:proxy-server" },
-      { "traefik", "role:reverse-proxy" },
+      { "haproxy", new[] { "role:load-balancer" } },
+      { "squid", new[] { "role:proxy-server" } },
+      { "traefik", new[] { "role:reverse-proxy" } },
       
       // VPN
-      { "openvpn", "role:vpn-server" },
-      { "wireguard", "role:vpn-server" },
-      { "strongswan", "role:vpn-server" },
+      { "openvpn", new[] { "role:vpn-server" } },
+      { "wireguard", new[] { "role:vpn-server" } },
+      { "strongswan", new[] { "role:vpn-server" } },
       
       // CI/CD
-      { "jenkins", "role:ci-server" },
-      { "gitlab-runner", "role:ci-runner" },
+      { "jenkins", new[] { "role:ci-server" } },
+      { "gitlab-runner", new[] { "role:ci-runner" } },
       
       // Message Queues
-      { "rabbitmq-server", "role:message-queue" },
-      { "kafka", "role:message-queue" },
+      { "rabbitmq-server", new[] { "role:message-queue" } },
+      { "kafka", new[] { "role:message-queue" } },
       
       // SSH (indicates remote access capability)
-      { "sshd", "role:remote-management" },
-      { "ssh", "role:remote-management" },
+      { "sshd", new[] { "role:remote-management" } },
+      { "ssh", new[] { "role:remote-management" } },
     };
 
     try
@@ -471,11 +470,17 @@ public class Program
               .Where(s => !string.IsNullOrEmpty(s))
               .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-          foreach (var (service, role) in serviceRoleMapping)
+          foreach (var (service, roleArray) in serviceRoleMapping)
           {
-            if (runningServices.Contains(service) && !roles.Contains(role))
+            if (runningServices.Contains(service))
             {
-              roles.Add(role);
+              foreach (var role in roleArray)
+              {
+                if (!roles.Contains(role))
+                {
+                  roles.Add(role);
+                }
+              }
             }
           }
         }
