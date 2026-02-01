@@ -160,21 +160,59 @@ FORMAT: {"tool": "name", "params": {...}, "reasoning": "why"}
    - Do NOT invent follow-up questions
    - Do NOT answer questions that weren't asked
 
+5. MINIMAL STEPS - DON'T OVERCOMPLICATE
+   - "How many agents online?" → Just call list_agents, count them, complete
+   - "What agents do I have?" → Just call list_agents, report them, complete
+   - Do NOT ping/test agents unless specifically asked to verify connectivity
+   - list_agents already confirms agents are registered and reachable
+
+6. AMBIGUOUS REQUESTS - ASK FOR CLARIFICATION
+   - If user asks for "installation ID" - ask: Windows installation ID? Product key? Some software?
+   - If command target is unclear - ask which agent to run it on
+   - Do NOT guess or invent software names like "FunnelCloud"
+   - When in doubt: {"tool": "complete", "params": {"answer": "Could you clarify what you mean by X?"}}
+
 ═══════════════════════════════════════════════════════════════════════════════
 WORKFLOW
 ═══════════════════════════════════════════════════════════════════════════════
 
 Step 1: Understand what user wants
-Step 2: Call the minimum tools needed (usually list_agents first)
+Step 2: Call the MINIMUM tools needed (often just list_agents + complete)
 Step 3: Use ACTUAL tool output to answer
 Step 4: Call complete with your answer
 Step 5: STOP
+
+QUICK ANSWERS (no remote_execute needed):
+- "How many agents?" → list_agents → count → complete
+- "What agents are available?" → list_agents → list them → complete
+- "Is agent X online?" → list_agents → check if in list → complete
 
 PLATFORM COMMANDS (all current agents are Windows):
 - Ping: Test-Connection -ComputerName TARGET -Count 4
 - Disk: Get-PSDrive C
 - Memory: Get-Process | Measure-Object WorkingSet -Sum
 - Time: Get-Date
+- Windows Install ID: (Get-CimInstance -Class SoftwareLicensingService).OA3xOriginalProductKey
+- Windows Product ID: (Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion').ProductId
+
+ACTIVE DIRECTORY COMMANDS (run on domain controllers like domain01, domain02):
+- AD user groups: Get-ADUser -Identity USERNAME | Get-ADPrincipalGroupMembership | Select-Object Name
+- AD user info: Get-ADUser -Identity USERNAME -Properties *
+- AD group members: Get-ADGroupMember -Identity "GROUP NAME" | Select-Object Name
+- Domain controllers: Get-ADDomainController -Filter * | Select-Object HostName
+NOTE: For AD users, use just the username (e.g., 'ian'), NOT domain\\username format
+
+ERROR HANDLING:
+- If a command fails, try an alternative approach
+- If 'westerfield\\ian' fails → try just 'ian'
+- If path not found → try alternative paths or ask user
+- Report errors clearly so user can troubleshoot
+
+EXAMPLE - "How many agents are online?":
+1. {"tool": "list_agents", "params": {}}
+2. [See output: 5 agents listed]
+3. {"tool": "complete", "params": {"answer": "There are 5 agents online: ians-r16, r730xd, domain01, domain02, exchange01"}}
+DONE. No pinging needed.
 
 EXAMPLE - "Ping domain01 from domain02":
 1. {"tool": "remote_execute", "params": {"agent_id": "domain02", "command": "Test-Connection -ComputerName domain01 -Count 4"}}
@@ -184,6 +222,7 @@ EXAMPLE - "Ping domain01 from domain02":
 WRONG - FABRICATION:
 - Writing "ping output: 2ms, 3ms, 5ms" without calling remote_execute = HALLUCINATION
 - Inventing tools like "disk_iops" or "memory_usage" = HALLUCINATION
+- Looking for "FunnelCloud" software when user didn't mention it = HALLUCINATION
 """
 
 class ReasoningEngine:
@@ -348,7 +387,7 @@ Respond with ONLY one word: task OR conversational"""},
             # Default to task on error (safer)
             return {"intent": "task", "confidence": 0.5, "reason": f"Classification failed: {e}"}
     
-    async def answer_conversational(self, task: str, memory_context: List[dict] = None) -> str:
+    async def answer_conversational(self, task: str, memory_context: Optional[List[dict]] = None) -> str:
         """
         Answer a conversational question directly without OODA planning.
         
