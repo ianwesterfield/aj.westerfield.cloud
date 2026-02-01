@@ -1,5 +1,6 @@
-# Adapter Merge Configuration for AJ
-# Combines agentic (tool/reasoning) and conversational (personality/chat) adapters
+# Adapter Merge Configuration for AJ - Q5_K_M (RTX 4090 Optimized)
+# ~22GB model - fits in 24GB VRAM with room for KV cache
+# Recommended for: RTX 4090, full GPU inference, no CPU offload
 
 base_model: "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
 
@@ -14,8 +15,8 @@ method: "linear"    # "linear" or "ties"
 # ties_density: 0.5  # Only used if method=ties
 
 # Output
-output: "./output/deepseek-r1-distill-qwen-32b-aj-merged"
+output: "./output/deepseek-r1-distill-qwen-32b-aj-Q5_K_M"
 
 # Post-merge conversion
 convert_to_gguf: true
-gguf_quantization: "Q8_0"  # Options: Q4_0, Q4_K_M, Q5_K_M, Q8_0, f16
+gguf_quantization: "Q5_K_M"

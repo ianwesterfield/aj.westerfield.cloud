@@ -2,19 +2,19 @@
 Memory API Router
 
 Core endpoints for my memory service:
-- /save: Store conversations with embeddings and extracted facts
+- /save: Store conversations with embeddings and optional pre-extracted facts
 - /search: Find relevant memories via semantic similarity
 - /summaries: Get memory summaries for a user
 
 The save endpoint does a "search-first" pattern:
 1. Generate embedding from the conversation
 2. Search for similar existing memories
-3. Extract structured facts (names, dates, preferences, etc.)
-4. Ask my pragmatics classifier if it's worth saving
-5. Store with both original text and extracted facts
-6. Return any found context so the filter can inject it
+3. Store with both original text and any provided facts
+4. Return any found context so the filter can inject it
 
-This way I can recall context AND learn new info in one API call.
+NOTE: Fact extraction (names, dates, preferences, etc.) should be done
+by the pragmatics layer before calling this service. Memory is a storage
+layer, not a processing layer.
 """
 
 import os
@@ -30,7 +30,7 @@ from urllib3.util.retry import Retry
 from fastapi import APIRouter, HTTPException
 from services.qdrant_client import _client, _ensure_collection
 from services.embedder import embed_messages, embed
-# Re-enabled fact extractor for entity extraction (names, etc.)
+# Fact extractor utilities - actual extraction is no-op (should be done upstream)
 from services.fact_extractor import (
     extract_facts,
     format_facts_for_storage,
