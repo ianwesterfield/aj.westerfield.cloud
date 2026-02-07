@@ -103,8 +103,11 @@ public class GrpcServerHost : BackgroundService
       var builder = WebApplication.CreateBuilder(new WebApplicationOptions
       {
         ContentRootPath = AppContext.BaseDirectory,
-        ApplicationName = "FunnelCloud.Agent.GrpcServer"
+        ApplicationName = "FunnelCloud.Agent"
       });
+
+      // Disable hosting startup assemblies to avoid loading issues
+      builder.WebHost.UseSetting(WebHostDefaults.PreventHostingStartupKey, "true");
 
       // Clear default logging and add console
       builder.Logging.ClearProviders();

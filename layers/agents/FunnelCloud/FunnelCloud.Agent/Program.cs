@@ -49,25 +49,41 @@ public class Program
             sp.GetRequiredService<ILogger<TaskExecutor>>(),
             capabilities.AgentId));
 
+    // Peer registry for gossip protocol
+    builder.Services.AddSingleton<PeerRegistry>(sp =>
+        new PeerRegistry(
+            sp.GetRequiredService<ILogger<PeerRegistry>>(),
+            sp.GetRequiredService<AgentCapabilities>()));
+
     // Peer discovery service (used by HTTP API to discover other agents)
     builder.Services.AddSingleton<PeerDiscoveryService>(sp =>
         new PeerDiscoveryService(
             sp.GetRequiredService<ILogger<PeerDiscoveryService>>(),
             sp.GetRequiredService<AgentCapabilities>()));
 
-    // Add discovery listener as hosted service (responds to multicast)
+    // Add discovery listener as hosted service (responds to multicast and gossip)
     builder.Services.AddHostedService<DiscoveryListener>(sp =>
         new DiscoveryListener(
             sp.GetRequiredService<ILogger<DiscoveryListener>>(),
             sp.GetRequiredService<AgentCapabilities>(),
-            sp.GetRequiredService<PeerDiscoveryService>()));
+            sp.GetRequiredService<PeerDiscoveryService>(),
+            sp.GetRequiredService<PeerRegistry>()));
+
+    // Add gossip service (periodic peer sharing)
+    builder.Services.AddHostedService<GossipService>(sp =>
+        new GossipService(
+            sp.GetRequiredService<ILogger<GossipService>>(),
+            sp.GetRequiredService<PeerRegistry>(),
+            sp.GetRequiredService<PeerDiscoveryService>(),
+            sp.GetRequiredService<AgentCapabilities>()));
 
     // Add HTTP API server (health checks, peer discovery proxy)
     builder.Services.AddHostedService<HttpApiHost>(sp =>
         new HttpApiHost(
             sp.GetRequiredService<ILogger<HttpApiHost>>(),
             sp.GetRequiredService<AgentCapabilities>(),
-            sp.GetRequiredService<PeerDiscoveryService>()));
+            sp.GetRequiredService<PeerDiscoveryService>(),
+            sp.GetRequiredService<PeerRegistry>()));
 
     // Add gRPC server for task execution (mTLS secured)
     builder.Services.AddHostedService<GrpcServerHost>(sp =>
@@ -99,6 +115,7 @@ public class Program
     var capabilities = DetectCapabilities();
     var workspaceRoots = GetWorkspaceRoots();
     var certFingerprint = GetCertificateFingerprint();
+    var ipAddress = GetPreferredIpAddress();
 
     return new AgentCapabilities
     {
@@ -107,8 +124,36 @@ public class Program
       Platform = platform,
       Capabilities = capabilities,
       WorkspaceRoots = workspaceRoots,
-      CertificateFingerprint = certFingerprint
+      CertificateFingerprint = certFingerprint,
+      IpAddress = ipAddress
     };
+  }
+
+  private static string? GetPreferredIpAddress()
+  {
+    try
+    {
+      // Get all network interfaces that are up and not loopback
+      var interfaces = System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces()
+          .Where(ni => ni.OperationalStatus == System.Net.NetworkInformation.OperationalStatus.Up
+                    && ni.NetworkInterfaceType != System.Net.NetworkInformation.NetworkInterfaceType.Loopback)
+          .OrderBy(ni => ni.GetIPProperties().GetIPv4Properties()?.Index ?? int.MaxValue);
+
+      foreach (var ni in interfaces)
+      {
+        var props = ni.GetIPProperties();
+        var ipv4 = props.UnicastAddresses
+            .Where(ua => ua.Address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+                      && !System.Net.IPAddress.IsLoopback(ua.Address))
+            .Select(ua => ua.Address.ToString())
+            .FirstOrDefault();
+
+        if (!string.IsNullOrEmpty(ipv4))
+          return ipv4;
+      }
+    }
+    catch { }
+    return null;
   }
 
   private static string GetPlatform()
