@@ -72,26 +72,17 @@ They're complementary. AJ could _be called by_ a workflow builder as an automati
 sequenceDiagram
     participant U as 🤖 User (Open-WebUI)
     participant F as AJ Filter
-    participant P as Pragmatics
-    participant M as Memory (Qdrant)
     participant O as Orchestrator
+    participant M as Memory (Qdrant)
     participant T as Tools
     participant A as FunnelCloud Agents
 
     U->>F: Message
-    F->>P: Classify intent
-    P-->>F: intent + confidence
+    F->>O: Classify intent
+    O-->>F: intent + confidence
 
     alt Intent: CASUAL
         F-->>U: LLM responds directly
-    else Intent: SAVE
-        F->>M: Store payload
-        M-->>F: Stored
-        F-->>U: Confirmed
-    else Intent: RECALL
-        F->>M: Semantic search
-        M-->>F: Retrieved facts
-        F-->>U: Here's what I know...
     else Intent: TASK
         F->>O: Execute task
         O->>M: Retrieve context
@@ -116,15 +107,14 @@ sequenceDiagram
 
 ### System Components
 
-| Component            | Purpose                                             | Technology                                                                                                    | Port  |
-| -------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ----- |
-| **Filter**           | Intent routing & LLM coordination                   | [Open-WebUI](https://github.com/open-webui/open-webui) Python filter                                          | N/A   |
-| **Pragmatics API**   | Fast intent classification (4 classes, agent-aware) | [DistilBERT](https://huggingface.co/distilbert-base-uncased) + [FastAPI](https://github.com/tiangolo/fastapi) | 8001  |
-| **Orchestrator API** | Reasoning engine + tool dispatch                    | Python/FastAPI + [Ollama](https://github.com/ollama/ollama)                                                   | 8004  |
-| **Memory API**       | Semantic knowledge storage & recall                 | [Qdrant](https://github.com/qdrant/qdrant) vectors + embeddings                                               | 8000  |
-| **Extractor API**    | Media processing (PDF, images, audio)               | [LLaVA](https://github.com/haotian-liu/LLaVA) + [Whisper](https://github.com/openai/whisper)                  | 8002  |
-| **Qdrant**           | Vector database for semantic search                 | [Qdrant](https://github.com/qdrant/qdrant) (in-memory)                                                        | 6333  |
-| **Ollama**           | Local LLM inference                                 | r1-distill-aj:32b-4k                                                                                          | 11434 |
+| Component            | Purpose                                                  | Technology                                                                                   | Port  |
+| -------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ----- |
+| **Filter**           | Intent routing & LLM coordination                        | [Open-WebUI](https://github.com/open-webui/open-webui) Python filter                         | N/A   |
+| **Orchestrator API** | Reasoning engine + intent classification + tool dispatch | Python/FastAPI + [Ollama](https://github.com/ollama/ollama)                                  | 8004  |
+| **Memory API**       | Semantic knowledge storage & recall                      | [Qdrant](https://github.com/qdrant/qdrant) vectors + embeddings                              | 8000  |
+| **Extractor API**    | Media processing (PDF, images, audio)                    | [LLaVA](https://github.com/haotian-liu/LLaVA) + [Whisper](https://github.com/openai/whisper) | 8002  |
+| **Qdrant**           | Vector database for semantic search                      | [Qdrant](https://github.com/qdrant/qdrant) (in-memory)                                       | 6333  |
+| **Ollama**           | Local LLM inference                                      | r1-distill-aj:32b-4k                                                                         | 11434 |
 
 ---
 
