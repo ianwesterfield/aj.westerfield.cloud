@@ -19,13 +19,25 @@ _hf_client = None
 _pipeline = None
 
 
+def _get_hf_token() -> Optional[str]:
+    """Get HuggingFace token from env var or secrets file."""
+    token = os.getenv("HF_TOKEN")
+    if not token:
+        token_file = os.getenv("HF_TOKEN_FILE")
+        if token_file and os.path.exists(token_file):
+            with open(token_file, "r") as f:
+                token = f.read().strip()
+    return token
+
+
 def _init_backends() -> None:
     """Lazy init for summarization backends. Sets up local pipeline and/or HF client."""
     global _hf_client, _pipeline
     if _hf_client is None:
         try:
             from huggingface_hub import InferenceClient
-            token = os.getenv("HF_TOKEN")
+
+            token = _get_hf_token()
             model_id = os.getenv("SUMMARY_MODEL", "sshleifer/distilbart-cnn-12-6")
             _hf_client = InferenceClient(model=model_id, token=token) if token else None
         except Exception as e:
@@ -34,6 +46,7 @@ def _init_backends() -> None:
     if _pipeline is None:
         try:
             from transformers import pipeline
+
             model_id = os.getenv("SUMMARY_MODEL", "sshleifer/distilbart-cnn-12-6")
             device = 0 if os.getenv("SUMMARY_DEVICE", "cpu") != "cpu" else -1
             _pipeline = pipeline("summarization", model=model_id, device=device)
@@ -41,12 +54,15 @@ def _init_backends() -> None:
             print(f"Local summarization pipeline unavailable: {e}")
             _pipeline = None
 
+
 def summarize(text: str, max_words: int = 60) -> str:
     """
     Summarize text. Tries local pipeline first, then HF API, then just grabs
     the first couple sentences if all else fails.
     """
-    print(f"[summarizer] summarize() called, text length={len(text or '')}, max_words={max_words}")
+    print(
+        f"[summarizer] summarize() called, text length={len(text or '')}, max_words={max_words}"
+    )
     text = (text or "").strip()
     if not text:
         print("[summarizer] Empty text, returning empty string")
@@ -65,7 +81,11 @@ def summarize(text: str, max_words: int = 60) -> str:
             if isinstance(result, list) and result:
                 out = result[0].get("summary_text", "")
                 if out:
-                    print(f"[summarizer] Pipeline returned summary: {out[:80]}..." if len(out) > 80 else f"[summarizer] Pipeline returned summary: {out}")
+                    print(
+                        f"[summarizer] Pipeline returned summary: {out[:80]}..."
+                        if len(out) > 80
+                        else f"[summarizer] Pipeline returned summary: {out}"
+                    )
                     return out.strip()
         except Exception as e:
             print(f"[summarizer] Local summarization failed: {e}")
@@ -78,7 +98,9 @@ def summarize(text: str, max_words: int = 60) -> str:
                 f"Summarize the key personal facts, dates, names, and preferences succinctly (<= {max_words} words).\n\n"
                 f"Text:\n{text}\n\nSummary:"
             )
-            out = _hf_client.text_generation(prompt=prompt, max_new_tokens=128, temperature=0.1)
+            out = _hf_client.text_generation(
+                prompt=prompt, max_new_tokens=128, temperature=0.1
+            )
             print(f"[summarizer] HF API returned summary: {(out or '')[:80]}")
             return (out or "").strip()
         except Exception as e:
@@ -87,10 +109,15 @@ def summarize(text: str, max_words: int = 60) -> str:
     # Fallback: take first sentences and trim to max_words
     print("[summarizer] Using heuristic fallback")
     import re
+
     sentences = re.split(r"(?<=[.!?])\s+", text)
     summary = " ".join(sentences[:2])
     words = summary.split()
     if len(words) > max_words:
         summary = " ".join(words[:max_words]) + "…"
-    print(f"[summarizer] Heuristic summary: {summary[:80]}..." if len(summary) > 80 else f"[summarizer] Heuristic summary: {summary}")
+    print(
+        f"[summarizer] Heuristic summary: {summary[:80]}..."
+        if len(summary) > 80
+        else f"[summarizer] Heuristic summary: {summary}"
+    )
     return summary

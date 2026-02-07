@@ -44,19 +44,22 @@ with open('$CONFIG_FILE', 'r') as f:
     config = yaml.safe_load(f)
 
 print(f'Loading base model: {config[\"base_model\"]}')
+# Load on CPU to avoid offloading issues during merge (needs ~65GB RAM)
 base_model = AutoModelForCausalLM.from_pretrained(
     config['base_model'],
     torch_dtype=torch.bfloat16,
-    device_map='auto',
-    trust_remote_code=True
+    device_map='cpu',
+    trust_remote_code=True,
+    low_cpu_mem_usage=True
 )
 tokenizer = AutoTokenizer.from_pretrained(config['base_model'], trust_remote_code=True)
 
 # Merge each adapter
 for adapter in config['adapters']:
     print(f'Merging adapter: {adapter[\"path\"]} (weight: {adapter[\"weight\"]})')
-    model = PeftModel.from_pretrained(base_model, adapter['path'])
+    model = PeftModel.from_pretrained(base_model, adapter['path'], device_map='cpu')
     base_model = model.merge_and_unload()
+    print('Adapter merged successfully')
 
 # Save merged model
 merged_path = config['output'] + '-merged'

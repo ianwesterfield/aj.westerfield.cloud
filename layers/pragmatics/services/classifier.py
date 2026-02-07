@@ -6,13 +6,13 @@ Multi-class intent classifier for AJ conversation routing.
 Model:
   DistilBERT fine-tuned on conversation datasets
   Path: /app/distilbert_intent (4-class) or /app/distilbert_memory (binary fallback)
-  
+
   4-class labels:
     0 = "casual" (greetings, general chat)
     1 = "save" (remember this information)
     2 = "recall" (what do you remember about X?)
     3 = "task" (workspace/code/execution requests)
-    
+
   Binary fallback labels:
     0 = "other" (recall, query, casual)
     1 = "save" (remember this)
@@ -34,9 +34,7 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 # ============================================================================
 
 logger = logging.getLogger("pragmatics.classifier")
-log_level = (
-    os.getenv("PRAGMATICS_LOG_LEVEL", os.getenv("LOG_LEVEL", "INFO")).upper()
-)
+log_level = os.getenv("PRAGMATICS_LOG_LEVEL", os.getenv("LOG_LEVEL", "INFO")).upper()
 logger.setLevel(getattr(logging, log_level, logging.INFO))
 
 
@@ -47,7 +45,7 @@ logger.setLevel(getattr(logging, log_level, logging.INFO))
 DEFAULT_INTENT_LABELS = {
     0: "casual",
     1: "save",
-    2: "recall", 
+    2: "recall",
     3: "task",
 }
 
@@ -65,27 +63,37 @@ try:
     model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH)
     model.to(DEVICE)
     model.eval()
-    
+
     # Determine model type (4-class vs binary)
     num_labels = model.config.num_labels
-    
-    # Try to load custom label mapping
-    label_file = Path(MODEL_PATH) / "intent_labels.json"
-    if label_file.exists():
+
+    # Try to load label mapping from model config first
+    if hasattr(model.config, "id2label") and model.config.id2label:
+        INTENT_LABELS = {int(k): v for k, v in model.config.id2label.items()}
+        logger.info(f"[classifier] Loaded labels from model config: {INTENT_LABELS}")
+    # Fallback to intent_labels.json file
+    elif (label_file := Path(MODEL_PATH) / "intent_labels.json").exists():
         with open(label_file) as f:
             label_data = json.load(f)
-            INTENT_LABELS = {int(k): v for k, v in label_data.get("id2label", {}).items()}
+            INTENT_LABELS = {
+                int(k): v for k, v in label_data.get("id2label", {}).items()
+            }
     elif num_labels == 4:
         INTENT_LABELS = DEFAULT_INTENT_LABELS
+    elif num_labels == 2:
+        # 2-class model: casual vs task
+        INTENT_LABELS = {0: "casual", 1: "task"}
     else:
-        # Binary model fallback
+        # Legacy binary model fallback
         INTENT_LABELS = {0: "other", 1: "save"}
-    
-    IS_MULTICLASS = num_labels == 4
-    
-    logger.info(f"[classifier] ✓ Model loaded: {num_labels} classes, multiclass={IS_MULTICLASS}")
+
+    IS_MULTICLASS = num_labels >= 2
+
+    logger.info(
+        f"[classifier] ✓ Model loaded: {num_labels} classes, multiclass={IS_MULTICLASS}"
+    )
     logger.info(f"[classifier] Labels: {INTENT_LABELS}")
-    
+
 except Exception as e:
     logger.error(f"[classifier] Failed to load model: {e}")
     raise
@@ -103,13 +111,14 @@ logger.info(f"[classifier] Confidence threshold: {CONFIDENCE_THRESHOLD}")
 # Public API - Multi-class
 # ============================================================================
 
+
 def classify_intent_multiclass(text: str) -> Dict[str, Any]:
     """
     Classify user intent into one of 4 categories.
-    
+
     Args:
         text: User message text
-    
+
     Returns:
         {
             "intent": "casual"|"save"|"recall"|"task",
@@ -119,7 +128,7 @@ def classify_intent_multiclass(text: str) -> Dict[str, Any]:
     """
     text_preview = text if len(text) <= 200 else text[:197] + "..."
     logger.debug(f"[classify] Input: {text_preview}")
-    
+
     # Tokenize
     inputs = tokenizer(
         text,
@@ -129,22 +138,24 @@ def classify_intent_multiclass(text: str) -> Dict[str, Any]:
         padding="max_length",
     )
     inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
-    
+
     # Inference
     with torch.no_grad():
         logits = model(**inputs).logits
         probs = F.softmax(logits, dim=-1).cpu().tolist()[0]
-    
+
     # Find best class
     best_idx = probs.index(max(probs))
     best_intent = INTENT_LABELS.get(best_idx, "casual")
     best_confidence = probs[best_idx]
-    
+
     # Build probability dict
     all_probs = {INTENT_LABELS.get(i, f"class_{i}"): p for i, p in enumerate(probs)}
-    
-    logger.debug(f"[classify] Result: {best_intent} ({best_confidence:.2f}) | {all_probs}")
-    
+
+    logger.debug(
+        f"[classify] Result: {best_intent} ({best_confidence:.2f}) | {all_probs}"
+    )
+
     return {
         "intent": best_intent,
         "confidence": best_confidence,
@@ -167,7 +178,7 @@ def classify_intent_multiclass(text: str) -> Dict[str, Any]:
 
 def classify_with_context(user_text: str, context: str = "") -> Dict[str, Any]:
     """DEPRECATED: Use classify_intent_multiclass() only.
-    
+
     All context analysis must go through pragmatics API or LLM, never hardcoded patterns.
     """
     logger.warning(
@@ -181,21 +192,24 @@ def classify_with_context(user_text: str, context: str = "") -> Dict[str, Any]:
 # Public API - Binary (backward compatible)
 # ============================================================================
 
+
 def classify_intent(text: str) -> Tuple[bool, float]:
     """
     Binary classification: is this a save request?
-    
+
     Backward compatible with existing code.
-    
+
     Args:
         text: User message text
-    
+
     Returns:
         (is_save_request, confidence) tuple
     """
     if IS_MULTICLASS:
         result = classify_intent_multiclass(text)
-        is_save = result["intent"] == "save" and result["confidence"] >= CONFIDENCE_THRESHOLD
+        is_save = (
+            result["intent"] == "save" and result["confidence"] >= CONFIDENCE_THRESHOLD
+        )
         save_conf = result["all_probs"].get("save", 0.0)
         return is_save, save_conf
     else:
@@ -208,12 +222,12 @@ def classify_intent(text: str) -> Tuple[bool, float]:
             padding="max_length",
         )
         inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
-        
+
         with torch.no_grad():
             logits = model(**inputs).logits
             probs = F.softmax(logits, dim=-1).cpu().tolist()[0]
-        
+
         save_confidence = probs[1]
         is_save = save_confidence >= CONFIDENCE_THRESHOLD
-        
+
         return is_save, save_confidence

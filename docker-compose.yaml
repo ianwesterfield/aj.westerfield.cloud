@@ -2,6 +2,10 @@ networks:
   webtools_network:
     external: true
 
+secrets:
+  huggingface_pat:
+    file: ./secrets/huggingface_pat.txt
+
 services:
   # -------------------------------------------------
   # Ollama
@@ -65,7 +69,10 @@ services:
       - SUMMARY_MODEL=sshleifer/distilbart-cnn-12-6
       - SUMMARY_DEVICE=0
       - HF_HOME=/models
+      - HF_TOKEN_FILE=/run/secrets/huggingface_pat
       - FILTERS_PATH=/filters
+    secrets:
+      - huggingface_pat
     volumes:
       - /mnt/c/docker-data/models:/models
       - ./filters:/filters:ro
@@ -74,24 +81,24 @@ services:
     restart: unless-stopped
 
   # -------------------------------------------------
-  # Pragmatics API (Intent Classification)
+  # Pragmatics API - DEPRECATED
+  # Intent classification now handled by orchestrator's LLM
+  # This service is kept for reference but not started
   # -------------------------------------------------
-  pragmatics_api:
-    build:
-      context: ./layers/pragmatics
-      dockerfile: Dockerfile
-      args:
-        BASE_REGISTRY: ${BASE_REGISTRY:-ianwesterfield}
-    container_name: pragmatics_api
-    network_mode: host
-    environment:
-      # Use 4-class intent model (casual/save/recall/task)
-      # Fallback to distilbert_memory if distilbert_intent not found
-      - CLASSIFIER_MODEL=distilbert_intent
-      - INTENT_CONFIDENCE_THRESHOLD=0.50
-    depends_on:
-      - memory_api
-    restart: unless-stopped
+  # pragmatics_api:
+  #   build:
+  #     context: ./layers/pragmatics
+  #     dockerfile: Dockerfile
+  #     args:
+  #       BASE_REGISTRY: ${BASE_REGISTRY:-ianwesterfield}
+  #   container_name: pragmatics_api
+  #   network_mode: host
+  #   environment:
+  #     - CLASSIFIER_MODEL=distilbert_intent
+  #     - INTENT_CONFIDENCE_THRESHOLD=0.50
+  #   depends_on:
+  #     - memory_api
+  #   restart: unless-stopped
 
   # -------------------------------------------------
   # Extractor API (Media -> Text)
@@ -108,6 +115,9 @@ services:
       - WHISPER_MODEL=large-v3
       - IMAGE_MODEL=llava # Options: llava-4bit (~4GB), llava (~14GB), florence (~4GB)
       - HF_HOME=/models
+      - HF_TOKEN_FILE=/run/secrets/huggingface_pat
+    secrets:
+      - huggingface_pat
     volumes:
       - /mnt/c/docker-data/models:/models
     deploy:
@@ -121,6 +131,7 @@ services:
 
   # -------------------------------------------------
   # Orchestrator API (Agentic Reasoning + Execution Engine)
+  # Includes embedded FunnelCloud Agent for localhost bootstrap
   # -------------------------------------------------
   orchestrator_api:
     build:
@@ -140,28 +151,28 @@ services:
       - DEFAULT_TIMEOUT=30
       - MAX_TIMEOUT=120
 
+      # ====== Embedded FunnelCloud Agent ======
+      # The orchestrator container runs its own FunnelCloud agent
+      # This provides the localhost bootstrap for discover-peers
+      - FUNNEL_AGENT_ID=orchestrator-agent
+      - FUNNEL_INSECURE=${FUNNEL_INSECURE:-true}
+
       # FunnelCloud agent discovery
-      # Local agent host for discovery proxy (UDP on same port as discovery)
-      # This is the ONLY known address - the local agent does multicast on the physical LAN
-      # All other agents are discovered dynamically via gossip (no hardcoding needed)
-      - FUNNEL_LOCAL_AGENT_HOST=${FUNNEL_LOCAL_AGENT_HOST:-}
       - FUNNEL_DISCOVERY_PORT=41420
       - FUNNEL_GRPC_PORT=41235
       - FUNNEL_DISCOVERY_TIMEOUT=3.0
-      # HTTP port for agent REST API (used for gossip peer discovery)
+      # HTTP port for agent REST API (health, discover-peers)
       - FUNNEL_AGENT_HTTP_PORT=41421
       # Gossip config - how many rounds to expand peer discovery
       - FUNNEL_GOSSIP_MAX_ROUNDS=3
       - FUNNEL_GOSSIP_TIMEOUT=2.0
       # Gossip seed - ONE reachable agent IP to bootstrap cross-subnet discovery
-      # (only needed when local agent can't multicast to other subnets)
+      # (only needed when embedded agent can't multicast to other subnets)
       - FUNNEL_GOSSIP_SEED_HOST=${FUNNEL_GOSSIP_SEED_HOST:-}
       # mTLS certificates for FunnelCloud gRPC
       - ORCHESTRATOR_CERT_PATH=/app/certs/agents/orchestrator/agent.crt
       - ORCHESTRATOR_KEY_PATH=/app/certs/agents/orchestrator/agent.key
       - CA_CERT_PATH=/app/certs/ca/ca.crt
-      # Set to 'true' to skip mTLS (when agents don't have certs configured)
-      - FUNNEL_INSECURE=${FUNNEL_INSECURE:-true}
     volumes:
       - ${HOST_WORKSPACE_PATH:-/mnt/c/Code}:/workspace:rw
       - ./layers/agents/FunnelCloud/certs:/app/certs:ro
