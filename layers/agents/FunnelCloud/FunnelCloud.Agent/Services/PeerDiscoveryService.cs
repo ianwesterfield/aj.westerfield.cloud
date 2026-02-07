@@ -60,12 +60,56 @@ public class PeerDiscoveryService
       // Set multicast TTL for cross-subnet discovery
       udpClient.Client.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.MulticastTimeToLive, 32);
 
-      // Send discovery message to multicast group
+      // Send discovery message to multicast group on ALL interfaces
       var message = Encoding.UTF8.GetBytes(TrustConfig.DiscoveryMagic);
       var multicastEndpoint = new IPEndPoint(IPAddress.Parse(TrustConfig.MulticastGroup), TrustConfig.DiscoveryPort);
 
-      await udpClient.SendAsync(message, message.Length, multicastEndpoint);
-      _logger.LogDebug("Sent discovery multicast to {Endpoint}", multicastEndpoint);
+      // Send multicast on each network interface for cross-subnet discovery
+      var sentCount = 0;
+      foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+      {
+        if (ni.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up)
+          continue;
+        if (ni.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback)
+          continue;
+        if (!ni.SupportsMulticast)
+          continue;
+
+        var ipProps = ni.GetIPProperties();
+        foreach (var addr in ipProps.UnicastAddresses)
+        {
+          if (addr.Address.AddressFamily != AddressFamily.InterNetwork)
+            continue;
+
+          try
+          {
+            // Set the outgoing interface for this multicast send
+            udpClient.Client.SetSocketOption(
+                SocketOptionLevel.IP,
+                SocketOptionName.MulticastInterface,
+                addr.Address.GetAddressBytes());
+
+            await udpClient.SendAsync(message, message.Length, multicastEndpoint);
+            sentCount++;
+            _logger.LogDebug("Sent discovery multicast via {Interface} ({IP})", ni.Name, addr.Address);
+          }
+          catch (Exception ex)
+          {
+            _logger.LogDebug("Failed to send multicast via {Interface}: {Error}", ni.Name, ex.Message);
+          }
+        }
+      }
+
+      if (sentCount == 0)
+      {
+        // Fallback to default interface
+        await udpClient.SendAsync(message, message.Length, multicastEndpoint);
+        _logger.LogDebug("Sent discovery multicast via default interface");
+      }
+      else
+      {
+        _logger.LogDebug("Sent discovery multicast on {Count} interface(s)", sentCount);
+      }
 
       // Also send to broadcast for same-subnet discovery (backup)
       try
