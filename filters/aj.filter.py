@@ -170,6 +170,7 @@ MEMORY_API_URL = os.getenv("MEMORY_API_URL", "http://memory_api:8000")
 EXTRACTOR_API_URL = os.getenv("EXTRACTOR_API_URL", "http://extractor_api:8002")
 ORCHESTRATOR_API_URL = os.getenv("ORCHESTRATOR_API_URL", "http://orchestrator_api:8004")
 EXECUTOR_API_URL = os.getenv("EXECUTOR_API_URL", "http://executor_api:8005")
+PRAGMATICS_API_URL = os.getenv("PRAGMATICS_API_URL", "http://pragmatics_api:8001")
 
 # System prompt describing AJ capabilities and output contracts
 # This is injected into the chat LLM that presents results to users
@@ -1113,12 +1114,66 @@ async def _save_to_memory(
     messages: List[dict],
     source_type: Optional[str] = None,
     source_name: Optional[str] = None,
+    workspace_context: Optional[str] = None,
 ) -> bool:
-    """Save conversation to memory. Returns True if saved successfully."""
+    """Save conversation to memory with fact extraction. Returns True if saved successfully."""
     try:
+        # Extract user text for fact extraction
+        user_text = None
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    user_text = content
+                elif isinstance(content, list):
+                    user_text = " ".join(
+                        item.get("text", "")
+                        for item in content
+                        if isinstance(item, dict) and item.get("type") == "text"
+                    )
+                break
+
+        # Extract facts via pragmatics layer (LLM-based extraction)
+        facts = []
+        if user_text and len(user_text.strip()) > 10:
+            try:
+                print(
+                    f"[aj] Calling pragmatics at {PRAGMATICS_API_URL}/api/pragmatics/extract-facts-storage"
+                )
+                resp = requests.post(
+                    f"{PRAGMATICS_API_URL}/api/pragmatics/extract-facts-storage",
+                    json={"text": user_text},
+                    timeout=120,  # First call may cold-load the model
+                )
+                print(f"[aj] Pragmatics responded: status={resp.status_code}")
+                if resp.status_code == 200:
+                    resp_json = resp.json()
+                    print(f"[aj] Pragmatics response body: {resp_json}")
+                    facts = resp_json.get("facts", [])
+                    if facts:
+                        print(f"[aj] Extracted {len(facts)} facts for memory")
+                    else:
+                        print(f"[aj] No facts found, skipping memory save")
+                        return False  # Nothing worth saving
+                else:
+                    print(
+                        f"[aj] Pragmatics error: {resp.status_code} {resp.text[:200]}"
+                    )
+                    return False  # Don't save verbatim on extraction failure
+            except Exception as e:
+                print(f"[aj] Fact extraction failed: {type(e).__name__}: {e}")
+                return False  # Don't save verbatim on extraction failure
+        else:
+            print(
+                f"[aj] Text too short for fact extraction ({len(user_text.strip()) if user_text else 0} chars), skipping"
+            )
+            return False
+
         payload = {
             "user_id": user_id,
             "messages": messages,
+            "facts": facts if facts else None,
+            "workspace_context": workspace_context,
             "source_type": source_type,
             "source_name": source_name,
         }
@@ -1515,6 +1570,25 @@ class Filter:
                     for r in search_results
                 ]
 
+            # Save to memory (extracts facts via pragmatics, stores in Qdrant)
+            # Do this for all messages - fact extraction decides what's worth storing
+            if user_text and len(user_text.strip()) > 5:
+                await __event_emitter__(
+                    create_status_dict(
+                        "Saving to memory",
+                        LogCategory.MEMORY,
+                        LogLevel.PROCESSING,
+                    )
+                )
+                saved = await _save_to_memory(
+                    user_id=user_id,
+                    messages=messages,
+                    source_type="prompt",
+                    source_name=model,
+                )
+                if saved:
+                    print(f"[aj] Memory saved for user={user_id}")
+
             # For task intents, engage orchestrator (pass memory context for user info)
             if intent == "task" and self.user_valves.enable_orchestrator:
                 orchestrator_context, streamed = await _orchestrate_task(
@@ -1582,7 +1656,6 @@ class Filter:
                 f"[aj] user={user_id} intent={intent} context={len(context or [])} chunks={chunks_saved} contextType={'internal' if intent == 'task' else 'external'}"
             )
             return body
-            return body
 
         except Exception as e:
             print(f"[aj] Error: {e}")
@@ -1602,13 +1675,32 @@ class Filter:
         Ensures:
         - JSON structured responses are extracted to just the "response" field
         - Streamed thinking/results are preserved before LLM response
+        - User message echoes are removed (model confusion)
         - File/folder names are in `backticks`
         - Code references are in `backticks`
         - Lists and code blocks use fenced markdown
         """
+        import re
+
         messages = body.get("messages", [])
         if not messages:
             return body
+
+        # Get last user message to detect echo
+        last_user_msg = None
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                user_content = msg.get("content", "")
+                if isinstance(user_content, str):
+                    last_user_msg = user_content.strip()
+                elif isinstance(user_content, list):
+                    # Extract text from multi-modal content
+                    last_user_msg = " ".join(
+                        item.get("text", "")
+                        for item in user_content
+                        if isinstance(item, dict) and item.get("type") == "text"
+                    ).strip()
+                break
 
         # Find last assistant message and process it
         for i in range(len(messages) - 1, -1, -1):
@@ -1617,6 +1709,20 @@ class Filter:
                 if isinstance(content, str):
                     # FIRST: Extract response from JSON structured output
                     content = self._extract_json_response(content)
+
+                    # CRITICAL: Detect user message echo (model confusion)
+                    # If the assistant's response contains the user's exact message, remove it
+                    if last_user_msg and len(last_user_msg) > 5:
+                        if last_user_msg in content:
+                            print(f"[aj] WARNING: Model echoed user message, removing")
+                            content = content.replace(last_user_msg, "").strip()
+                            # Also remove common echo patterns like "User: ..."
+                            content = re.sub(
+                                rf"(?:User|Human|Question):\s*{re.escape(last_user_msg)}",
+                                "",
+                                content,
+                                flags=re.IGNORECASE,
+                            )
 
                     # Prepend any streamed thinking/results from orchestrator
                     if self._streamed_content:
@@ -1766,6 +1872,7 @@ class Filter:
         - Remove raw JSON tool calls that leaked through
         - Remove partial/orphaned JSON fragments
         - Remove leaked chat template tokens
+        - Remove echoed user messages (model confusion)
         - Wrap file/folder names in backticks
         - Wrap code references in backticks
         - Ensure code blocks are fenced
@@ -1789,6 +1896,44 @@ class Filter:
         ]
         for pattern in chat_template_patterns:
             text = re.sub(pattern, "", text, flags=re.IGNORECASE)
+
+        # CRITICAL: Detect model regurgitating system prompt template content
+        # DeepSeek-R1 and similar models sometimes output prompt instructions
+        template_regurgitation_markers = [
+            "## Task Management with AJ",
+            "### Getting Started",
+            "**Classify Intent**:",
+            "Determine if your request falls under",
+            "**Utilize Memory Management**:",
+            "**Run Remote Commands**:",
+            "**Intent Routing**:",
+            "**Output Contract**:",
+            "**Do not Fabricate Data**:",
+            "With practice and experimentation, you'll become proficient",
+        ]
+
+        for marker in template_regurgitation_markers:
+            if marker in text:
+                # Model is regurgitating template content - this is broken
+                # Try to extract any valid content after the template garbage
+                print(f"[aj] WARNING: Model regurgitating template content, cleaning")
+
+                # Remove the entire "Task Management" block if present
+                text = re.sub(
+                    r"#+\s*Task Management with AJ.*?(?=\n\n[^#\-\*\d]|\Z)",
+                    "",
+                    text,
+                    flags=re.DOTALL | re.IGNORECASE,
+                )
+
+                # Remove numbered list items that look like instructions
+                text = re.sub(
+                    r"\d+\.\s*\*\*(?:Classify Intent|Utilize Memory|Run Remote|Intent Routing|Output Contract|Do not Fabricate)\*\*[^\n]*\n?",
+                    "",
+                    text,
+                    flags=re.IGNORECASE,
+                )
+                break
 
         # Detect and truncate at conversation loop
         # If model starts outputting "user\n" or "assistant\n" (role markers), truncate there
