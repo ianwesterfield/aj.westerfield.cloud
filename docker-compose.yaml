@@ -30,6 +30,93 @@ services:
               capabilities: [gpu]
     shm_size: 2g
     restart: unless-stopped
+    # Pre-load llama3.1:8b on startup so chat is instant
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'curl -sf http://localhost:11434/api/tags || exit 1; curl -sf -X POST http://localhost:11434/api/generate -d ''{"model":"llama3.1:8b","prompt":"","keep_alive":-1}'' > /dev/null 2>&1; exit 0',
+        ]
+      interval: 30s
+      timeout: 300s
+      retries: 3
+      start_period: 30s
+
+  # -------------------------------------------------
+  # Ollama — Orchestrator (dedicated reasoning/planning)
+  # Pinned to aj-deepseek-r1-32b so chat model swaps
+  # don't cause 126-second reloads mid-trajectory
+  # -------------------------------------------------
+  ollama-orchestrator:
+    image: ollama/ollama:latest
+    container_name: ollama-orchestrator
+    network_mode: host
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11435
+      - OLLAMA_KEEP_ALIVE=-1
+      - OLLAMA_NUM_PARALLEL=2
+      - OLLAMA_MAX_LOADED_MODELS=1
+    volumes:
+      # Share models with main ollama (custom models like aj-deepseek-r1-32b)
+      - /mnt/c/docker-data/ollama/.ollama:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    shm_size: 2g
+    restart: unless-stopped
+    # Pre-load aj-deepseek-r1-32b so orchestrator reasoning is instant
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'curl -sf http://localhost:11435/api/tags || exit 1; curl -sf -X POST http://localhost:11435/api/generate -d ''{ "model": "aj-deepseek-r1-32b", "prompt": "", "keep_alive": -1 }'' > /dev/null 2>&1; exit 0',
+        ]
+      interval: 30s
+      timeout: 300s
+      retries: 3
+      start_period: 60s
+
+  # -------------------------------------------------
+  # Ollama — Fact Extraction (qwen2.5:1.5b ~1GB VRAM)
+  # Tiny model for structured JSON key/value extraction
+  # Used by pragmatics for memory fact extraction
+  # -------------------------------------------------
+  ollama-facts:
+    image: ollama/ollama:latest
+    container_name: ollama-facts
+    network_mode: host
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11436
+      - OLLAMA_KEEP_ALIVE=-1
+      - OLLAMA_NUM_PARALLEL=4 # Tiny model, can handle more concurrency
+      - OLLAMA_MAX_LOADED_MODELS=1
+    volumes:
+      # Share models with main ollama (qwen2.5:1.5b needs to be pulled to main)
+      - /mnt/c/docker-data/ollama/.ollama:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    shm_size: 512m
+    restart: unless-stopped
+    # Pre-load qwen2.5:1.5b so fact extraction is instant
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          'curl -sf http://localhost:11436/api/tags || exit 1; curl -sf -X POST http://localhost:11436/api/generate -d ''{ "model": "qwen2.5:1.5b", "prompt": "", "keep_alive": -1 }'' > /dev/null 2>&1; exit 0',
+        ]
+      interval: 30s
+      timeout: 120s
+      retries: 3
+      start_period: 15s
 
   # -------------------------------------------------
   # Qdrant
@@ -81,24 +168,25 @@ services:
     restart: unless-stopped
 
   # -------------------------------------------------
-  # Pragmatics API - DEPRECATED
-  # Intent classification now handled by orchestrator's LLM
-  # This service is kept for reference but not started
+  # Pragmatics API
+  # Intent classification: DistilBERT (CPU, baked into image)
+  # Fact extraction: llama3.1:8b via dedicated ollama-facts
   # -------------------------------------------------
-  # pragmatics_api:
-  #   build:
-  #     context: ./layers/pragmatics
-  #     dockerfile: Dockerfile
-  #     args:
-  #       BASE_REGISTRY: ${BASE_REGISTRY:-ianwesterfield}
-  #   container_name: pragmatics_api
-  #   network_mode: host
-  #   environment:
-  #     - CLASSIFIER_MODEL=distilbert_intent
-  #     - INTENT_CONFIDENCE_THRESHOLD=0.50
-  #   depends_on:
-  #     - memory_api
-  #   restart: unless-stopped
+  pragmatics_api:
+    build:
+      context: ./layers/pragmatics
+      dockerfile: Dockerfile
+      args:
+        BASE_REGISTRY: ${BASE_REGISTRY:-ianwesterfield}
+    container_name: pragmatics_api
+    network_mode: host
+    environment:
+      - OLLAMA_HOST=localhost
+      - OLLAMA_PORT=11436
+      - FACT_EXTRACTION_MODEL=qwen2.5:1.5b
+    depends_on:
+      - ollama-facts
+    restart: unless-stopped
 
   # -------------------------------------------------
   # Extractor API (Media -> Text)
@@ -140,8 +228,8 @@ services:
     container_name: orchestrator_api
     network_mode: host
     environment:
-      # Use localhost since we're on host network (Linux in WSL)
-      - OLLAMA_BASE_URL=http://localhost:11434
+      # Dedicated Ollama instance for orchestrator reasoning (port 11435)
+      - OLLAMA_BASE_URL=http://localhost:11435
       - MEMORY_API_URL=http://localhost:8000
       - MAX_PARALLEL_TASKS=5
       - WORKSPACE_ROOT=/workspace
@@ -177,7 +265,7 @@ services:
       - ${HOST_WORKSPACE_PATH:-/mnt/c/Code}:/workspace:rw
       - ./layers/agents/FunnelCloud/certs:/app/certs:ro
     depends_on:
-      - ollama
+      - ollama-orchestrator
       - memory_api
     restart: unless-stopped
 
