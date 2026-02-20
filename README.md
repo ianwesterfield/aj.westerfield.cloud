@@ -1,6 +1,6 @@
 # AJ: Knowledge-Centric AI Infrastructure
 
-> **AJ** = **A**gentic **J**ournalist
+A privacy-first, locally-hosted **A(J)**entic AI infrastructure assistant that combines intent-driven orchestration with semantic memory—rather than exposing a catalog of tools for an LLM to pick from, the orchestrator reasons about goals and securely dispatches atomic commands to trusted remote agents based on their self-reported capabilities.
 
 **AJ learns learns as you go.** based on a pragmatic and agentic approach. AJ's focus is on:
 
