@@ -1,7 +1,6 @@
 __pycache__/
 .DS_Store
 .eggs/
-.github/
 .idea/
 .project
 .pydevproject
