@@ -673,6 +673,14 @@ class SessionState:
                 f"remote({agent}): {cmd_preview}... {'OK' if success else 'FAILED'}"
             )
 
+            # CRITICAL: Include actual output so reasoning model can see real data
+            # Without this, the model never sees command results and hallucinate
+            if output and output.strip():
+                output_preview = output.strip()[:500]
+                summary += f"\n    OUTPUT: {output_preview}"
+            elif success:
+                summary += "\n    OUTPUT: (empty - command returned no output)"
+
             # Check if this is a discover-peers call (agent discovery via localhost)
             if success and agent == "localhost" and "discover-peers" in cmd.lower():
                 self.agents_verified = True

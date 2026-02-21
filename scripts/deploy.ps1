@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     AJ Deployment Script - Orchestrates all deployment tasks
 
@@ -88,7 +88,7 @@ $ProjectRoot = Split-Path -Parent $ScriptDir
 function Write-Header($text) {
     Write-Host ""
     Write-Host "╔════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host "║  $text".PadRight(44) + "║" -ForegroundColor Cyan
+    Write-Host ("║  $text".PadRight(44) + "║") -ForegroundColor Cyan
     Write-Host "╚════════════════════════════════════════════╝" -ForegroundColor Cyan
     Write-Host ""
 }
@@ -163,7 +163,7 @@ function Deploy-Filter {
     
     Write-Header "Deploying to Open-WebUI"
     
-    $filterScript = Join-Path $ScriptDir "deploy-filter.py"
+    $filterScript = Join-Path $ScriptDir "deploy-open-webui.py"
     
     if (-not (Test-Path $filterScript)) {
         throw "Filter deployment script not found: $filterScript"
