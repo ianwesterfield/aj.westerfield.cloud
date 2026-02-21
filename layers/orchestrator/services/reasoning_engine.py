@@ -258,6 +258,37 @@ class ReasoningEngine:
                 return max(5, int(size_gb / self._load_speed_gb_per_sec))
         return 15
 
+    @staticmethod
+    def format_status(
+        loaded: bool,
+        model_was_loaded: bool,
+        elapsed: float,
+        estimated_total: float,
+    ) -> Tuple[bool, str]:
+        """Build the status string for streaming status monitor.
+
+        Returns (model_was_loaded, status_string).
+        """
+        if loaded:
+            if not model_was_loaded:
+                model_was_loaded = True
+                new_status = "🧠 Reasoning..."
+            else:
+                if elapsed < 10:
+                    new_status = "🧠 Reasoning..."
+                else:
+                    new_status = f"🧠 Reasoning... ({int(elapsed)}s)"
+        else:
+            remaining = max(1, estimated_total - elapsed)
+            percent = min(95, int((elapsed / estimated_total) * 100))
+
+            if elapsed < estimated_total:
+                new_status = f"⏳ Loading model... {percent}%"
+            else:
+                new_status = f"⏳ Loading model... ({elapsed:.0f}s)"
+
+        return model_was_loaded, new_status
+
     # =========================================================================
     # Intent Classification
     # =========================================================================
@@ -1066,23 +1097,12 @@ Output ONLY the numbered list:"""
                 elapsed = asyncio.get_event_loop().time() - start_time
                 status = await self.check_model_status()
 
-                if status["loaded"]:
-                    if not model_was_loaded:
-                        model_was_loaded = True
-                        new_status = "🧠 Reasoning..."
-                    else:
-                        if elapsed < 10:
-                            new_status = "🧠 Reasoning..."
-                        else:
-                            new_status = f"🧠 Reasoning... ({int(elapsed)}s)"
-                else:
-                    remaining = max(1, estimated_total - elapsed)
-                    percent = min(95, int((elapsed / estimated_total) * 100))
-
-                    if elapsed < estimated_total:
-                        new_status = f"⏳ Loading model... {percent}%"
-                    else:
-                        new_status = f"⏳ Loading model... ({elapsed:.0f}s)"
+                model_was_loaded, new_status = ReasoningEngine.format_status(
+                    loaded=status["loaded"],
+                    model_was_loaded=model_was_loaded,
+                    elapsed=elapsed,
+                    estimated_total=estimated_total,
+                )
 
                 if new_status != last_status:
                     status_callback(new_status)
@@ -1092,9 +1112,8 @@ Output ONLY the numbered list:"""
                     await asyncio.wait_for(
                         first_token_received.wait(), timeout=check_interval
                     )
-                    break
                 except asyncio.TimeoutError:
-                    continue
+                    pass
 
         status_task = asyncio.create_task(status_monitor())
 

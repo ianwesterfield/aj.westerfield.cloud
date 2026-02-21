@@ -160,7 +160,6 @@ class GuardrailEngine:
                 batch_id=None,
                 reasoning=f"Redirected execute_shell to execute on {agent_id}",
             )
-        return None
 
     def _check_completion_validity(
         self, step: Step, state: SessionState

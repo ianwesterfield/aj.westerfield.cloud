@@ -5,6 +5,10 @@ networks:
 secrets:
   huggingface_pat:
     file: ./secrets/huggingface_pat.txt
+  funnel_local_agent_host:
+    file: ./secrets/funnel_local_agent_host.txt
+  funnel_gossip_seed_host:
+    file: ./secrets/funnel_gossip_seed_host.txt
 
 services:
   # -------------------------------------------------
@@ -256,11 +260,15 @@ services:
       - FUNNEL_GOSSIP_TIMEOUT=2.0
       # Gossip seed - ONE reachable agent IP to bootstrap cross-subnet discovery
       # (only needed when embedded agent can't multicast to other subnets)
-      - FUNNEL_GOSSIP_SEED_HOST=${FUNNEL_GOSSIP_SEED_HOST:-}
+      - FUNNEL_LOCAL_AGENT_HOST_FILE=/run/secrets/funnel_local_agent_host
+      - FUNNEL_GOSSIP_SEED_HOST_FILE=/run/secrets/funnel_gossip_seed_host
       # mTLS certificates for FunnelCloud gRPC
       - ORCHESTRATOR_CERT_PATH=/app/certs/agents/orchestrator/agent.crt
       - ORCHESTRATOR_KEY_PATH=/app/certs/agents/orchestrator/agent.key
       - CA_CERT_PATH=/app/certs/ca/ca.crt
+    secrets:
+      - funnel_local_agent_host
+      - funnel_gossip_seed_host
     volumes:
       - ${HOST_WORKSPACE_PATH:-/mnt/c/Code}:/workspace:rw
       - ./layers/agents/FunnelCloud/certs:/app/certs:ro

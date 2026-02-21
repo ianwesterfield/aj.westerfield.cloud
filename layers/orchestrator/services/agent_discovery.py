@@ -29,6 +29,16 @@ import aiohttp
 
 logger = logging.getLogger("orchestrator.discovery")
 
+
+def _get_secret_or_env(env_name: str, default: str = "") -> str:
+    """Read from secret file if _FILE env var exists, otherwise use env var."""
+    file_path = os.getenv(f"{env_name}_FILE")
+    if file_path and os.path.exists(file_path):
+        with open(file_path, "r") as f:
+            return f.read().strip()
+    return os.getenv(env_name, default)
+
+
 # Discovery constants
 DISCOVERY_PORT = int(os.getenv("FUNNEL_DISCOVERY_PORT", "41420"))
 DISCOVERY_MAGIC = b"FUNNEL_DISCOVER"
@@ -46,12 +56,12 @@ GOSSIP_TIMEOUT = float(os.getenv("FUNNEL_GOSSIP_TIMEOUT", "2.0"))
 # Local agent for discovery proxy (UDP, same port)
 # This is the ONLY "known" address - the gateway to the local agent
 # All other agents are discovered dynamically via gossip
-LOCAL_AGENT_HOST = os.getenv("FUNNEL_LOCAL_AGENT_HOST", "")  # e.g., "172.25.224.1"
+LOCAL_AGENT_HOST = _get_secret_or_env("FUNNEL_LOCAL_AGENT_HOST")
 
 # Gossip seed agent - an IP of any reachable agent to bootstrap cross-subnet discovery
 # This is used when the local agent can't see other subnets via multicast
 # Only ONE seed is needed - gossip will find all other agents from there
-GOSSIP_SEED_HOST = os.getenv("FUNNEL_GOSSIP_SEED_HOST", "")  # e.g., "192.168.10.166"
+GOSSIP_SEED_HOST = _get_secret_or_env("FUNNEL_GOSSIP_SEED_HOST")
 
 
 @dataclass

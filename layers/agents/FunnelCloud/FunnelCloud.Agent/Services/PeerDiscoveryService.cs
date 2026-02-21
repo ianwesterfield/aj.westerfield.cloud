@@ -138,7 +138,7 @@ public class PeerDiscoveryService
 
           udpClient.Client.ReceiveTimeout = Math.Min(500, remainingMs);
 
-          var result = await Task.Run(() =>
+          var result = await Task.Run<(byte[]? Data, IPEndPoint? RemoteEndPoint)>(() =>
           {
             try
             {

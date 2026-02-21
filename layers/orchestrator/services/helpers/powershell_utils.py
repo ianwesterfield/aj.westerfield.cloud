@@ -306,7 +306,9 @@ class ScriptValidator:
                 }
             )
 
-        if "rm -rf" in script and "-i" not in script:
+        if re.search(r"rm\s+-\w*r\w*f", script) and not re.search(
+            r"rm\s+-\w*i", script
+        ):
             issues.append(
                 {
                     "type": "safety",

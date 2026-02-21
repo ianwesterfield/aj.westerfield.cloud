@@ -18,14 +18,19 @@ import os
 import socket
 import struct
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional, Set
+from unittest import mock
 
 import pytest
 
 # Add the layers directory to the path so we can import the discovery service
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "layers", "orchestrator"))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(__file__), "..", "layers", "orchestrator")
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,18 +41,35 @@ DISCOVERY_TIMEOUT = float(os.getenv("FUNNEL_DISCOVERY_TIMEOUT", "3.0"))
 MULTICAST_GROUP = os.getenv("FUNNEL_MULTICAST_GROUP", "239.255.77.77")
 GRPC_PORT = 41235
 
+# Secrets directory (relative to project root)
+SECRETS_DIR = Path(__file__).parent.parent / "secrets"
+
+
+def _load_secret(filename: str, default: str = "") -> str:
+    """Load a secret from the secrets directory."""
+    secret_path = SECRETS_DIR / filename
+    if secret_path.exists():
+        return secret_path.read_text().strip()
+    return default
+
+
 # Known agent IPs for direct testing (VLAN 1/IT subnet)
+# Gossip seed is loaded from secrets to stay in sync with production config
 KNOWN_AGENTS = {
-    "domain01": "192.168.10.166",
-    "domain02": "192.168.10.171", 
+    "domain01": _load_secret("funnel_gossip_seed_host.txt", "192.168.10.166"),
+    "domain02": "192.168.10.171",
     "exchange01": "192.168.10.88",
     "r730xd": "192.168.10.52",
 }
+
+# Also load local agent host from secrets for consistency
+LOCAL_AGENT_HOST_FROM_SECRET = _load_secret("funnel_local_agent_host.txt", "")
 
 
 @dataclass
 class DiscoveredAgent:
     """Represents a discovered FunnelCloud agent."""
+
     agent_id: str
     hostname: str
     platform: str
@@ -58,7 +80,7 @@ class DiscoveredAgent:
     grpc_port: int
     ip_address: str
     discovered_at: datetime = field(default_factory=datetime.utcnow)
-    
+
     @classmethod
     def from_response(cls, data: dict, ip_address: str) -> "DiscoveredAgent":
         """Parse agent response JSON."""
@@ -68,21 +90,27 @@ class DiscoveredAgent:
             platform=data.get("platform", "unknown"),
             capabilities=data.get("capabilities", []),
             workspace_roots=data.get("workspaceRoots", data.get("workspace_roots", [])),
-            certificate_fingerprint=data.get("certificateFingerprint", data.get("certificate_fingerprint", "")),
-            discovery_port=data.get("discoveryPort", data.get("discovery_port", DISCOVERY_PORT)),
+            certificate_fingerprint=data.get(
+                "certificateFingerprint", data.get("certificate_fingerprint", "")
+            ),
+            discovery_port=data.get(
+                "discoveryPort", data.get("discovery_port", DISCOVERY_PORT)
+            ),
             grpc_port=data.get("grpcPort", data.get("grpc_port", GRPC_PORT)),
             ip_address=ip_address,
         )
 
 
-async def discover_agent_direct(ip_address: str, timeout: float = DISCOVERY_TIMEOUT) -> Optional[DiscoveredAgent]:
+async def discover_agent_direct(
+    ip_address: str, timeout: float = DISCOVERY_TIMEOUT
+) -> Optional[DiscoveredAgent]:
     """
     Send a discovery packet directly to a specific IP and wait for response.
-    
+
     Args:
         ip_address: Target IP address
         timeout: How long to wait for response
-        
+
     Returns:
         DiscoveredAgent if found, None otherwise
     """
@@ -91,30 +119,32 @@ async def discover_agent_direct(ip_address: str, timeout: float = DISCOVERY_TIME
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.settimeout(timeout)  # Use blocking socket with timeout on Windows
-        
+
         # Bind to any port
         sock.bind(("", 0))
-        
+
         # Send discovery packet
         sock.sendto(DISCOVERY_MAGIC, (ip_address, DISCOVERY_PORT))
         logger.debug(f"Sent discovery to {ip_address}:{DISCOVERY_PORT}")
-        
+
         # Wait for response (blocking with timeout)
         try:
             data, addr = sock.recvfrom(4096)
-            
+
             response = json.loads(data.decode("utf-8"))
             agent = DiscoveredAgent.from_response(response, ip_address=addr[0])
-            logger.info(f"Discovered agent: {agent.agent_id} at {addr[0]} ({agent.platform})")
+            logger.info(
+                f"Discovered agent: {agent.agent_id} at {addr[0]} ({agent.platform})"
+            )
             return agent
-            
+
         except socket.timeout:
             logger.debug(f"No response from {ip_address}")
             return None
         except json.JSONDecodeError as e:
             logger.warning(f"Invalid JSON response from {ip_address}: {e}")
             return None
-            
+
     except Exception as e:
         logger.error(f"Discovery to {ip_address} failed: {e}")
         return None
@@ -123,139 +153,144 @@ async def discover_agent_direct(ip_address: str, timeout: float = DISCOVERY_TIME
             sock.close()
 
 
-async def discover_agents_multicast(timeout: float = DISCOVERY_TIMEOUT) -> List[DiscoveredAgent]:
+async def discover_agents_multicast(
+    timeout: float = DISCOVERY_TIMEOUT,
+) -> List[DiscoveredAgent]:
     """
     Send multicast discovery and collect all responses.
-    
+
     Returns:
         List of discovered agents
     """
     agents: List[DiscoveredAgent] = []
     sock = None
-    
+
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.setblocking(False)
-        
+
         # Set multicast TTL for cross-VLAN (if network supports it)
-        ttl = struct.pack('b', 32)
+        ttl = struct.pack("b", 32)
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, ttl)
-        
+
         # Bind to receive responses
         sock.bind(("", 0))
         local_port = sock.getsockname()[1]
         logger.debug(f"Discovery socket bound to port {local_port}")
-        
+
         # Send to multicast group
         sock.sendto(DISCOVERY_MAGIC, (MULTICAST_GROUP, DISCOVERY_PORT))
         logger.info(f"Sent multicast discovery to {MULTICAST_GROUP}:{DISCOVERY_PORT}")
-        
+
         # Collect responses
         loop = asyncio.get_event_loop()
         end_time = loop.time() + timeout
         seen_agents: Set[str] = set()
-        
+
         while loop.time() < end_time:
             remaining = end_time - loop.time()
             if remaining <= 0:
                 break
-                
+
             try:
                 data, addr = await asyncio.wait_for(
                     loop.run_in_executor(None, lambda: sock.recvfrom(4096)),
-                    timeout=min(0.5, remaining)
+                    timeout=min(0.5, remaining),
                 )
-                
+
                 response = json.loads(data.decode("utf-8"))
                 agent = DiscoveredAgent.from_response(response, ip_address=addr[0])
-                
+
                 # Avoid duplicates
                 if agent.agent_id not in seen_agents:
                     agents.append(agent)
                     seen_agents.add(agent.agent_id)
                     logger.info(f"Multicast discovered: {agent.agent_id} at {addr[0]}")
-                    
+
             except asyncio.TimeoutError:
                 continue
             except json.JSONDecodeError as e:
                 logger.warning(f"Invalid JSON from {addr}: {e}")
             except Exception as e:
                 logger.debug(f"Receive error: {e}")
-                
+
     except Exception as e:
         logger.error(f"Multicast discovery failed: {e}")
     finally:
         if sock:
             sock.close()
-            
+
     return agents
 
 
 async def discover_agents_broadcast(
-    target_ips: Optional[List[str]] = None,
-    timeout: float = DISCOVERY_TIMEOUT
+    target_ips: Optional[List[str]] = None, timeout: float = DISCOVERY_TIMEOUT
 ) -> List[DiscoveredAgent]:
     """
     Send discovery to multiple specific IPs in parallel.
-    
+
     Args:
         target_ips: List of IPs to query (defaults to KNOWN_AGENTS)
         timeout: Timeout per agent
-        
+
     Returns:
         List of discovered agents
     """
     if target_ips is None:
         target_ips = list(KNOWN_AGENTS.values())
-    
+
     # Query all IPs in parallel
     tasks = [discover_agent_direct(ip, timeout) for ip in target_ips]
     results = await asyncio.gather(*tasks, return_exceptions=True)
-    
+
     agents = []
     for result in results:
         if isinstance(result, DiscoveredAgent):
             agents.append(result)
         elif isinstance(result, Exception):
             logger.debug(f"Discovery failed: {result}")
-            
+
     return agents
 
 
 class TestAgentDiscoveryBasic:
     """Basic discovery tests - require at least one agent running."""
-    
+
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_local_agent_responds(self):
         """Test that the local agent responds to discovery."""
         # Try localhost first
         agent = await discover_agent_direct("127.0.0.1", timeout=2.0)
-        
+
         if agent is None:
             # Try the machine's hostname
             hostname = socket.gethostname()
             agent = await discover_agent_direct(hostname, timeout=2.0)
-        
+
         assert agent is not None, "No local agent responded to discovery"
         assert agent.agent_id, "Agent should have an ID"
-        assert agent.platform in ("windows", "linux", "macos"), f"Invalid platform: {agent.platform}"
+        assert agent.platform in (
+            "windows",
+            "linux",
+            "macos",
+        ), f"Invalid platform: {agent.platform}"
         assert isinstance(agent.capabilities, list), "Capabilities should be a list"
-        
+
         logger.info(f"Local agent: {agent.agent_id} on {agent.platform}")
         logger.info(f"  Capabilities: {agent.capabilities}")
         logger.info(f"  Workspace roots: {agent.workspace_roots}")
-    
+
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_discovery_response_format(self):
         """Test that agent response contains all required fields."""
         agent = await discover_agent_direct("127.0.0.1", timeout=2.0)
-        
+
         if agent is None:
             pytest.skip("Local agent not running")
-        
+
         # Verify all required fields
         assert agent.agent_id and isinstance(agent.agent_id, str)
         assert agent.hostname and isinstance(agent.hostname, str)
@@ -265,7 +300,7 @@ class TestAgentDiscoveryBasic:
         assert isinstance(agent.certificate_fingerprint, str)
         assert agent.discovery_port == DISCOVERY_PORT
         assert agent.grpc_port == GRPC_PORT
-    
+
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_discovery_timeout_handling(self):
@@ -277,130 +312,144 @@ class TestAgentDiscoveryBasic:
 
 class TestAgentDiscoveryMulticast:
     """Multicast discovery tests - may find multiple agents."""
-    
+
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_multicast_discovery(self):
         """Test multicast-based discovery."""
         agents = await discover_agents_multicast(timeout=3.0)
-        
+
         # At minimum, local agent should respond
         assert len(agents) >= 0, "Multicast discovery should complete without error"
-        
+
         if agents:
             logger.info(f"Multicast found {len(agents)} agent(s):")
             for agent in agents:
-                logger.info(f"  - {agent.agent_id} at {agent.ip_address} ({agent.platform})")
+                logger.info(
+                    f"  - {agent.agent_id} at {agent.ip_address} ({agent.platform})"
+                )
         else:
             logger.warning("No agents found via multicast - may be network limitation")
-    
+
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_no_duplicate_agents(self):
         """Test that multicast doesn't return duplicate agents."""
         agents = await discover_agents_multicast(timeout=3.0)
-        
+
         agent_ids = [a.agent_id for a in agents]
-        assert len(agent_ids) == len(set(agent_ids)), "Should not have duplicate agent IDs"
+        assert len(agent_ids) == len(
+            set(agent_ids)
+        ), "Should not have duplicate agent IDs"
 
 
 class TestKnownAgents:
     """Tests for known/expected agents on the network."""
-    
+
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_discover_domain01(self):
         """Test discovery of domain01 agent."""
         ip = KNOWN_AGENTS["domain01"]
         agent = await discover_agent_direct(ip, timeout=3.0)
-        
+
         if agent is None:
             pytest.skip(f"domain01 agent not responding at {ip}")
-        
-        assert agent.agent_id.lower() == "domain01", f"Expected domain01, got {agent.agent_id}"
+
+        assert (
+            agent.agent_id.lower() == "domain01"
+        ), f"Expected domain01, got {agent.agent_id}"
         assert agent.platform == "windows"
         assert "powershell" in agent.capabilities
-    
+
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_discover_domain02(self):
         """Test discovery of domain02 agent."""
         ip = KNOWN_AGENTS["domain02"]
         agent = await discover_agent_direct(ip, timeout=3.0)
-        
+
         if agent is None:
             pytest.skip(f"domain02 agent not responding at {ip}")
-        
-        assert agent.agent_id.lower() == "domain02", f"Expected domain02, got {agent.agent_id}"
+
+        assert (
+            agent.agent_id.lower() == "domain02"
+        ), f"Expected domain02, got {agent.agent_id}"
         assert agent.platform == "windows"
-    
+
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_discover_exchange01(self):
         """Test discovery of exchange01 agent."""
         ip = KNOWN_AGENTS["exchange01"]
         agent = await discover_agent_direct(ip, timeout=3.0)
-        
+
         if agent is None:
             pytest.skip(f"exchange01 agent not responding at {ip}")
-        
-        assert agent.agent_id.lower() == "exchange01", f"Expected exchange01, got {agent.agent_id}"
+
+        assert (
+            agent.agent_id.lower() == "exchange01"
+        ), f"Expected exchange01, got {agent.agent_id}"
         assert agent.platform == "windows"
-    
+
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_discover_r730xd(self):
         """Test discovery of r730xd agent."""
         ip = KNOWN_AGENTS["r730xd"]
         agent = await discover_agent_direct(ip, timeout=3.0)
-        
+
         if agent is None:
             pytest.skip(f"r730xd agent not responding at {ip}")
-        
+
         # r730xd could be Windows or Linux depending on setup
-        assert agent.agent_id.lower() == "r730xd", f"Expected r730xd, got {agent.agent_id}"
-    
+        assert (
+            agent.agent_id.lower() == "r730xd"
+        ), f"Expected r730xd, got {agent.agent_id}"
+
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_discover_all_known_agents(self):
         """Test discovering all known agents in parallel."""
         agents = await discover_agents_broadcast(timeout=3.0)
-        
+
         logger.info(f"Found {len(agents)} of {len(KNOWN_AGENTS)} known agents:")
         for agent in agents:
             logger.info(f"  - {agent.agent_id} at {agent.ip_address}")
             logger.info(f"    Platform: {agent.platform}")
             logger.info(f"    Capabilities: {', '.join(agent.capabilities)}")
-        
+
         # At least one agent should be found (local)
         assert len(agents) >= 1, "Should find at least one agent"
-    
+
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_all_agents_have_powershell(self):
         """Test that all Windows agents have PowerShell capability."""
         agents = await discover_agents_broadcast(timeout=3.0)
-        
+
         for agent in agents:
             if agent.platform == "windows":
-                assert "powershell" in agent.capabilities, \
-                    f"Windows agent {agent.agent_id} should have powershell capability"
+                assert (
+                    "powershell" in agent.capabilities
+                ), f"Windows agent {agent.agent_id} should have powershell capability"
 
 
 class TestAgentDiscoveryService:
     """Tests using the actual AgentDiscoveryService from the orchestrator."""
-    
+
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_discovery_service_import(self):
         """Test that we can import the discovery service."""
         try:
             from services.agent_discovery import AgentDiscoveryService
+
             service = AgentDiscoveryService()
             assert service is not None
         except ImportError as e:
             pytest.skip(f"Could not import AgentDiscoveryService: {e}")
-    
+
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_discovery_service_discover(self):
@@ -409,14 +458,14 @@ class TestAgentDiscoveryService:
             from services.agent_discovery import AgentDiscoveryService
         except ImportError:
             pytest.skip("Could not import AgentDiscoveryService")
-        
+
         service = AgentDiscoveryService(cache_ttl_seconds=10)
         agents = await service.discover(force=True)
-        
+
         logger.info(f"AgentDiscoveryService found {len(agents)} agent(s)")
         for agent in agents:
             logger.info(f"  - {agent.agent_id}: {agent.platform} at {agent.ip_address}")
-    
+
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_discovery_service_caching(self):
@@ -425,18 +474,18 @@ class TestAgentDiscoveryService:
             from services.agent_discovery import AgentDiscoveryService
         except ImportError:
             pytest.skip("Could not import AgentDiscoveryService")
-        
+
         service = AgentDiscoveryService(cache_ttl_seconds=60)
-        
+
         # First discovery
         agents1 = await service.discover(force=True)
-        
+
         # Second discovery should use cache
         agents2 = await service.discover(force=False)
-        
+
         # Should return same results from cache
         assert len(agents1) == len(agents2)
-        
+
         # Force refresh should work
         agents3 = await service.discover(force=True)
         assert isinstance(agents3, list)
@@ -444,27 +493,27 @@ class TestAgentDiscoveryService:
 
 class TestCrossVLANDiscovery:
     """Tests specifically for cross-VLAN discovery (VLAN 40 -> VLAN 1)."""
-    
+
     @pytest.mark.integration
     @pytest.mark.asyncio
     @pytest.mark.slow
     async def test_cross_vlan_udp(self):
         """
         Test UDP discovery from current machine to IT VLAN agents.
-        
+
         This test is meaningful when run from a different VLAN (e.g., VLAN 40/Standard)
         to verify Firewalla rules allow UDP 41420 between VLANs.
         """
         # Discover all known agents
         agents = await discover_agents_broadcast(timeout=5.0)
-        
+
         # Get local IP to determine our VLAN
         local_ip = socket.gethostbyname(socket.gethostname())
         local_vlan = "IT" if local_ip.startswith("192.168.10.") else "Standard/Other"
-        
+
         logger.info(f"Running from {local_ip} (VLAN: {local_vlan})")
         logger.info(f"Found {len(agents)} agents:")
-        
+
         it_vlan_agents = []
         for agent in agents:
             if agent.ip_address.startswith("192.168.10."):
@@ -472,7 +521,7 @@ class TestCrossVLANDiscovery:
                 logger.info(f"  [IT VLAN] {agent.agent_id} at {agent.ip_address}")
             else:
                 logger.info(f"  [Other] {agent.agent_id} at {agent.ip_address}")
-        
+
         if local_vlan != "IT" and it_vlan_agents:
             logger.info("✓ Cross-VLAN UDP discovery working!")
         elif local_vlan == "IT":
@@ -481,31 +530,32 @@ class TestCrossVLANDiscovery:
 
 class TestAgentCapabilities:
     """Tests for agent capability detection and reporting."""
-    
+
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_windows_agent_capabilities(self):
         """Test that Windows agents report expected capabilities."""
         agents = await discover_agents_broadcast(timeout=3.0)
-        
+
         windows_agents = [a for a in agents if a.platform == "windows"]
-        
+
         if not windows_agents:
             pytest.skip("No Windows agents found")
-        
+
         for agent in windows_agents:
             # All Windows agents should have powershell
-            assert "powershell" in agent.capabilities, \
-                f"{agent.agent_id} missing powershell capability"
-            
+            assert (
+                "powershell" in agent.capabilities
+            ), f"{agent.agent_id} missing powershell capability"
+
             logger.info(f"{agent.agent_id} capabilities: {agent.capabilities}")
-    
+
     @pytest.mark.integration
     @pytest.mark.asyncio
     async def test_agent_workspace_roots(self):
         """Test that agents report valid workspace roots."""
         agents = await discover_agents_broadcast(timeout=3.0)
-        
+
         for agent in agents:
             assert isinstance(agent.workspace_roots, list)
             # Should have at least one workspace root
@@ -516,16 +566,275 @@ class TestAgentCapabilities:
                     logger.info(f"{agent.agent_id} workspace: {root}")
 
 
+class TestSecretLoading:
+    """Unit tests for the _get_secret_or_env helper function."""
+
+    def test_get_secret_or_env_from_file(self):
+        """Test reading secret from file when _FILE env var is set."""
+        from services.agent_discovery import _get_secret_or_env
+
+        # Create a temp file with a secret value
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:
+            f.write("test-secret-value\n")
+            temp_path = f.name
+
+        try:
+            # Set the _FILE env var to point to the temp file
+            with mock.patch.dict(os.environ, {"TEST_SECRET_FILE": temp_path}):
+                result = _get_secret_or_env("TEST_SECRET")
+                assert (
+                    result == "test-secret-value"
+                ), f"Expected 'test-secret-value', got '{result}'"
+        finally:
+            os.unlink(temp_path)
+
+    def test_get_secret_or_env_from_env_var(self):
+        """Test reading secret from env var when no _FILE var is set."""
+        from services.agent_discovery import _get_secret_or_env
+
+        with mock.patch.dict(os.environ, {"TEST_SECRET": "env-value"}, clear=False):
+            # Ensure the _FILE variant is NOT set
+            os.environ.pop("TEST_SECRET_FILE", None)
+            result = _get_secret_or_env("TEST_SECRET")
+            assert result == "env-value", f"Expected 'env-value', got '{result}'"
+
+    def test_get_secret_or_env_file_takes_precedence(self):
+        """Test that file-based secret takes precedence over env var."""
+        from services.agent_discovery import _get_secret_or_env
+
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:
+            f.write("file-value")
+            temp_path = f.name
+
+        try:
+            with mock.patch.dict(
+                os.environ, {"TEST_SECRET": "env-value", "TEST_SECRET_FILE": temp_path}
+            ):
+                result = _get_secret_or_env("TEST_SECRET")
+                assert (
+                    result == "file-value"
+                ), "File should take precedence over env var"
+        finally:
+            os.unlink(temp_path)
+
+    def test_get_secret_or_env_nonexistent_file(self):
+        """Test fallback to env var when file doesn't exist."""
+        from services.agent_discovery import _get_secret_or_env
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "TEST_SECRET": "env-fallback",
+                "TEST_SECRET_FILE": "/nonexistent/path/secret.txt",
+            },
+        ):
+            result = _get_secret_or_env("TEST_SECRET")
+            assert (
+                result == "env-fallback"
+            ), "Should fallback to env var when file doesn't exist"
+
+    def test_get_secret_or_env_default_value(self):
+        """Test that default value is returned when nothing is set."""
+        from services.agent_discovery import _get_secret_or_env
+
+        # Clear any existing env vars
+        os.environ.pop("NONEXISTENT_SECRET", None)
+        os.environ.pop("NONEXISTENT_SECRET_FILE", None)
+
+        result = _get_secret_or_env("NONEXISTENT_SECRET", "default-val")
+        assert result == "default-val", "Should return default when no secret found"
+
+    def test_get_secret_or_env_strips_whitespace(self):
+        """Test that secrets are stripped of whitespace/newlines."""
+        from services.agent_discovery import _get_secret_or_env
+
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".txt") as f:
+            f.write("  192.168.1.1  \n\n")
+            temp_path = f.name
+
+        try:
+            with mock.patch.dict(os.environ, {"TEST_IP_FILE": temp_path}):
+                result = _get_secret_or_env("TEST_IP")
+                assert result == "192.168.1.1", "Should strip whitespace from secrets"
+        finally:
+            os.unlink(temp_path)
+
+
+class TestSecretsFilesExist:
+    """Tests to validate that required secrets files exist and are valid."""
+
+    def test_funnel_local_agent_host_secret_exists(self):
+        """Test that funnel_local_agent_host.txt exists."""
+        secret_path = SECRETS_DIR / "funnel_local_agent_host.txt"
+        assert secret_path.exists(), f"Secret file missing: {secret_path}"
+
+    def test_funnel_gossip_seed_host_secret_exists(self):
+        """Test that funnel_gossip_seed_host.txt exists."""
+        secret_path = SECRETS_DIR / "funnel_gossip_seed_host.txt"
+        assert secret_path.exists(), f"Secret file missing: {secret_path}"
+
+    def test_funnel_local_agent_host_is_valid_ip(self):
+        """Test that funnel_local_agent_host contains a valid IP."""
+        ip = _load_secret("funnel_local_agent_host.txt")
+        assert ip, "funnel_local_agent_host.txt is empty"
+
+        # Validate IP format
+        try:
+            socket.inet_aton(ip)
+        except socket.error:
+            pytest.fail(f"Invalid IP address in funnel_local_agent_host.txt: {ip}")
+
+    def test_funnel_gossip_seed_host_is_valid_ip(self):
+        """Test that funnel_gossip_seed_host contains a valid IP."""
+        ip = _load_secret("funnel_gossip_seed_host.txt")
+        assert ip, "funnel_gossip_seed_host.txt is empty"
+
+        # Validate IP format
+        try:
+            socket.inet_aton(ip)
+        except socket.error:
+            pytest.fail(f"Invalid IP address in funnel_gossip_seed_host.txt: {ip}")
+
+    def test_gossip_seed_matches_known_agent(self):
+        """Test that gossip seed IP matches one of the known agents."""
+        gossip_seed = _load_secret("funnel_gossip_seed_host.txt")
+        known_ips = list(KNOWN_AGENTS.values())
+
+        assert (
+            gossip_seed in known_ips
+        ), f"Gossip seed {gossip_seed} should be in known agents: {known_ips}"
+
+
+class TestDiscoveryConfigConsistency:
+    """Tests to ensure discovery configuration is consistent across sources."""
+
+    def test_local_agent_loaded_correctly(self):
+        """Test that LOCAL_AGENT_HOST_FROM_SECRET matches the actual secret."""
+        expected = _load_secret("funnel_local_agent_host.txt")
+        assert (
+            LOCAL_AGENT_HOST_FROM_SECRET == expected
+        ), f"LOCAL_AGENT_HOST_FROM_SECRET mismatch: {LOCAL_AGENT_HOST_FROM_SECRET} vs {expected}"
+
+    def test_domain01_matches_gossip_seed(self):
+        """Test that domain01 IP is loaded from gossip seed secret."""
+        gossip_seed = _load_secret("funnel_gossip_seed_host.txt")
+        assert (
+            KNOWN_AGENTS["domain01"] == gossip_seed
+        ), f"domain01 IP should match gossip seed: {KNOWN_AGENTS['domain01']} vs {gossip_seed}"
+
+    @pytest.mark.integration
+    def test_service_uses_secrets(self):
+        """Test that AgentDiscoveryService loads secrets correctly."""
+        try:
+            from services.agent_discovery import GOSSIP_SEED_HOST, LOCAL_AGENT_HOST
+
+            # These should be loaded from secrets (or env vars)
+            # Just verify they're strings (may be empty if not configured)
+            assert isinstance(LOCAL_AGENT_HOST, str)
+            assert isinstance(GOSSIP_SEED_HOST, str)
+
+            logger.info(f"LOCAL_AGENT_HOST from service: '{LOCAL_AGENT_HOST}'")
+            logger.info(f"GOSSIP_SEED_HOST from service: '{GOSSIP_SEED_HOST}'")
+
+        except ImportError as e:
+            pytest.skip(f"Could not import agent_discovery service: {e}")
+
+    @pytest.mark.integration
+    @pytest.mark.asyncio
+    async def test_service_with_mocked_secrets(self):
+        """Test that service correctly reads from secret files."""
+        # This test validates the _get_secret_or_env function is wired correctly
+        from services.agent_discovery import _get_secret_or_env
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create mock secret files
+            local_host_file = Path(tmpdir) / "local_host.txt"
+            local_host_file.write_text("10.0.0.1")
+
+            seed_file = Path(tmpdir) / "seed_host.txt"
+            seed_file.write_text("10.0.0.2")
+
+            # Mock the env vars to point to our temp files
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "FUNNEL_LOCAL_AGENT_HOST_FILE": str(local_host_file),
+                    "FUNNEL_GOSSIP_SEED_HOST_FILE": str(seed_file),
+                },
+            ):
+                local = _get_secret_or_env("FUNNEL_LOCAL_AGENT_HOST")
+                seed = _get_secret_or_env("FUNNEL_GOSSIP_SEED_HOST")
+
+                assert local == "10.0.0.1", f"Expected '10.0.0.1', got '{local}'"
+                assert seed == "10.0.0.2", f"Expected '10.0.0.2', got '{seed}'"
+
+
+class TestDockerSecretsIntegration:
+    """Tests that validate Docker secrets integration pattern."""
+
+    def test_secrets_directory_exists(self):
+        """Test that secrets directory exists."""
+        assert SECRETS_DIR.exists(), f"Secrets directory missing: {SECRETS_DIR}"
+        assert SECRETS_DIR.is_dir(), f"Secrets path is not a directory: {SECRETS_DIR}"
+
+    def test_all_required_secrets_present(self):
+        """Test that all required secret files are present."""
+        required_secrets = [
+            "funnel_local_agent_host.txt",
+            "funnel_gossip_seed_host.txt",
+        ]
+
+        missing = []
+        for secret in required_secrets:
+            if not (SECRETS_DIR / secret).exists():
+                missing.append(secret)
+
+        assert not missing, f"Missing required secrets: {missing}"
+
+    def test_secrets_not_empty(self):
+        """Test that secret files are not empty."""
+        secrets_to_check = [
+            "funnel_local_agent_host.txt",
+            "funnel_gossip_seed_host.txt",
+        ]
+
+        empty = []
+        for secret in secrets_to_check:
+            content = _load_secret(secret)
+            if not content:
+                empty.append(secret)
+
+        assert not empty, f"Empty secret files: {empty}"
+
+    def test_secrets_do_not_contain_placeholder(self):
+        """Test that secrets don't contain placeholder text."""
+        placeholders = ["TODO", "CHANGEME", "xxx", "placeholder", "example"]
+
+        secrets_to_check = [
+            "funnel_local_agent_host.txt",
+            "funnel_gossip_seed_host.txt",
+        ]
+
+        issues = []
+        for secret in secrets_to_check:
+            content = _load_secret(secret).lower()
+            for placeholder in placeholders:
+                if placeholder.lower() in content:
+                    issues.append(f"{secret} contains '{placeholder}'")
+
+        assert not issues, f"Placeholder values found: {issues}"
+
+
 # Standalone execution for quick testing
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
-    
+
     async def main():
         print("\n=== FunnelCloud Agent Discovery Test ===\n")
-        
+
         # Test local agent
         print("Testing local agent (127.0.0.1)...")
         local = await discover_agent_direct("127.0.0.1")
@@ -533,19 +842,19 @@ if __name__ == "__main__":
             print(f"  ✓ Found: {local.agent_id} ({local.platform})")
         else:
             print("  ✗ No local agent")
-        
+
         # Test multicast
         print("\nTesting multicast discovery...")
         multicast = await discover_agents_multicast(timeout=3.0)
         print(f"  Found {len(multicast)} agent(s) via multicast")
-        
+
         # Test known agents
         print("\nTesting known agents...")
         for name, ip in KNOWN_AGENTS.items():
             agent = await discover_agent_direct(ip, timeout=2.0)
             status = f"✓ {agent.platform}" if agent else "✗ No response"
             print(f"  {name} ({ip}): {status}")
-        
+
         # Summary
         print("\n=== Summary ===")
         all_agents = await discover_agents_broadcast(timeout=3.0)
@@ -553,5 +862,5 @@ if __name__ == "__main__":
         for agent in all_agents:
             print(f"  - {agent.agent_id}: {agent.platform} at {agent.ip_address}")
             print(f"    Capabilities: {', '.join(agent.capabilities)}")
-    
+
     asyncio.run(main())

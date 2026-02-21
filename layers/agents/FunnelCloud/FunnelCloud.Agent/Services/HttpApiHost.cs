@@ -159,7 +159,7 @@ public class HttpApiHost : BackgroundService
 
           await udpClient.SendAsync(message, message.Length, endpoint);
 
-          var receiveTask = Task.Run(() =>
+          var receiveTask = Task.Run<(byte[]? response, IPEndPoint? remoteEp)>(() =>
           {
             try
             {
