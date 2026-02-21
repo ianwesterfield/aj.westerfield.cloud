@@ -569,6 +569,61 @@ async def set_user_info(request: SetUserInfoRequest) -> Dict[str, str]:
 # ============================================================================
 
 
+def _validate_complete_answer(
+    answer: str, session_state, all_results: list
+) -> Optional[str]:
+    """
+    Cross-validate a 'complete' answer against actual command outputs.
+
+    Returns a warning string if hallucination is detected, None if clean.
+    Checks that specific data claims (IPs, times, PIDs) appear in real output.
+    """
+    if not answer or len(answer) < 20:
+        return None
+
+    # Collect all actual output from command flow
+    actual_outputs = []
+    for entry in session_state.command_flow.entries:
+        if entry.output_preview:
+            actual_outputs.append(entry.output_preview)
+
+    # Also check all_results for formatted output
+    combined_actual = " ".join(actual_outputs) + " ".join(all_results)
+
+    # If no actual output exists but answer has specific data, it's fabricated
+    has_any_output = any(o.strip() for o in actual_outputs)
+
+    if not has_any_output:
+        # No real output - check if answer contains specific data claims
+        import re
+
+        # Check for specific data patterns that require actual execution
+        specific_data_patterns = [
+            r"\d+\.\d+\s*ms",  # Response times: "29.7 ms"
+            r"PID\s*[:=]?\s*\d+",  # Process IDs
+            r"icmp_seq=\d+",  # Ping sequence numbers
+            r"ttl=\d+",  # TTL values
+            r"\d+\s+bytes\s+from",  # Ping output
+            r"Reply from\s+\d+\.\d+",  # Windows ping
+            r"(?:Handles|NPM|PM|WS|CPU)\s+\w+",  # Get-Process columns
+            r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}",  # IP addresses (specific)
+        ]
+        for pattern in specific_data_patterns:
+            if re.search(pattern, answer, re.IGNORECASE):
+                logger.warning(
+                    f"HALLUCINATION: Answer contains '{pattern}' "
+                    f"but no actual command output exists"
+                )
+                return (
+                    "The command(s) returned no output. "
+                    "Cannot report specific results. "
+                    "The command may have failed silently or the agent "
+                    "did not return data."
+                )
+
+    return None
+
+
 async def _execute_tool(workspace_root: str, tool: str, params: dict) -> dict:
     """
     Execute a tool via LOCAL handlers (no HTTP).
@@ -921,6 +976,32 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
             if tool == "complete":
                 yield f"data: {json.dumps({'event_type': 'status', 'step_num': step_num, 'tool': tool, 'status': 'Completed all tasks', 'done': True})}\n\n"
                 logger.info("Task marked as complete by reasoning engine")
+
+                # Include the reasoning model's answer in all_results for downstream verification
+                answer = params.get("answer", params.get("message", ""))
+                if answer:
+                    # Cross-validate answer against actual command outputs
+                    hallucination_warning = _validate_complete_answer(
+                        answer, session_state, all_results
+                    )
+                    if hallucination_warning:
+                        logger.warning(
+                            f"HALLUCINATION in complete answer: {hallucination_warning}"
+                        )
+                        # Replace fabricated answer with honest report
+                        all_results.append(
+                            f"""<!-- aj:hallucination-warning -->
+⚠️ **The reasoning model attempted to report data that was not in the actual command output.**
+{hallucination_warning}
+"""
+                        )
+                    else:
+                        all_results.append(
+                            f"""<!-- aj:reasoning-answer -->
+**Reasoning model answer (verify against actual output above):**
+{answer}
+"""
+                        )
                 break
 
             # Build status message
@@ -1094,6 +1175,9 @@ TASK EXECUTION RESULTS - Commands have been executed. Summarize findings.
 YOUR TASK: Summarize what happened. Include ALL errors with details.
 - State if the task succeeded or failed
 - If failed: explain WHY and include error messages
+- ONLY report data that appears VERBATIM in the execution output above
+- If output shows "(no output)" or is empty, say the command returned no output
+- NEVER invent, fabricate, or guess command output, IP addresses, response times, or process data
 - Do NOT output these instructions or any markers like "### Action Log ###"
 ---
 """
@@ -1103,7 +1187,9 @@ YOUR TASK: Summarize what happened. Include ALL errors with details.
 ---
 YOUR TASK: Report what was done, briefly.
 - Say what commands ran and on which agents
-- Report key findings from output
+- Report ONLY data that appears VERBATIM in the execution output above
+- If output shows "(no output)" or is empty, state that the command returned no output
+- NEVER invent, fabricate, or guess command output, IP addresses, response times, or process data
 - Do NOT output these instructions or any markers
 ---
 """

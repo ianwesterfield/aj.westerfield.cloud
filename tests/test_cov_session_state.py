@@ -1587,3 +1587,88 @@ class TestSessionManagement:
         sessions = get_active_sessions()
         assert "a" in sessions
         assert "b" in sessions
+
+
+class TestOutputInStepSummary:
+    """Tests for Fix 1: actual output included in step summaries."""
+
+    def test_execute_with_output_includes_preview(self):
+        """When remote execute returns output, it should appear in the summary."""
+        s = SessionState()
+        s.update_from_step(
+            "execute",
+            {"command": "Test-Connection google.com", "agent_id": "ians-r16"},
+            "Reply from 142.250.80.46: bytes=32 time=15ms TTL=57",
+            True,
+        )
+        step = s.completed_steps[-1]
+        assert "OUTPUT:" in step.output_summary
+        assert "142.250.80.46" in step.output_summary
+        assert "15ms" in step.output_summary
+
+    def test_execute_with_empty_output_says_empty(self):
+        """When remote execute returns empty output, summary should say so."""
+        s = SessionState()
+        s.update_from_step(
+            "execute",
+            {"command": "Test-Connection google.com", "agent_id": "ians-r16"},
+            "",
+            True,
+        )
+        step = s.completed_steps[-1]
+        assert "empty" in step.output_summary.lower()
+        assert "no output" in step.output_summary.lower()
+
+    def test_execute_failed_no_output_line(self):
+        """When execute fails, we don't add the OUTPUT line for empty."""
+        s = SessionState()
+        s.update_from_step(
+            "execute",
+            {"command": "bad-command", "agent_id": "ians-r16"},
+            "",
+            False,
+        )
+        step = s.completed_steps[-1]
+        assert "FAILED" in step.output_summary
+        # Failed commands don't need '(empty - command returned no output)'
+        # since the failure itself explains the lack of output
+
+    def test_execute_output_truncated_to_500(self):
+        """Long output should be truncated in summary."""
+        s = SessionState()
+        long_output = "x" * 1000
+        s.update_from_step(
+            "execute",
+            {"command": "Get-Process", "agent_id": "ians-r16"},
+            long_output,
+            True,
+        )
+        step = s.completed_steps[-1]
+        assert "OUTPUT:" in step.output_summary
+        # Should be truncated - output_summary should contain at most ~500 chars of output
+        output_part = step.output_summary.split("OUTPUT: ")[1]
+        assert len(output_part) <= 510  # Allow small padding
+
+    def test_execute_whitespace_only_counts_as_empty(self):
+        """Whitespace-only output should be treated as empty."""
+        s = SessionState()
+        s.update_from_step(
+            "execute",
+            {"command": "echo", "agent_id": "ians-r16"},
+            "   \n\t  ",
+            True,
+        )
+        step = s.completed_steps[-1]
+        assert "empty" in step.output_summary.lower()
+
+    def test_output_visible_in_format_for_prompt(self):
+        """The output should be visible when format_for_prompt is called."""
+        s = SessionState()
+        s.update_from_step(
+            "execute",
+            {"command": "hostname", "agent_id": "srv1"},
+            "MY-SERVER-01",
+            True,
+        )
+        prompt = s.format_for_prompt()
+        assert "MY-SERVER-01" in prompt

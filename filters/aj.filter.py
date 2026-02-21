@@ -657,7 +657,14 @@ async def _orchestrate_task(
                         result = event.get("result", {})
                         output = result.get("output_preview", "")
 
-                        if output:
+                        # Always show result for execute tools, even if empty
+                        # This prevents the user from thinking a command succeeded
+                        # when it actually returned nothing
+                        if output or tool in (
+                            "execute",
+                            "remote_execute",
+                            "remote_execute_all",
+                        ):
                             # Format output as a fenced code block with tool context
                             tool_labels = {
                                 "scan_workspace": "Directory listing",
@@ -669,8 +676,13 @@ async def _orchestrate_task(
                             }
                             label = tool_labels.get(tool, f"{tool} output")
 
+                            # Show explicit "(no output)" for empty results
+                            display_output = output if output else "(no output)"
+
                             # Stream the code block AND accumulate
-                            code_block = f"\n\n**{label}:**\n```\n{output}\n```\n"
+                            code_block = (
+                                f"\n\n**{label}:**\n```\n{display_output}\n```\n"
+                            )
                             streamed_content += code_block
                             await __event_emitter__(
                                 {"type": "message", "data": {"content": code_block}}
