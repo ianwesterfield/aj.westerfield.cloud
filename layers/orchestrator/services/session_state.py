@@ -1027,7 +1027,7 @@ class SessionState:
                 self.environment_facts.git_branch = branch_match2.group(1)
 
         # Python version detection
-        if "python" in cmd_lower and ("--version" in cmd_lower or "-V" in cmd_lower):
+        if "python" in cmd_lower and ("--version" in cmd_lower or "-v" in cmd_lower):
             version_match = re.search(r"Python\s+([\d.]+)", output)
             if version_match:
                 self.environment_facts.python_version = version_match.group(1)

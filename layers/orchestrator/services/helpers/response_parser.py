@@ -179,15 +179,17 @@ class ResponseParser:
             if tool_name and len(tool_name) > 30:
                 for known_tool in [
                     "scan_workspace",
+                    "execute_shell",
+                    "dump_state",
                     "read_file",
                     "write_file",
-                    "execute_shell",
                     "execute",
-                    "think",
                     "complete",
-                    "dump_state",
+                    "think",
                 ]:
-                    if known_tool in tool_name.lower():
+                    if re.search(
+                        r"\b" + re.escape(known_tool) + r"\b", tool_name.lower()
+                    ):
                         tool_name = known_tool
                         break
                 else:
