@@ -601,13 +601,13 @@ def _is_json_plan_content(content: str) -> bool:
     return False
 
 
-def _format_json_plan_as_blockquote(content: str) -> str:
+def _format_json_plan_as_list(content: str) -> str:
     """
-    Convert raw JSON plan output into readable blockquote format.
+    Convert raw JSON plan output into readable list format.
 
     Input: {"step": 1, "action": "..."}, {"step": 2, "action": "..."}
-    Output: > 1. First action
-            > 2. Second action
+    Output: 1. First action
+            2. Second action
     """
     import re
 
@@ -620,10 +620,10 @@ def _format_json_plan_as_blockquote(content: str) -> str:
 
     if matches:
         for step_num, action in matches:
-            steps.append(f"> {step_num}. {action}")
+            steps.append(f"{step_num}. {action}")
 
     if steps:
-        # Return formatted blockquote
+        # Return formatted list
         return "\n".join(steps) + "\n"
 
     # If no steps found, return empty (will be filtered)
@@ -709,17 +709,12 @@ async def _orchestrate_task(
                         )
 
                     elif event_type == "plan":
-                        # Stream formatted plan as blockquote (only once)
+                        # Stream formatted plan (only once)
                         content = event.get("content", "")
                         if content and not plan_shown:
                             # Content already has "📋 Task Plan:" header from orchestrator
-                            # Just wrap in blockquote without adding another header
-                            lines = [
-                                f"> {line}"
-                                for line in content.split("\n")
-                                if line.strip()
-                            ]
-                            plan_block = "\n".join(lines) + "\n\n"
+                            # Display directly without blockquote wrapping for cleaner rendering
+                            plan_block = content + "\n\n"
                             streamed_content += plan_block
                             await __event_emitter__(
                                 {"type": "message", "data": {"content": plan_block}}
@@ -738,7 +733,7 @@ async def _orchestrate_task(
 
                             # Check for JSON plan output - format it nicely instead of raw JSON
                             if _is_json_plan_content(content):
-                                formatted = _format_json_plan_as_blockquote(content)
+                                formatted = _format_json_plan_as_list(content)
                                 if formatted:
                                     streamed_content += formatted
                                     await __event_emitter__(
@@ -750,8 +745,8 @@ async def _orchestrate_task(
                                 # Skip raw JSON that couldn't be formatted
                                 continue
 
-                            # Skip orphaned blockquote prefixes from orchestrator
-                            if content.strip() in ("> 💭", "> 💭 ", "💭"):
+                            # Skip orphaned thinking emoji prefixes from orchestrator
+                            if content.strip() in ("💭", "💭 "):
                                 continue
 
                             streamed_content += content
@@ -762,6 +757,7 @@ async def _orchestrate_task(
                     elif event_type == "result":
                         # Stream tool output in a code block
                         tool = event.get("tool", "")
+                        params = event.get("params", {})
                         result = event.get("result", {})
                         output = result.get("output_preview", "")
 
@@ -773,16 +769,26 @@ async def _orchestrate_task(
                             "remote_execute",
                             "remote_execute_all",
                         ):
-                            # Format output as a fenced code block with tool context
-                            tool_labels = {
-                                "scan_workspace": "Directory listing",
-                                "read_file": "File content",
-                                "execute_shell": "Command output",
-                                "remote_execute": "remote_execute output",
-                                "remote_execute_all": "remote_execute output",
-                                "list_agents": "list_agents output",
-                            }
-                            label = tool_labels.get(tool, f"{tool} output")
+                            # Extract command and agent for execute tools
+                            cmd = params.get("command", "")
+                            agent_id = params.get("agent_id", "")
+
+                            # Build label showing what was run
+                            if tool == "execute" and cmd:
+                                if agent_id:
+                                    label = f"Execute `{cmd}` on `{agent_id}`"
+                                else:
+                                    label = f"Execute `{cmd}`"
+                            else:
+                                tool_labels = {
+                                    "scan_workspace": "Directory listing",
+                                    "read_file": "File content",
+                                    "execute_shell": "Command output",
+                                    "remote_execute": "remote_execute output",
+                                    "remote_execute_all": "remote_execute output",
+                                    "list_agents": "list_agents output",
+                                }
+                                label = tool_labels.get(tool, f"{tool} output")
 
                             # Show explicit "(no output)" for empty results
                             display_output = output if output else "(no output)"
@@ -1705,13 +1711,6 @@ class Filter:
             # Save to memory (extracts facts via pragmatics, stores in Qdrant)
             # Do this for all messages - fact extraction decides what's worth storing
             if user_text and len(user_text.strip()) > 5:
-                await __event_emitter__(
-                    create_status_dict(
-                        "Saving to memory",
-                        LogCategory.MEMORY,
-                        LogLevel.PROCESSING,
-                    )
-                )
                 saved = await _save_to_memory(
                     user_id=user_id,
                     messages=messages,
@@ -1719,6 +1718,14 @@ class Filter:
                     source_name=model,
                 )
                 if saved:
+                    await __event_emitter__(
+                        create_status_dict(
+                            "Saved to memory",
+                            LogCategory.MEMORY,
+                            LogLevel.SAVED,
+                            done=True,
+                        )
+                    )
                     print(f"[aj] Memory saved for user={user_id}")
 
             # ALWAYS engage orchestrator - DeepSeek handles both tasks AND conversations
@@ -1755,13 +1762,42 @@ class Filter:
                 memory_count = len(context) if context else 0
 
                 if memory_count > 0:
-                    await __event_emitter__(
-                        create_status_dict(
-                            f"Found {memory_count} memories",
-                            LogCategory.MEMORY,
-                            LogLevel.CONTEXT,
+                    # Extract fact summaries from context for display
+                    # Facts can be: string "type: value\ntype2: value2", dict, or None
+                    fact_summaries = []
+                    for ctx_item in (context or [])[:3]:  # Show up to 3 memory items
+                        facts = ctx_item.get("facts")
+                        if facts:
+                            if isinstance(facts, str):
+                                # String format: "type: value\ntype2: value2"
+                                first_line = facts.split("\n")[0][:40]
+                                fact_summaries.append(first_line)
+                            elif isinstance(facts, dict):
+                                # Dict format: {"type": "value"}
+                                for key in list(facts.keys())[:1]:
+                                    fact_summaries.append(
+                                        f"{key}: {str(facts[key])[:30]}"
+                                    )
+
+                    if fact_summaries:
+                        fact_summary = "; ".join(fact_summaries)
+                        await __event_emitter__(
+                            create_status_dict(
+                                f"Found {memory_count} memories ({fact_summary})",
+                                LogCategory.MEMORY,
+                                LogLevel.CONTEXT,
+                                done=True,  # Close status to prevent stuck display
+                            )
                         )
-                    )
+                    else:
+                        await __event_emitter__(
+                            create_status_dict(
+                                f"Found {memory_count} memories",
+                                LogCategory.MEMORY,
+                                LogLevel.CONTEXT,
+                                done=True,  # Close status to prevent stuck display
+                            )
+                        )
 
                 # Only emit Ready if we didn't go through orchestrator
                 if not orchestrator_context:
@@ -1932,10 +1968,10 @@ class Filter:
         matches = re.findall(step_pattern, text)
 
         if matches:
-            # Format matched steps into blockquotes
+            # Format matched steps as a clean list
             formatted_steps = []
             for step_num, action in matches:
-                formatted_steps.append(f"> {step_num}. {action}")
+                formatted_steps.append(f"{step_num}. {action}")
 
             # Remove the raw JSON and add formatted version
             text = re.sub(
@@ -1945,8 +1981,8 @@ class Filter:
             )
 
             # If we had steps, prepend the formatted plan
-            if formatted_steps and not any(f"> {s[0]}." in text for s in matches):
-                text = "> 💭 **Plan:**\n" + "\n".join(formatted_steps) + "\n\n" + text
+            if formatted_steps and not any(f"{s[0]}." in text for s in matches):
+                text = "💭 **Plan:**\n" + "\n".join(formatted_steps) + "\n\n" + text
 
         # Remove plan arrays (already extracted content above)
         plan_array_pattern = r'\[\s*\{\s*"step"\s*:.*?\}\s*\]'
@@ -2182,11 +2218,8 @@ class Filter:
 
         # DEDUPE: Remove duplicate Task Plan blocks
         # The plan may appear twice - once from streaming, once from LLM response
-        # Match blockquote plan: "> 📋 **Task Plan:**\n> • step\n> • step"
-        # Match inline plan: "📋 **Task Plan:**\n• step\n• step"
-        plan_pattern = (
-            r"(?:>?\s*)?📋\s*\*?\*?Task Plan:?\*?\*?\s*\n(?:[>•\s\-\*]+[^\n]+\n?)+"
-        )
+        # Match plan: "📋 **Task Plan:**\n• step\n• step"
+        plan_pattern = r"📋\s*\*?\*?Task Plan:?\*?\*?\s*\n(?:[•\s\-\*\d\.]+[^\n]+\n?)+"
         plan_matches = re.findall(plan_pattern, text, flags=re.IGNORECASE)
         if len(plan_matches) > 1:
             # Keep only the first occurrence (usually the streamed blockquote version)

@@ -1008,8 +1008,22 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
             tool_path = params.get("path", "")
             short_path = tool_path.split("/")[-1].split("\\")[-1] if tool_path else ""
 
-            cmd = params.get("command", "")[:30]
-            action = f"Remote: `{cmd}`"
+            # Show full command unless it's multi-line (then truncate)
+            cmd = params.get("command", "")
+            agent_id = params.get("agent_id", "")
+            if "\n" in cmd:
+                # Multi-line command: show first line + indicator
+                first_line = cmd.split("\n")[0][:60]
+                cmd_display = f"{first_line}..."
+            else:
+                # Single-line: show full command (UI will wrap if needed)
+                cmd_display = cmd
+
+            # Include agent name in status for clarity
+            if agent_id and agent_id != "localhost":
+                action = f"Execute on `{agent_id}`: `{cmd_display}`"
+            else:
+                action = f"Remote: `{cmd_display}`"
 
             # Status is succinct: just icon + action (no reasoning/notes)
             status = f"{action}"
@@ -1070,7 +1084,8 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
                 # Yield result event with appropriate output length
                 # DEV MODE: Max everything out - local hardware
                 output_limit = 100000  # No practical limit
-                yield f"data: {json.dumps({'event_type': 'result', 'step_num': step_num, 'tool': tool, 'result': {'success': True, 'output_preview': (output[:output_limit] if output else None)}, 'done': False})}\n\n"
+                # Include params so filter can show the command that was run
+                yield f"data: {json.dumps({'event_type': 'result', 'step_num': step_num, 'tool': tool, 'params': {k: v for k, v in params.items() if k != 'content'}, 'result': {'success': True, 'output_preview': (output[:output_limit] if output else None)}, 'done': False})}\n\n"
 
             else:
                 error_snippet = (
