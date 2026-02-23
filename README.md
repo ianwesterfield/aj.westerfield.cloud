@@ -60,7 +60,7 @@ AJ is more like giving directions to a driver. You say where you want to go; it 
 
 Want "every hour, sync CRM to Sheets"? Use a workflow builder—it's the right tool. Want "help me deploy this to whichever server makes sense"? That requires reasoning, context, and the ability to discover available agents on the fly.
 
-They're complementary. AJ could _be called by_ a workflow builder as an automation step. Or AJ could _call_ external automations when the reasoning engine decides that's the right move.
+They're complementary. AJ could _be called by_ a workflow builder as an automation step. Or AJ could _call_ external automation when the reasoning engine decides that's the right move.
 
 ---
 

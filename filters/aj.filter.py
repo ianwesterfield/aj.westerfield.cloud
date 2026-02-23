@@ -288,6 +288,111 @@ CONTENT_TYPE_MAP = {
 }
 
 # ============================================================================
+# IRON GATE: Hallucination Detection for Remote Execution
+# Prevents LLM from fabricating command output when orchestrator fails
+# ============================================================================
+
+
+def _detect_execution_request(text: str) -> bool:
+    """
+    Detect if user is requesting remote command execution.
+
+    Returns True if the message looks like a request to run a command
+    on a remote agent (e.g., "run ipconfig on ians-r16").
+    """
+    import re
+
+    if not text:
+        return False
+
+    text_lower = text.lower()
+
+    # Patterns that indicate remote command execution requests
+    execution_patterns = [
+        r"\b(?:run|execute|exec)\b.*\bon\b.*",  # "run X on Y"
+        r"\bipconfig\b",  # ipconfig command
+        r"\bget-process\b",  # PowerShell commands
+        r"\bget-service\b",
+        r"\bping\b.*\b(?:from|on)\b",  # "ping X from/on Y"
+        r"\bhostname\b.*\b(?:on|from)\b",  # "hostname on Y"
+        r"\b(?:invoke|invoke-command)\b",  # PowerShell remoting
+        r"\bagent[s]?\b.*\b(?:run|execute)\b",  # "agents run..."
+        r"\b(?:run|execute)\b.*\bagent[s]?\b",  # "run on agents..."
+        # Known agent names (common patterns)
+        r"\bians-r16\b",
+        r"\blocal(?:host|agent)\b.*\b(?:run|execute)\b",
+    ]
+
+    for pattern in execution_patterns:
+        if re.search(pattern, text_lower, re.IGNORECASE):
+            return True
+
+    return False
+
+
+def _detect_hallucinated_execution_output(text: str) -> bool:
+    """
+    Detect if response contains hallucinated command execution output.
+
+    Used by the IRON GATE to block responses that pretend to show
+    execution results when no actual execution occurred.
+
+    Returns True if the response contains patterns typical of:
+    - ipconfig/ifconfig output
+    - ping output
+    - process listings
+    - network configuration details
+    - other command output that requires real execution
+    """
+    import re
+
+    if not text:
+        return False
+
+    # Patterns that indicate fabricated execution output
+    hallucination_patterns = [
+        # Network configuration (ipconfig/ifconfig)
+        r"IPv4 Address[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
+        r"IP Address[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
+        r"Subnet Mask[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
+        r"Default Gateway[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
+        r"IPv6 Address[.\s]*:",
+        r"Physical Address[.\s]*:\s*[\da-fA-F:-]+",
+        r"MAC[.\s]*:\s*[\da-fA-F:-]+",
+        r"DHCP (?:Enabled|Server)",
+        r"DNS (?:Servers?|Suffix)",
+        # Ping output
+        r"Reply from\s+\d+\.\d+\.\d+\.\d+",
+        r"bytes=\d+\s+time[<=]\d+",
+        r"icmp_seq=\d+\s+ttl=\d+",
+        r"\d+\s+bytes\s+from\s+\d+\.\d+",
+        r"time=\d+(?:\.\d+)?\s*ms",
+        r"TTL=\d+",
+        # Process/service listing
+        r"(?:Handles|NPM|PM|WS|CPU)\s+\w+.*\d+",
+        r"PID\s*[:=]?\s*\d{3,}",
+        # Ethernet adapter output
+        r"Ethernet adapter\s+\w+:",
+        r"Wireless.*adapter\s+\w+:",
+        r"Connection-specific DNS Suffix",
+        r"Link-local IPv6 Address",
+        # General command output markers
+        r"Lease (?:Obtained|Expires)",
+        r"Autoconfiguration (?:Enabled|IPv4)",
+    ]
+
+    match_count = 0
+    for pattern in hallucination_patterns:
+        if re.search(pattern, text, re.IGNORECASE):
+            match_count += 1
+            # Require multiple matches for stronger confidence
+            if match_count >= 2:
+                return True
+
+    return False
+
+
+# ============================================================================
 # Intent Classification (2-class: task vs casual)
 # Uses orchestrator's LLM - single model for all classification
 # ============================================================================
@@ -325,9 +430,9 @@ def _classify_intent(text: str) -> Dict[str, Any]:
     except Exception as e:
         print(f"[aj] Orchestrator classify error: {e}")
 
-    # Fallback if orchestrator is down - default to casual (safe)
-    print("[aj] Warning: Orchestrator unavailable, defaulting to casual")
-    return {"intent": "casual", "confidence": 0.3}
+    # Fallback if orchestrator is down - default to task (safer to check than miss)
+    print("[aj] Warning: Orchestrator unavailable, defaulting to task")
+    return {"intent": "task", "confidence": 0.3}
 
 
 def _detect_task_continuation(
@@ -496,13 +601,13 @@ def _is_json_plan_content(content: str) -> bool:
     return False
 
 
-def _format_json_plan_as_blockquote(content: str) -> str:
+def _format_json_plan_as_list(content: str) -> str:
     """
-    Convert raw JSON plan output into readable blockquote format.
+    Convert raw JSON plan output into readable list format.
 
     Input: {"step": 1, "action": "..."}, {"step": 2, "action": "..."}
-    Output: > 1. First action
-            > 2. Second action
+    Output: 1. First action
+            2. Second action
     """
     import re
 
@@ -515,10 +620,10 @@ def _format_json_plan_as_blockquote(content: str) -> str:
 
     if matches:
         for step_num, action in matches:
-            steps.append(f"> {step_num}. {action}")
+            steps.append(f"{step_num}. {action}")
 
     if steps:
-        # Return formatted blockquote
+        # Return formatted list
         return "\n".join(steps) + "\n"
 
     # If no steps found, return empty (will be filtered)
@@ -532,27 +637,30 @@ async def _orchestrate_task(
     __event_emitter__,
     memory_context: Optional[List[dict]] = None,
     model: Optional[str] = None,
-) -> Tuple[Optional[str], str]:
+) -> Tuple[Optional[str], str, bool]:
     """
     Handle task intents via orchestrator streaming endpoint.
 
     Flow:
       1. POST /run-task to orchestrator (starts SSE stream)
       2. Forward status events to __event_emitter__
-      3. Return (final_context, streamed_content) when complete
+      3. Return (final_context, streamed_content, execution_occurred) when complete
 
     The agentic loop now runs in the orchestrator, not here.
     Returns both the context for LLM and the accumulated streamed content
     to preserve thinking/results in the final response.
+    Also returns whether actual command execution occurred (for hallucination detection).
     """
     if not workspace_root:
-        return None, ""
+        return None, "", False
 
     # Build complete task description (handles continuations)
     user_text = _build_task_description(messages)
 
     # Accumulate all streamed content so it persists after LLM responds
     streamed_content = ""
+    # IRON GATE: Track if actual command execution occurred
+    execution_occurred = False
 
     try:
         # Note: Don't emit "Thinking" here - orchestrator will emit it and we forward
@@ -601,17 +709,12 @@ async def _orchestrate_task(
                         )
 
                     elif event_type == "plan":
-                        # Stream formatted plan as blockquote (only once)
+                        # Stream formatted plan (only once)
                         content = event.get("content", "")
                         if content and not plan_shown:
                             # Content already has "📋 Task Plan:" header from orchestrator
-                            # Just wrap in blockquote without adding another header
-                            lines = [
-                                f"> {line}"
-                                for line in content.split("\n")
-                                if line.strip()
-                            ]
-                            plan_block = "\n".join(lines) + "\n\n"
+                            # Display directly without blockquote wrapping for cleaner rendering
+                            plan_block = content + "\n\n"
                             streamed_content += plan_block
                             await __event_emitter__(
                                 {"type": "message", "data": {"content": plan_block}}
@@ -630,7 +733,7 @@ async def _orchestrate_task(
 
                             # Check for JSON plan output - format it nicely instead of raw JSON
                             if _is_json_plan_content(content):
-                                formatted = _format_json_plan_as_blockquote(content)
+                                formatted = _format_json_plan_as_list(content)
                                 if formatted:
                                     streamed_content += formatted
                                     await __event_emitter__(
@@ -642,8 +745,8 @@ async def _orchestrate_task(
                                 # Skip raw JSON that couldn't be formatted
                                 continue
 
-                            # Skip orphaned blockquote prefixes from orchestrator
-                            if content.strip() in ("> 💭", "> 💭 ", "💭"):
+                            # Skip orphaned thinking emoji prefixes from orchestrator
+                            if content.strip() in ("💭", "💭 "):
                                 continue
 
                             streamed_content += content
@@ -654,6 +757,7 @@ async def _orchestrate_task(
                     elif event_type == "result":
                         # Stream tool output in a code block
                         tool = event.get("tool", "")
+                        params = event.get("params", {})
                         result = event.get("result", {})
                         output = result.get("output_preview", "")
 
@@ -665,16 +769,26 @@ async def _orchestrate_task(
                             "remote_execute",
                             "remote_execute_all",
                         ):
-                            # Format output as a fenced code block with tool context
-                            tool_labels = {
-                                "scan_workspace": "Directory listing",
-                                "read_file": "File content",
-                                "execute_shell": "Command output",
-                                "remote_execute": "remote_execute output",
-                                "remote_execute_all": "remote_execute output",
-                                "list_agents": "list_agents output",
-                            }
-                            label = tool_labels.get(tool, f"{tool} output")
+                            # Extract command and agent for execute tools
+                            cmd = params.get("command", "")
+                            agent_id = params.get("agent_id", "")
+
+                            # Build label showing what was run
+                            if tool == "execute" and cmd:
+                                if agent_id:
+                                    label = f"Execute `{cmd}` on `{agent_id}`"
+                                else:
+                                    label = f"Execute `{cmd}`"
+                            else:
+                                tool_labels = {
+                                    "scan_workspace": "Directory listing",
+                                    "read_file": "File content",
+                                    "execute_shell": "Command output",
+                                    "remote_execute": "remote_execute output",
+                                    "remote_execute_all": "remote_execute output",
+                                    "list_agents": "list_agents output",
+                                }
+                                label = tool_labels.get(tool, f"{tool} output")
 
                             # Show explicit "(no output)" for empty results
                             display_output = output if output else "(no output)"
@@ -687,6 +801,8 @@ async def _orchestrate_task(
                             await __event_emitter__(
                                 {"type": "message", "data": {"content": code_block}}
                             )
+                            # IRON GATE: Mark that actual execution occurred
+                            execution_occurred = True
 
                     elif event_type == "error":
                         await __event_emitter__(
@@ -707,14 +823,14 @@ async def _orchestrate_task(
                             )
                         )
 
-                return final_context, streamed_content
+                return final_context, streamed_content, execution_occurred
 
     except Exception as e:
         print(f"[aj] Orchestrator streaming error: {e}")
         await __event_emitter__(
             create_error_dict(str(e)[:30], LogCategory.FILTER, done=True)
         )
-        return None, ""
+        return None, "", False
 
 
 # ============================================================================
@@ -1311,6 +1427,10 @@ class Filter:
         self.toggle = True
         # Track streamed content from orchestrator to preserve in final response
         self._streamed_content = ""
+        # IRON GATE: Track execution state to catch hallucinated outputs
+        self._execution_occurred = False
+        self._user_requested_execution = False
+        self._last_user_text = ""
         # Butler icon - person with bow tie silhouette
         self.icon = (
             "data:image/svg+xml;base64,"
@@ -1511,6 +1631,12 @@ class Filter:
             # Extract user text for classification
             user_text = _extract_user_text_prompt(messages)
 
+            # IRON GATE: Reset execution tracking for new request
+            self._execution_occurred = False
+            self._last_user_text = user_text or ""
+            # Detect if user is requesting remote command execution
+            self._user_requested_execution = _detect_execution_request(user_text or "")
+
             # Extract files and images in a SINGLE batch call
             file_content, filenames, chunks = _extract_all_content_batch(
                 body, messages, user_prompt=user_text
@@ -1585,13 +1711,6 @@ class Filter:
             # Save to memory (extracts facts via pragmatics, stores in Qdrant)
             # Do this for all messages - fact extraction decides what's worth storing
             if user_text and len(user_text.strip()) > 5:
-                await __event_emitter__(
-                    create_status_dict(
-                        "Saving to memory",
-                        LogCategory.MEMORY,
-                        LogLevel.PROCESSING,
-                    )
-                )
                 saved = await _save_to_memory(
                     user_id=user_id,
                     messages=messages,
@@ -1599,11 +1718,21 @@ class Filter:
                     source_name=model,
                 )
                 if saved:
+                    await __event_emitter__(
+                        create_status_dict(
+                            "Saved to memory",
+                            LogCategory.MEMORY,
+                            LogLevel.SAVED,
+                            done=True,
+                        )
+                    )
                     print(f"[aj] Memory saved for user={user_id}")
 
-            # For task intents, engage orchestrator (pass memory context for user info)
-            if intent == "task" and self.user_valves.enable_orchestrator:
-                orchestrator_context, streamed = await _orchestrate_task(
+            # ALWAYS engage orchestrator - DeepSeek handles both tasks AND conversations
+            # The Llama chat model is just a formatting layer, not the brain
+            # Orchestrator has its own conversational handler for non-task queries
+            if self.user_valves.enable_orchestrator:
+                orchestrator_context, streamed, exec_occurred = await _orchestrate_task(
                     user_id,
                     messages,
                     (
@@ -1617,6 +1746,8 @@ class Filter:
                 )
                 # Store streamed content to prepend to LLM response in outlet
                 self._streamed_content = streamed
+                # IRON GATE: Track whether execution actually occurred
+                self._execution_occurred = exec_occurred
 
             # Merge immediate image context
             if immediate_image_context:
@@ -1631,13 +1762,42 @@ class Filter:
                 memory_count = len(context) if context else 0
 
                 if memory_count > 0:
-                    await __event_emitter__(
-                        create_status_dict(
-                            f"Found {memory_count} memories",
-                            LogCategory.MEMORY,
-                            LogLevel.CONTEXT,
+                    # Extract fact summaries from context for display
+                    # Facts can be: string "type: value\ntype2: value2", dict, or None
+                    fact_summaries = []
+                    for ctx_item in (context or [])[:3]:  # Show up to 3 memory items
+                        facts = ctx_item.get("facts")
+                        if facts:
+                            if isinstance(facts, str):
+                                # String format: "type: value\ntype2: value2"
+                                first_line = facts.split("\n")[0][:40]
+                                fact_summaries.append(first_line)
+                            elif isinstance(facts, dict):
+                                # Dict format: {"type": "value"}
+                                for key in list(facts.keys())[:1]:
+                                    fact_summaries.append(
+                                        f"{key}: {str(facts[key])[:30]}"
+                                    )
+
+                    if fact_summaries:
+                        fact_summary = "; ".join(fact_summaries)
+                        await __event_emitter__(
+                            create_status_dict(
+                                f"Found {memory_count} memories ({fact_summary})",
+                                LogCategory.MEMORY,
+                                LogLevel.CONTEXT,
+                                done=True,  # Close status to prevent stuck display
+                            )
                         )
-                    )
+                    else:
+                        await __event_emitter__(
+                            create_status_dict(
+                                f"Found {memory_count} memories",
+                                LogCategory.MEMORY,
+                                LogLevel.CONTEXT,
+                                done=True,  # Close status to prevent stuck display
+                            )
+                        )
 
                 # Only emit Ready if we didn't go through orchestrator
                 if not orchestrator_context:
@@ -1722,6 +1882,34 @@ class Filter:
                     # FIRST: Extract response from JSON structured output
                     content = self._extract_json_response(content)
 
+                    # ================================================================
+                    # IRON GATE: Block hallucinated execution output
+                    # If user requested execution, orchestrator didn't execute,
+                    # but the LLM response contains fake execution output - BLOCK IT
+                    # ================================================================
+                    if (
+                        self._user_requested_execution
+                        and not self._execution_occurred
+                        and _detect_hallucinated_execution_output(content)
+                    ):
+                        print(
+                            f"[aj] IRON GATE BLOCKED: Hallucinated execution output detected. "
+                            f"User requested execution but orchestrator did not execute."
+                        )
+                        content = (
+                            "⚠️ **Execution Failed**\n\n"
+                            "I was unable to execute the command on the remote agent. "
+                            "The orchestrator service may be unavailable or the agent "
+                            "is unreachable.\n\n"
+                            "Please check:\n"
+                            "- Is the orchestrator service running?\n"
+                            "- Is the FunnelCloud agent online?\n"
+                            "- Network connectivity between services\n\n"
+                            "Run `docker-compose ps` to check service status."
+                        )
+                        messages[i]["content"] = content
+                        break
+
                     # CRITICAL: Detect user message echo (model confusion)
                     # If the assistant's response contains the user's exact message, remove it
                     if last_user_msg and len(last_user_msg) > 5:
@@ -1780,10 +1968,10 @@ class Filter:
         matches = re.findall(step_pattern, text)
 
         if matches:
-            # Format matched steps into blockquotes
+            # Format matched steps as a clean list
             formatted_steps = []
             for step_num, action in matches:
-                formatted_steps.append(f"> {step_num}. {action}")
+                formatted_steps.append(f"{step_num}. {action}")
 
             # Remove the raw JSON and add formatted version
             text = re.sub(
@@ -1793,8 +1981,8 @@ class Filter:
             )
 
             # If we had steps, prepend the formatted plan
-            if formatted_steps and not any(f"> {s[0]}." in text for s in matches):
-                text = "> 💭 **Plan:**\n" + "\n".join(formatted_steps) + "\n\n" + text
+            if formatted_steps and not any(f"{s[0]}." in text for s in matches):
+                text = "💭 **Plan:**\n" + "\n".join(formatted_steps) + "\n\n" + text
 
         # Remove plan arrays (already extracted content above)
         plan_array_pattern = r'\[\s*\{\s*"step"\s*:.*?\}\s*\]'
@@ -2030,11 +2218,8 @@ class Filter:
 
         # DEDUPE: Remove duplicate Task Plan blocks
         # The plan may appear twice - once from streaming, once from LLM response
-        # Match blockquote plan: "> 📋 **Task Plan:**\n> • step\n> • step"
-        # Match inline plan: "📋 **Task Plan:**\n• step\n• step"
-        plan_pattern = (
-            r"(?:>?\s*)?📋\s*\*?\*?Task Plan:?\*?\*?\s*\n(?:[>•\s\-\*]+[^\n]+\n?)+"
-        )
+        # Match plan: "📋 **Task Plan:**\n• step\n• step"
+        plan_pattern = r"📋\s*\*?\*?Task Plan:?\*?\*?\s*\n(?:[•\s\-\*\d\.]+[^\n]+\n?)+"
         plan_matches = re.findall(plan_pattern, text, flags=re.IGNORECASE)
         if len(plan_matches) > 1:
             # Keep only the first occurrence (usually the streamed blockquote version)
