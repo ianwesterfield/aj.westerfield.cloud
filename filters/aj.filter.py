@@ -288,6 +288,111 @@ CONTENT_TYPE_MAP = {
 }
 
 # ============================================================================
+# IRON GATE: Hallucination Detection for Remote Execution
+# Prevents LLM from fabricating command output when orchestrator fails
+# ============================================================================
+
+
+def _detect_execution_request(text: str) -> bool:
+    """
+    Detect if user is requesting remote command execution.
+
+    Returns True if the message looks like a request to run a command
+    on a remote agent (e.g., "run ipconfig on ians-r16").
+    """
+    import re
+
+    if not text:
+        return False
+
+    text_lower = text.lower()
+
+    # Patterns that indicate remote command execution requests
+    execution_patterns = [
+        r"\b(?:run|execute|exec)\b.*\bon\b.*",  # "run X on Y"
+        r"\bipconfig\b",  # ipconfig command
+        r"\bget-process\b",  # PowerShell commands
+        r"\bget-service\b",
+        r"\bping\b.*\b(?:from|on)\b",  # "ping X from/on Y"
+        r"\bhostname\b.*\b(?:on|from)\b",  # "hostname on Y"
+        r"\b(?:invoke|invoke-command)\b",  # PowerShell remoting
+        r"\bagent[s]?\b.*\b(?:run|execute)\b",  # "agents run..."
+        r"\b(?:run|execute)\b.*\bagent[s]?\b",  # "run on agents..."
+        # Known agent names (common patterns)
+        r"\bians-r16\b",
+        r"\blocal(?:host|agent)\b.*\b(?:run|execute)\b",
+    ]
+
+    for pattern in execution_patterns:
+        if re.search(pattern, text_lower, re.IGNORECASE):
+            return True
+
+    return False
+
+
+def _detect_hallucinated_execution_output(text: str) -> bool:
+    """
+    Detect if response contains hallucinated command execution output.
+
+    Used by the IRON GATE to block responses that pretend to show
+    execution results when no actual execution occurred.
+
+    Returns True if the response contains patterns typical of:
+    - ipconfig/ifconfig output
+    - ping output
+    - process listings
+    - network configuration details
+    - other command output that requires real execution
+    """
+    import re
+
+    if not text:
+        return False
+
+    # Patterns that indicate fabricated execution output
+    hallucination_patterns = [
+        # Network configuration (ipconfig/ifconfig)
+        r"IPv4 Address[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
+        r"IP Address[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
+        r"Subnet Mask[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
+        r"Default Gateway[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
+        r"IPv6 Address[.\s]*:",
+        r"Physical Address[.\s]*:\s*[\da-fA-F:-]+",
+        r"MAC[.\s]*:\s*[\da-fA-F:-]+",
+        r"DHCP (?:Enabled|Server)",
+        r"DNS (?:Servers?|Suffix)",
+        # Ping output
+        r"Reply from\s+\d+\.\d+\.\d+\.\d+",
+        r"bytes=\d+\s+time[<=]\d+",
+        r"icmp_seq=\d+\s+ttl=\d+",
+        r"\d+\s+bytes\s+from\s+\d+\.\d+",
+        r"time=\d+(?:\.\d+)?\s*ms",
+        r"TTL=\d+",
+        # Process/service listing
+        r"(?:Handles|NPM|PM|WS|CPU)\s+\w+.*\d+",
+        r"PID\s*[:=]?\s*\d{3,}",
+        # Ethernet adapter output
+        r"Ethernet adapter\s+\w+:",
+        r"Wireless.*adapter\s+\w+:",
+        r"Connection-specific DNS Suffix",
+        r"Link-local IPv6 Address",
+        # General command output markers
+        r"Lease (?:Obtained|Expires)",
+        r"Autoconfiguration (?:Enabled|IPv4)",
+    ]
+
+    match_count = 0
+    for pattern in hallucination_patterns:
+        if re.search(pattern, text, re.IGNORECASE):
+            match_count += 1
+            # Require multiple matches for stronger confidence
+            if match_count >= 2:
+                return True
+
+    return False
+
+
+# ============================================================================
 # Intent Classification (2-class: task vs casual)
 # Uses orchestrator's LLM - single model for all classification
 # ============================================================================
@@ -325,9 +430,9 @@ def _classify_intent(text: str) -> Dict[str, Any]:
     except Exception as e:
         print(f"[aj] Orchestrator classify error: {e}")
 
-    # Fallback if orchestrator is down - default to casual (safe)
-    print("[aj] Warning: Orchestrator unavailable, defaulting to casual")
-    return {"intent": "casual", "confidence": 0.3}
+    # Fallback if orchestrator is down - default to task (safer to check than miss)
+    print("[aj] Warning: Orchestrator unavailable, defaulting to task")
+    return {"intent": "task", "confidence": 0.3}
 
 
 def _detect_task_continuation(
@@ -532,27 +637,30 @@ async def _orchestrate_task(
     __event_emitter__,
     memory_context: Optional[List[dict]] = None,
     model: Optional[str] = None,
-) -> Tuple[Optional[str], str]:
+) -> Tuple[Optional[str], str, bool]:
     """
     Handle task intents via orchestrator streaming endpoint.
 
     Flow:
       1. POST /run-task to orchestrator (starts SSE stream)
       2. Forward status events to __event_emitter__
-      3. Return (final_context, streamed_content) when complete
+      3. Return (final_context, streamed_content, execution_occurred) when complete
 
     The agentic loop now runs in the orchestrator, not here.
     Returns both the context for LLM and the accumulated streamed content
     to preserve thinking/results in the final response.
+    Also returns whether actual command execution occurred (for hallucination detection).
     """
     if not workspace_root:
-        return None, ""
+        return None, "", False
 
     # Build complete task description (handles continuations)
     user_text = _build_task_description(messages)
 
     # Accumulate all streamed content so it persists after LLM responds
     streamed_content = ""
+    # IRON GATE: Track if actual command execution occurred
+    execution_occurred = False
 
     try:
         # Note: Don't emit "Thinking" here - orchestrator will emit it and we forward
@@ -687,6 +795,8 @@ async def _orchestrate_task(
                             await __event_emitter__(
                                 {"type": "message", "data": {"content": code_block}}
                             )
+                            # IRON GATE: Mark that actual execution occurred
+                            execution_occurred = True
 
                     elif event_type == "error":
                         await __event_emitter__(
@@ -707,14 +817,14 @@ async def _orchestrate_task(
                             )
                         )
 
-                return final_context, streamed_content
+                return final_context, streamed_content, execution_occurred
 
     except Exception as e:
         print(f"[aj] Orchestrator streaming error: {e}")
         await __event_emitter__(
             create_error_dict(str(e)[:30], LogCategory.FILTER, done=True)
         )
-        return None, ""
+        return None, "", False
 
 
 # ============================================================================
@@ -1311,6 +1421,10 @@ class Filter:
         self.toggle = True
         # Track streamed content from orchestrator to preserve in final response
         self._streamed_content = ""
+        # IRON GATE: Track execution state to catch hallucinated outputs
+        self._execution_occurred = False
+        self._user_requested_execution = False
+        self._last_user_text = ""
         # Butler icon - person with bow tie silhouette
         self.icon = (
             "data:image/svg+xml;base64,"
@@ -1511,6 +1625,12 @@ class Filter:
             # Extract user text for classification
             user_text = _extract_user_text_prompt(messages)
 
+            # IRON GATE: Reset execution tracking for new request
+            self._execution_occurred = False
+            self._last_user_text = user_text or ""
+            # Detect if user is requesting remote command execution
+            self._user_requested_execution = _detect_execution_request(user_text or "")
+
             # Extract files and images in a SINGLE batch call
             file_content, filenames, chunks = _extract_all_content_batch(
                 body, messages, user_prompt=user_text
@@ -1601,9 +1721,11 @@ class Filter:
                 if saved:
                     print(f"[aj] Memory saved for user={user_id}")
 
-            # For task intents, engage orchestrator (pass memory context for user info)
-            if intent == "task" and self.user_valves.enable_orchestrator:
-                orchestrator_context, streamed = await _orchestrate_task(
+            # ALWAYS engage orchestrator - DeepSeek handles both tasks AND conversations
+            # The Llama chat model is just a formatting layer, not the brain
+            # Orchestrator has its own conversational handler for non-task queries
+            if self.user_valves.enable_orchestrator:
+                orchestrator_context, streamed, exec_occurred = await _orchestrate_task(
                     user_id,
                     messages,
                     (
@@ -1617,6 +1739,8 @@ class Filter:
                 )
                 # Store streamed content to prepend to LLM response in outlet
                 self._streamed_content = streamed
+                # IRON GATE: Track whether execution actually occurred
+                self._execution_occurred = exec_occurred
 
             # Merge immediate image context
             if immediate_image_context:
@@ -1721,6 +1845,34 @@ class Filter:
                 if isinstance(content, str):
                     # FIRST: Extract response from JSON structured output
                     content = self._extract_json_response(content)
+
+                    # ================================================================
+                    # IRON GATE: Block hallucinated execution output
+                    # If user requested execution, orchestrator didn't execute,
+                    # but the LLM response contains fake execution output - BLOCK IT
+                    # ================================================================
+                    if (
+                        self._user_requested_execution
+                        and not self._execution_occurred
+                        and _detect_hallucinated_execution_output(content)
+                    ):
+                        print(
+                            f"[aj] IRON GATE BLOCKED: Hallucinated execution output detected. "
+                            f"User requested execution but orchestrator did not execute."
+                        )
+                        content = (
+                            "⚠️ **Execution Failed**\n\n"
+                            "I was unable to execute the command on the remote agent. "
+                            "The orchestrator service may be unavailable or the agent "
+                            "is unreachable.\n\n"
+                            "Please check:\n"
+                            "- Is the orchestrator service running?\n"
+                            "- Is the FunnelCloud agent online?\n"
+                            "- Network connectivity between services\n\n"
+                            "Run `docker-compose ps` to check service status."
+                        )
+                        messages[i]["content"] = content
+                        break
 
                     # CRITICAL: Detect user message echo (model confusion)
                     # If the assistant's response contains the user's exact message, remove it
