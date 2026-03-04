@@ -28,8 +28,8 @@ COPY orchestrator .
 COPY agents/FunnelCloud/publish-linux /app/funnelcloud-agent
 RUN chmod +x /app/funnelcloud-agent/FunnelCloud.Agent
 
-# Copy startup script
-RUN chmod +x /app/start.sh
+# Copy startup script and ensure LF line endings (Windows CRLF safety)
+RUN sed -i 's/\r$//' /app/start.sh && chmod +x /app/start.sh
 
 # Default model fallback (overridden by Open-WebUI selection)
 ENV OLLAMA_MODEL=aj-deepseek-r1-32b

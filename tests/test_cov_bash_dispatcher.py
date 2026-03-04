@@ -75,15 +75,11 @@ class TestDispatchTool:
     async def test_execute_localhost_discover_peers_failure(self):
         from services.bash_dispatcher import dispatch_tool
 
-        mock_response = MagicMock()
-        mock_response.status_code = 500
+        # Mock the Python discovery service to raise an exception
+        mock_discovery = MagicMock()
+        mock_discovery.discover = AsyncMock(side_effect=Exception("discovery failed: network error"))
 
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.get = AsyncMock(return_value=mock_response)
-
-        with patch("httpx.AsyncClient", return_value=mock_client):
+        with patch("services.bash_dispatcher.get_discovery_service", return_value=mock_discovery):
             result = await dispatch_tool(
                 "execute",
                 {
@@ -92,7 +88,7 @@ class TestDispatchTool:
                 },
             )
         assert result["success"] is False
-        assert "500" in result["error"]
+        assert "discover-peers failed" in result["error"]
 
     @pytest.mark.asyncio
     async def test_execute_localhost_shell_command(self):
@@ -144,12 +140,11 @@ class TestDispatchTool:
     async def test_execute_localhost_exception(self):
         from services.bash_dispatcher import dispatch_tool
 
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.get = AsyncMock(side_effect=Exception("conn refused"))
+        # Mock the Python discovery service to raise an exception
+        mock_discovery = MagicMock()
+        mock_discovery.discover = AsyncMock(side_effect=Exception("conn refused"))
 
-        with patch("httpx.AsyncClient", return_value=mock_client):
+        with patch("services.bash_dispatcher.get_discovery_service", return_value=mock_discovery):
             result = await dispatch_tool(
                 "execute",
                 {"agent_id": "localhost", "command": "discover-peers"},
@@ -215,7 +210,7 @@ class TestDispatchTool:
             agent_id="ws1",
             command="Get-Process",
             task_type="powershell",
-            timeout_seconds=60,
+            timeout_seconds=300,
         )
 
     @pytest.mark.asyncio
@@ -239,7 +234,7 @@ class TestDispatchTool:
             agent_id="ws1",
             command="ls -la",
             task_type="shell",
-            timeout_seconds=60,
+            timeout_seconds=300,
         )
 
     @pytest.mark.asyncio

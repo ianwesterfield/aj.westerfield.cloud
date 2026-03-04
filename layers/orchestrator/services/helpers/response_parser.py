@@ -176,6 +176,30 @@ class ResponseParser:
             tool_name = (
                 data.get("tool") or data.get("action") or data.get("step") or "unknown"
             )
+
+            # LEGACY FORMAT NORMALIZATION
+            # Training data has conflicting schemas - normalize them here
+            # windows_admin.jsonl uses: {"action": "execute_command", "command": "..."}
+            # funnelcloud_tools.jsonl uses: {"tool": "execute", "params": {"agent_id": "...", "command": "..."}}
+            LEGACY_ACTION_MAP = {
+                "execute_command": "execute",
+                "run_command": "execute",
+                "shell": "execute",
+                "run": "execute",
+                "provide_markdown": "complete",
+                "provide_answer": "complete",
+                "respond": "complete",
+                "answer": "complete",
+                "reason": "think",
+                "plan": "think",
+            }
+            tool_name_lower = tool_name.lower() if tool_name else ""
+            if tool_name_lower in LEGACY_ACTION_MAP:
+                logger.info(
+                    f"Normalizing legacy action '{tool_name}' -> '{LEGACY_ACTION_MAP[tool_name_lower]}'"
+                )
+                tool_name = LEGACY_ACTION_MAP[tool_name_lower]
+
             if tool_name and len(tool_name) > 30:
                 for known_tool in [
                     "scan_workspace",
@@ -205,6 +229,21 @@ class ResponseParser:
                     params = {"command": data["command"]}
                 elif "answer" in data:
                     params = {"answer": data["answer"]}
+                elif "markdown" in data:
+                    # Legacy: {"action": "provide_markdown", "markdown": "..."}
+                    params = {"answer": data["markdown"]}
+                elif "thought" in data:
+                    params = {"thought": data["thought"]}
+
+            # LEGACY: If execute tool but no agent_id, default to localhost
+            # This handles: {"action": "execute_command", "command": "..."}
+            if (
+                tool_name == "execute"
+                and "command" in params
+                and "agent_id" not in params
+            ):
+                params["agent_id"] = "localhost"
+                logger.info("Defaulting agent_id to 'localhost' for execute command")
 
             logger.info(f"Parsed step: tool={tool_name}, params={params}")
             return Step(

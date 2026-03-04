@@ -685,13 +685,28 @@ class SessionState:
             if success and agent == "localhost" and "discover-peers" in cmd.lower():
                 self.agents_verified = True
                 # Extract agent IDs from JSON output
-                # Format: [{"Id":"agent-id", ...}, ...]
+                # Format: {"agents": [{"agentId":"agent-id", ...}, ...], "count": N}
                 import json
 
                 try:
-                    peers = json.loads(output) if output else []
+                    data = json.loads(output) if output else {}
+                    # Handle both formats:
+                    # 1. {"agents": [...], "count": N} (current format)
+                    # 2. [{"agentId": ...}, ...] (legacy format)
+                    if isinstance(data, dict) and "agents" in data:
+                        peers = data["agents"]
+                    elif isinstance(data, list):
+                        peers = data
+                    else:
+                        peers = []
+
                     agent_ids = [
-                        p.get("Id") or p.get("id") for p in peers if isinstance(p, dict)
+                        p.get("agentId")
+                        or p.get("agent_id")
+                        or p.get("Id")
+                        or p.get("id")
+                        for p in peers
+                        if isinstance(p, dict)
                     ]
                     self.discovered_agents = [a for a in agent_ids if a]
                     logger.info(
@@ -705,7 +720,7 @@ class SessionState:
                 except (json.JSONDecodeError, TypeError):
                     # Fallback: try regex for agent IDs in structured output
                     agent_matches = re.findall(
-                        r'"(?:Id|id)":\s*"([^"]+)"', output or ""
+                        r'"(?:agentId|agent_id|Id|id)":\s*"([^"]+)"', output or ""
                     )
                     self.discovered_agents = agent_matches
                     logger.info(f"discover-peers regex extracted: {agent_matches}")

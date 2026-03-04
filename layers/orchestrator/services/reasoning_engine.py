@@ -43,7 +43,10 @@ logger = logging.getLogger("orchestrator.reasoning")
 
 # Ollama configuration
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "aj-deepseek-r1-32b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "r1-distill-aj:32b-4k")
+
+# Pragmatics API for intent classification (DistilBERT on CPU)
+PRAGMATICS_API_URL = os.getenv("PRAGMATICS_API_URL", "http://pragmatics_api:8001")
 
 
 SYSTEM_PROMPT = """
@@ -188,6 +191,10 @@ class ReasoningEngine:
         "llama3.2:1b": 1.3,
         "llama3.2:3b": 2.0,
         "llama3.2": 2.0,
+        "r1-distill-aj:32b-4k": 19.0,
+        "r1-distill-aj:32b-8k": 19.0,
+        "r1-distill-aj:32b-2k": 19.0,
+        "r1-distill-aj:32b": 19.0,
         "aj-deepseek-r1-32b": 18.5,
         "aj-deepseek-r1-32b:q8": 32.5,
         "qwen2.5-aj:32b": 20.0,
@@ -295,164 +302,100 @@ class ReasoningEngine:
 
     async def classify_intent(self, task: str) -> dict:
         """
-        Classify user intent BEFORE the OODA loop to determine if planning is needed.
+        Classify user intent via pragmatics API (DistilBERT on CPU).
 
-        Intent Types:
-        - "conversational": Questions about concepts, explanations
-        - "task": File operations, remote execution, workspace changes
+        Intent Types (4-class):
+        - "casual": Greetings, general chat, questions about concepts
+        - "save": User providing info to remember ("My name is Ian")
+        - "recall": User asking for stored info ("What's my name?")
+        - "task": Workspace/code/execution requests
+
+        Returns dict with intent mapped to orchestrator expectations:
+        - "conversational" for casual intents
+        - "save" for memory save intents
+        - "recall" for memory recall intents
+        - "task" for execution intents
         """
         try:
-            url = f"{self.base_url}/api/chat"
-            payload = {
-                "model": self.model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": """Classify intent. NO EXPLANATION. Output ONE word only.
+            url = f"{PRAGMATICS_API_URL}/api/pragmatics/classify"
+            payload = {"text": task}
 
-task = needs execution/queries/commands/file ops
-conversational = explanations/definitions/greetings/thanks
-
-Reply with ONLY: task OR conversational""",
-                    },
-                    {"role": "user", "content": task},
-                ],
-                "stream": False,
-                "options": {"temperature": 0.0, "num_predict": 200},
-            }
-
-            response = await self.client.post(url, json=payload, timeout=30.0)
+            response = await self.client.post(url, json=payload, timeout=5.0)
             response.raise_for_status()
 
-            raw_content = response.json().get("message", {}).get("content", "").strip()
+            result = response.json()
+            intent = result.get("intent", "task")
+            confidence = result.get("confidence", 0.5)
+            all_probs = result.get("all_probs", {})
 
-            # Strip <think> blocks if present (DeepSeek-R1 likes to reason)
-            content = raw_content.lower()
-            if "<think>" in content:
-                # Extract content after </think> if present
-                if "</think>" in content:
-                    content = content.split("</think>")[-1].strip()
-                else:
-                    # Thinking block not closed - scan full content for task/conversational
-                    pass  # Let the content check below handle it
+            logger.info(
+                f"Intent classification: {intent} (conf={confidence:.2f}) "
+                f"probs={all_probs}"
+            )
 
-            logger.info(f"Intent LLM response: {raw_content[:100]}...")
+            # Map pragmatics intents to orchestrator behavior
+            # casual -> conversational (answer directly, no OODA)
+            # save -> save (route to memory, no OODA)
+            # recall -> recall (query memory, no OODA)
+            # task -> task (run OODA loop)
+            mapped_intent = "conversational" if intent == "casual" else intent
 
-            # Check for classification in content (may be inside <think> or after)
-            # Handle synonyms - LLM might say "casual" instead of "conversational"
-            conversational_keywords = [
-                "conversational",
-                "casual",
-                "greeting",
-                "chitchat",
-                "small talk",
-            ]
-            task_keywords = ["task", "execute", "command", "action", "operation"]
-
-            is_conversational = any(kw in content for kw in conversational_keywords)
-            is_task = any(kw in content for kw in task_keywords)
-
-            if is_conversational and not is_task:
-                return {
-                    "intent": "conversational",
-                    "confidence": 0.85,
-                    "reason": "LLM classification",
-                }
-            elif is_task and not is_conversational:
-                return {
-                    "intent": "task",
-                    "confidence": 0.85,
-                    "reason": "LLM classification",
-                }
-            elif is_task:
-                # Both present, prefer task (safer)
-                return {
-                    "intent": "task",
-                    "confidence": 0.7,
-                    "reason": "LLM classification (mixed signals)",
-                }
-            else:
-                # Default to task for ambiguous (safer to check than miss)
-                logger.warning(
-                    f"Ambiguous intent response: {content[:50]}, defaulting to task"
-                )
-                return {
-                    "intent": "task",
-                    "confidence": 0.5,
-                    "reason": "Ambiguous, defaulting to task",
-                }
+            return {
+                "intent": mapped_intent,
+                "confidence": confidence,
+                "reason": "Pragmatics DistilBERT classification",
+                "all_probs": all_probs,
+            }
 
         except Exception as e:
-            logger.warning(f"Intent classification failed: {e}")
+            logger.warning(f"Pragmatics API classification failed: {e}")
+            # Fallback to task (safer - will run OODA which can handle anything)
             return {
                 "intent": "task",
                 "confidence": 0.5,
-                "reason": f"Classification failed: {e}",
+                "reason": f"Pragmatics API failed, defaulting to task: {e}",
             }
 
     async def classify_intent_with_context(self, task: str, context: str) -> dict:
         """
-        Classify intent with conversation context for task continuation detection.
+        Classify intent with conversation context via pragmatics API.
 
         Used when a short message like "yes", "do it", "ok" follows an assistant
         message that proposed an action. Context helps determine if user is
         confirming a task vs. just chatting.
         """
         try:
-            url = f"{self.base_url}/api/chat"
+            url = f"{PRAGMATICS_API_URL}/api/pragmatics/classify-with-context"
             payload = {
-                "model": self.model,
-                "messages": [
-                    {
-                        "role": "system",
-                        "content": """You are analyzing if a short user response is confirming a task.
-
-Given the previous assistant message (context) and the user's response, determine:
-- "task": User is confirming, agreeing to, or continuing a proposed action
-- "conversational": User is just chatting, asking clarifying questions, or declining
-
-Short responses like "yes", "ok", "do it", "sure", "go ahead" after the assistant proposed an action = task
-Short responses like "no", "wait", "what?", "thanks" with no action context = conversational
-
-Respond with ONLY one word: task OR conversational""",
-                    },
-                    {
-                        "role": "assistant",
-                        "content": f"[Previous message]: {context[:500]}",
-                    },
-                    {"role": "user", "content": task},
-                ],
-                "stream": False,
-                "options": {"temperature": 0.1, "num_predict": 10},
+                "text": task,
+                "context": context[:2000],  # API limit
             }
 
-            response = await self.client.post(url, json=payload, timeout=10.0)
+            response = await self.client.post(url, json=payload, timeout=5.0)
             response.raise_for_status()
 
-            content = (
-                response.json().get("message", {}).get("content", "").strip().lower()
-            )
-            logger.info(f"Intent with context LLM response: {content}")
+            result = response.json()
+            intent = result.get("intent", "task")
+            confidence = result.get("confidence", 0.5)
 
-            if "task" in content:
-                return {
-                    "intent": "task",
-                    "confidence": 0.85,
-                    "reason": "Task continuation detected",
-                }
-            else:
-                return {
-                    "intent": "conversational",
-                    "confidence": 0.85,
-                    "reason": "Not a task continuation",
-                }
+            logger.info(f"Intent with context: {intent} (conf={confidence:.2f})")
+
+            # Map casual -> conversational for orchestrator compatibility
+            mapped_intent = "conversational" if intent == "casual" else intent
+
+            return {
+                "intent": mapped_intent,
+                "confidence": confidence,
+                "reason": "Pragmatics context-aware classification",
+            }
 
         except Exception as e:
-            logger.warning(f"Context classification failed: {e}")
+            logger.warning(f"Pragmatics context classification failed: {e}")
+            # Fallback to conversational for short ambiguous messages
             return {
                 "intent": "conversational",
                 "confidence": 0.5,
-                "reason": f"Classification failed: {e}",
+                "reason": f"Pragmatics API failed: {e}",
             }
 
     async def answer_conversational(
