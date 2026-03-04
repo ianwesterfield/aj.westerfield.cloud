@@ -32,6 +32,20 @@ def mock_chat_response(content):
     return resp
 
 
+def mock_pragmatics_response(intent, confidence=0.95):
+    """Build a fake httpx response for pragmatics /api/pragmatics/classify."""
+    resp = MagicMock()
+    # Map "conversational" back to "casual" for pragmatics API format
+    api_intent = "casual" if intent == "conversational" else intent
+    resp.json.return_value = {
+        "intent": api_intent,
+        "confidence": confidence,
+        "all_probs": {api_intent: confidence},
+    }
+    resp.raise_for_status = MagicMock()
+    return resp
+
+
 # ==== Model management ====
 class TestModelManagement:
     def test_set_model_changes(self, engine):
@@ -90,47 +104,27 @@ class TestModelManagement:
 class TestClassifyIntent:
     @pytest.mark.asyncio
     async def test_conversational(self, engine):
-        engine.client.post = AsyncMock(
-            return_value=mock_chat_response("conversational")
-        )
+        engine.client.post = AsyncMock(return_value=mock_pragmatics_response("casual"))
         result = await engine.classify_intent("what is Docker?")
         assert result["intent"] == "conversational"
 
     @pytest.mark.asyncio
     async def test_task(self, engine):
-        engine.client.post = AsyncMock(return_value=mock_chat_response("task"))
+        engine.client.post = AsyncMock(return_value=mock_pragmatics_response("task"))
         result = await engine.classify_intent("ping server01")
         assert result["intent"] == "task"
 
     @pytest.mark.asyncio
-    async def test_mixed_signals(self, engine):
-        engine.client.post = AsyncMock(
-            return_value=mock_chat_response("this is a conversational task")
-        )
-        result = await engine.classify_intent("what?")
-        assert result["intent"] == "task"  # prefer task
+    async def test_save_intent(self, engine):
+        engine.client.post = AsyncMock(return_value=mock_pragmatics_response("save"))
+        result = await engine.classify_intent("my name is Ian")
+        assert result["intent"] == "save"
 
     @pytest.mark.asyncio
-    async def test_ambiguous(self, engine):
-        engine.client.post = AsyncMock(return_value=mock_chat_response("I'm not sure"))
-        result = await engine.classify_intent("hmm")
-        assert result["intent"] == "task"  # default
-
-    @pytest.mark.asyncio
-    async def test_think_block_stripped(self, engine):
-        engine.client.post = AsyncMock(
-            return_value=mock_chat_response("<think>analyzing...</think>conversational")
-        )
-        result = await engine.classify_intent("hello")
-        assert result["intent"] == "conversational"
-
-    @pytest.mark.asyncio
-    async def test_think_block_unclosed(self, engine):
-        engine.client.post = AsyncMock(
-            return_value=mock_chat_response("<think>I think this is a task")
-        )
-        result = await engine.classify_intent("do something")
-        assert result["intent"] == "task"
+    async def test_recall_intent(self, engine):
+        engine.client.post = AsyncMock(return_value=mock_pragmatics_response("recall"))
+        result = await engine.classify_intent("what is my name?")
+        assert result["intent"] == "recall"
 
     @pytest.mark.asyncio
     async def test_exception(self, engine):
@@ -139,31 +133,17 @@ class TestClassifyIntent:
         assert result["intent"] == "task"
         assert result["confidence"] == 0.5
 
-    @pytest.mark.asyncio
-    async def test_casual_keyword(self, engine):
-        engine.client.post = AsyncMock(return_value=mock_chat_response("casual"))
-        result = await engine.classify_intent("hey there")
-        assert result["intent"] == "conversational"
-
-    @pytest.mark.asyncio
-    async def test_greeting_keyword(self, engine):
-        engine.client.post = AsyncMock(return_value=mock_chat_response("greeting"))
-        result = await engine.classify_intent("hi")
-        assert result["intent"] == "conversational"
-
 
 class TestClassifyIntentWithContext:
     @pytest.mark.asyncio
     async def test_task_continuation(self, engine):
-        engine.client.post = AsyncMock(return_value=mock_chat_response("task"))
+        engine.client.post = AsyncMock(return_value=mock_pragmatics_response("task"))
         result = await engine.classify_intent_with_context("yes", "Shall I deploy?")
         assert result["intent"] == "task"
 
     @pytest.mark.asyncio
     async def test_conversational(self, engine):
-        engine.client.post = AsyncMock(
-            return_value=mock_chat_response("conversational")
-        )
+        engine.client.post = AsyncMock(return_value=mock_pragmatics_response("casual"))
         result = await engine.classify_intent_with_context("thanks", "Done!")
         assert result["intent"] == "conversational"
 

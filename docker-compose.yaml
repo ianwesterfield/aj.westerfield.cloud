@@ -34,55 +34,17 @@ services:
               capabilities: [gpu]
     shm_size: 2g
     restart: unless-stopped
-    # Pre-load llama3.1:8b on startup so chat is instant
+    # Pre-load r1-distill-aj:32b-4k on startup (Manchurian Candidate trained model)
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          'curl -sf http://localhost:11434/api/tags || exit 1; curl -sf -X POST http://localhost:11434/api/generate -d ''{"model":"llama3.1:8b","prompt":"","keep_alive":-1}'' > /dev/null 2>&1; exit 0',
+          'curl -sf http://localhost:11434/api/tags || exit 1; curl -sf -X POST http://localhost:11434/api/generate -d ''{ "model":"r1-distill-aj:32b-4k","prompt":"","keep_alive":-1}'' > /dev/null 2>&1; exit 0',
         ]
       interval: 30s
       timeout: 300s
       retries: 3
       start_period: 30s
-
-  # -------------------------------------------------
-  # Ollama — Orchestrator (dedicated reasoning/planning)
-  # Pinned to aj-deepseek-r1-32b so chat model swaps
-  # don't cause 126-second reloads mid-trajectory
-  # -------------------------------------------------
-  ollama-orchestrator:
-    image: ollama/ollama:latest
-    container_name: ollama-orchestrator
-    network_mode: host
-    environment:
-      - OLLAMA_HOST=0.0.0.0:11435
-      - OLLAMA_KEEP_ALIVE=-1
-      - OLLAMA_NUM_PARALLEL=2
-      - OLLAMA_MAX_LOADED_MODELS=1
-    volumes:
-      # Share models with main ollama (custom models like aj-deepseek-r1-32b)
-      - /mnt/c/docker-data/ollama/.ollama:/root/.ollama
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    shm_size: 2g
-    restart: unless-stopped
-    # Pre-load aj-deepseek-r1-32b so orchestrator reasoning is instant
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          'curl -sf http://localhost:11435/api/tags || exit 1; curl -sf -X POST http://localhost:11435/api/generate -d ''{ "model": "aj-deepseek-r1-32b", "prompt": "", "keep_alive": -1 }'' > /dev/null 2>&1; exit 0',
-        ]
-      interval: 30s
-      timeout: 300s
-      retries: 3
-      start_period: 60s
 
   # -------------------------------------------------
   # Ollama — Fact Extraction (qwen2.5:1.5b ~1GB VRAM)
@@ -232,9 +194,13 @@ services:
     container_name: orchestrator_api
     network_mode: host
     environment:
-      # Dedicated Ollama instance for orchestrator reasoning (port 11435)
-      - OLLAMA_BASE_URL=http://localhost:11435
+      # Share main Ollama instance with Open-WebUI (r1-distill-aj:32b-4k)
+      - OLLAMA_BASE_URL=http://localhost:11434
+      # Use the Manchurian Candidate trained model
+      - OLLAMA_MODEL=r1-distill-aj:32b-4k
       - MEMORY_API_URL=http://localhost:8000
+      # Pragmatics API for intent classification (DistilBERT on CPU)
+      - PRAGMATICS_API_URL=http://localhost:8001
       - MAX_PARALLEL_TASKS=5
       - WORKSPACE_ROOT=/workspace
       - HOST_WORKSPACE_PATH=${HOST_WORKSPACE_PATH:-/mnt/c/Code}
@@ -273,7 +239,7 @@ services:
       - ${HOST_WORKSPACE_PATH:-/mnt/c/Code}:/workspace:rw
       - ./layers/agents/FunnelCloud/certs:/app/certs:ro
     depends_on:
-      - ollama-orchestrator
+      - ollama
       - memory_api
     restart: unless-stopped
 

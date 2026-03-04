@@ -37,6 +37,9 @@ public class TaskServiceImpl : TaskService.TaskServiceBase
     _logger.LogInformation("Executing task {TaskId}: {Type} - {Command}",
         request.TaskId, request.Type, TruncateCommand(request.Command));
 
+    // Windows toast notification so we can visually confirm tasks are arriving
+    ToastNotifier.NotifyTaskReceived(request.TaskId, request.Type.ToString(), request.Command, _logger);
+
     try
     {
       // Convert gRPC request to shared contract
@@ -101,6 +104,9 @@ public class TaskServiceImpl : TaskService.TaskServiceBase
   {
     _logger.LogInformation("Streaming execution for task {TaskId}: {Type}",
         request.TaskId, request.Type);
+
+    // Windows toast notification so we can visually confirm tasks are arriving
+    ToastNotifier.NotifyTaskReceived(request.TaskId, request.Type.ToString(), request.Command, _logger);
 
     var stopwatch = Stopwatch.StartNew();
 
