@@ -1093,7 +1093,10 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
                     if error and len(error) > 40
                     else (error or "unknown")
                 )
-                yield f"data: {json.dumps({'event_type': 'status', 'step_num': step_num, 'tool': tool, 'status': f'⚠️ Failed: {error_snippet}', 'done': False})}\n\n"
+                # Include params so filter can track which agent was targeted for failed commands
+                fail_params = {k: v for k, v in params.items() if k != 'content'}
+                fail_result = {'success': False, 'error': error_snippet}
+                yield f"data: {json.dumps({'event_type': 'result', 'step_num': step_num, 'tool': tool, 'params': fail_params, 'result': fail_result, 'done': False})}\n\n"
 
                 # Stream error observation
                 err_content = f"\n> ↳ ❌ _{error_snippet}_\n"
@@ -1102,14 +1105,29 @@ async def _run_task_generator(request: RunTaskRequest) -> AsyncGenerator[str, No
                 )
                 yield f"data: {err_event}\n\n"
 
-                all_results.append(
-                    f"""### Step {step_num} Error ###
+                # Include output even for failed commands - it may contain partial/useful data
+                # (e.g., PowerShell warnings in stderr but valid results in stdout)
+                if output:
+                    result_block = _format_result_block(
+                        tool, params, output.__str__(), reasoning, result
+                    )
+                    all_results.append(result_block)
+                    all_results.append(
+                        f"""### Step {step_num} Warning ###
+**Tool:** {tool}
+**Note:** Command produced output but also had errors: {error or "Unknown error"}
+### End Warning ###
+"""
+                    )
+                else:
+                    all_results.append(
+                        f"""### Step {step_num} Error ###
 **Tool:** {tool}
 **Reasoning:** {reasoning}
 **Error:** {error or "Unknown error"}
 ### End Error ###
 """
-                )
+                    )
 
             # =================================================================
             # OODA: OBSERVE & ORIENT - Check goal satisfaction after each step
