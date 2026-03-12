@@ -20,22 +20,15 @@
     For 'stack' action: specific services to restart (default: all)
     For 'base-images' action: which base images to build
 
-.PARAMETER Build
-    For 'stack' action: rebuild images before starting
-
 .PARAMETER Force
     Force rebuild/redeploy even if no changes detected
 
 .EXAMPLE
-    # Deploy full stack
+    # Deploy full stack (always rebuilds)
     .\deploy.ps1 -Action stack
 
 .EXAMPLE
-    # Deploy with rebuild
-    .\deploy.ps1 -Action stack -Build
-
-.EXAMPLE
-    # Restart specific services
+    # Restart specific services (rebuilds them)
     .\deploy.ps1 -Action stack -Services orchestrator_api,memory_api
 
 .EXAMPLE
@@ -88,7 +81,7 @@ $ProjectRoot = Split-Path -Parent $ScriptDir
 function Write-Header($text) {
     Write-Host ""
     Write-Host "╔════════════════════════════════════════════╗" -ForegroundColor Cyan
-    Write-Host ("║  $text".PadRight(44) + "║") -ForegroundColor Cyan
+    Write-Host ("║  $text".PadRight(45) + "║") -ForegroundColor Cyan
     Write-Host "╚════════════════════════════════════════════╝" -ForegroundColor Cyan
     Write-Host ""
 }
@@ -118,33 +111,22 @@ function Deploy-Stack {
     
     Push-Location $ProjectRoot
     try {
+        # Always rebuild to pick up latest code changes
         if ($Services -and $Services.Count -gt 0) {
             $serviceList = $Services -join " "
-            if ($Build) {
-                Write-Step "Rebuilding and restarting: $serviceList"
-                docker compose up -d --build $Services
-            }
-            else {
-                Write-Step "Restarting: $serviceList"
-                docker compose restart $Services
-            }
+            Write-Step "Rebuilding and restarting: $serviceList"
+            wsl docker compose up -d --build $Services
         }
         else {
-            if ($Build) {
-                Write-Step "Rebuilding and starting all services..."
-                docker compose up -d --build
-            }
-            else {
-                Write-Step "Starting all services..."
-                docker compose up -d
-            }
+            Write-Step "Rebuilding and starting all services..."
+            wsl docker compose up -d --build
         }
         
         if ($LASTEXITCODE -eq 0) {
             Write-Success "Stack deployed successfully"
             Write-Host ""
             Write-Step "Service status:"
-            docker compose ps
+            wsl docker compose ps
         }
         else {
             throw "Docker Compose failed"

@@ -34,17 +34,18 @@ services:
               capabilities: [gpu]
     shm_size: 2g
     restart: unless-stopped
-    # Pre-load r1-distill-aj:32b-4k on startup (Manchurian Candidate trained model)
+    # Pre-load r1-distill-aj:32b-8k on startup (Manchurian Candidate trained model)
+    # Healthcheck loads the model and runs a test prompt (OLLAMA_KEEP_ALIVE=-1 keeps it loaded)
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          'curl -sf http://localhost:11434/api/tags || exit 1; curl -sf -X POST http://localhost:11434/api/generate -d ''{ "model":"r1-distill-aj:32b-4k","prompt":"","keep_alive":-1}'' > /dev/null 2>&1; exit 0',
+          "ollama run r1-distill-aj:32b-8k 'ping' 2>&1 | grep -v 'Error' | head -c 50 || exit 1",
         ]
-      interval: 30s
+      interval: 60s
       timeout: 300s
       retries: 3
-      start_period: 30s
+      start_period: 120s
 
   # -------------------------------------------------
   # Ollama — Fact Extraction (qwen2.5:1.5b ~1GB VRAM)
@@ -73,16 +74,17 @@ services:
     shm_size: 512m
     restart: unless-stopped
     # Pre-load qwen2.5:1.5b so fact extraction is instant
+    # Healthcheck actually loads the model (OLLAMA_KEEP_ALIVE=-1 keeps it loaded)
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          'curl -sf http://localhost:11436/api/tags || exit 1; curl -sf -X POST http://localhost:11436/api/generate -d ''{ "model": "qwen2.5:1.5b", "prompt": "", "keep_alive": -1 }'' > /dev/null 2>&1; exit 0',
+          "OLLAMA_HOST=0.0.0.0:11436 ollama run qwen2.5:1.5b 'hello' 2>&1 | grep -v 'Error' | head -c 50 || exit 1",
         ]
-      interval: 30s
+      interval: 60s
       timeout: 120s
       retries: 3
-      start_period: 15s
+      start_period: 60s
 
   # -------------------------------------------------
   # Qdrant
@@ -140,8 +142,8 @@ services:
   # -------------------------------------------------
   pragmatics_api:
     build:
-      context: ./layers/pragmatics
-      dockerfile: Dockerfile
+      context: ./layers
+      dockerfile: pragmatics/Dockerfile
       args:
         BASE_REGISTRY: ${BASE_REGISTRY:-ianwesterfield}
     container_name: pragmatics_api
@@ -151,7 +153,8 @@ services:
       - OLLAMA_PORT=11436
       - FACT_EXTRACTION_MODEL=qwen2.5:1.5b
     depends_on:
-      - ollama-facts
+      ollama-facts:
+        condition: service_healthy
     restart: unless-stopped
 
   # -------------------------------------------------
@@ -194,10 +197,10 @@ services:
     container_name: orchestrator_api
     network_mode: host
     environment:
-      # Share main Ollama instance with Open-WebUI (r1-distill-aj:32b-4k)
+      # Share main Ollama instance with Open-WebUI
       - OLLAMA_BASE_URL=http://localhost:11434
-      # Use the Manchurian Candidate trained model
-      - OLLAMA_MODEL=r1-distill-aj:32b-4k
+      # Default model - 8k context window for multi-step reasoning
+      - OLLAMA_MODEL=r1-distill-aj:32b-8k
       - MEMORY_API_URL=http://localhost:8000
       # Pragmatics API for intent classification (DistilBERT on CPU)
       - PRAGMATICS_API_URL=http://localhost:8001
@@ -239,8 +242,10 @@ services:
       - ${HOST_WORKSPACE_PATH:-/mnt/c/Code}:/workspace:rw
       - ./layers/agents/FunnelCloud/certs:/app/certs:ro
     depends_on:
-      - ollama
-      - memory_api
+      ollama:
+        condition: service_healthy
+      memory_api:
+        condition: service_started
     restart: unless-stopped
 
   # -------------------------------------------------
@@ -250,7 +255,8 @@ services:
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
     environment:
       - USER_AGENT=WesterfieldCloud-OpenWebUI/1.0
       - GLOBAL_LOG_LEVEL=DEBUG
