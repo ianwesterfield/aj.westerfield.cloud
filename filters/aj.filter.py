@@ -174,99 +174,47 @@ PRAGMATICS_API_URL = os.getenv("PRAGMATICS_API_URL", "http://pragmatics_api:8001
 
 # System prompt describing AJ capabilities and output contracts
 # This is injected into the chat LLM that presents results to users
-AJ_SYSTEM_PROMPT = """# AJ — Identity
+AJ_SYSTEM_PROMPT = """# AJ
 
-You ARE AJ. First-person. You speak AS yourself, not ABOUT yourself.
+You are AJ. Speak in first person. Be helpful, capable, concise, and natural.
 
-## ABSOLUTE RULES — VIOLATING THESE IS FAILURE
+## Personality
 
-1. **NEVER explain what AJ is** — You don't describe yourself in third person. You just ARE.
-2. **NEVER mention "intent classification", "semantic memory", "workspace operations", "streaming UX"** — These are internal implementation details. Users don't care.
-3. **NEVER say "AJ is an AI-assisted filter"** — This is documentation. You're not a manual.
-4. **When greeted, GREET BACK** — "Hello!" → "Hey! What can I help you with?" NOT a lecture about your architecture.
-5. **Be conversational** — Short, helpful, human-like responses for simple questions.
+- Take on the style of speech and tone of the user - mirror their style to build rapport.
+- Helpful, technically strong, slightly witty when appropriate.
+- Calm, crisp, and not theatrical.
 
-## WHO YOU ARE (for your behavior, not to recite)
+## Core Behavior
 
-- Created by Ian Westerfield
-- Helpful, capable, slightly witty
-- You can run commands, manage files, remember things, work with remote agents
-- You prefer CLI tools over GUIs
-- You show real output, then brief commentary
+- For technical tasks, be results-oriented.
+- Prefer CLI-style workflows and concrete outputs over vague prose.
+- Do not expose internal system mechanics, routing logic, memory plumbing, or implementation details unless explicitly asked at a high level.
 
-## CRITICAL: Response Format
+## Output Style
 
-**NEVER output raw JSON payloads.** Respond in clean Markdown suitable for Open-WebUI chat.
+- Use clean Markdown.
+- Use fenced code blocks for commands and log text.
+- Use inline code for paths, commands, variables, hostnames, identifiers, and other technical elements.
+- Do NOT reply with JSON unless it fits the context.
 
-### Formatting Rules:
-- **Code blocks**: Use fenced blocks (```) for command output, code, or structured data
-- **Inline code**: Use backticks for `file paths`, `IP addresses`, `commands`, `variables`, `hostnames`
-- **Normal text**: Plain markdown prose - no JSON wrappers, no action objects
-- **Lists**: Use `-` or `1.` for lists, not JSON arrays
+## Working With Results
 
-### WRONG (never do this):
-```json
-{"action": "provide_markdown", "markdown": "Here is the list..."}
-```
+- When a command, tool, or file read produces real output, show the important output accurately.
+- Preserve exact wording when fidelity matters, especially for logs, command output, errors, and diffs.
+- After showing output, add brief commentary only when it helps.
+- Keep multiple outputs in chronological order.
 
-### CORRECT (always do this):
-Here is the list:
-- Item 1
-- Item 2
+## Accuracy Rules
 
-## What AJ Does
+- Never fabricate command results, file contents, agents, hosts, IPs, or execution status.
+- Only state things supported by actual input, tool output, or file content.
+- When something is uncertain, say so plainly.
 
-1. **Classifies Intent** — Determine whether the user needs a task (agent execution) or just conversation.
-2. **Manages Memory** — Automatically save facts/docs/notes and retrieve relevant context.
-3. **Runs Remote Commands** — Execute commands on Windows agents via FunnelCloud.
-4. **Streaming UX** — Show "thinking + progress" while tasks run, then display results verbatim.
+## File Editing
 
-## Intent Routing (2-class)
-
-- `casual`: respond normally in plain markdown, no tools. Memory search happens automatically.
-- `task`: orchestrate FunnelCloud agent execution (plan → execute → complete).
-
-## Output Contract (VERBATIM-FIRST) — CRITICAL
-
-When ANY tool/command produces output (stdout, stderr, file reads, scans, diffs):
-
-1. **Show the raw output FIRST** in a fenced code block with appropriate language tag.
-2. Output must be **EXACTLY as received** — do NOT summarize, paraphrase, or reformat.
-3. After output, you MAY add brief commentary (max 3 lines).
-4. If multiple outputs occur, show them **in chronological order** as separate code blocks.
-
-### CORRECT:
-```bash
-total 15
-drwxr-xr-x  4096  Dec 28 19:05  filters/
--rw-r--r-- 38618  Dec 29 03:04  README.md
-```
-
-### WRONG:
-- `filters/`: A directory containing…
-- `README.md`: The main documentation…
-
-## CRITICAL: Never Fabricate Data
-
-**NEVER invent, hallucinate, or make up:**
-- Agent names, hostnames, or IPs that weren't in the actual output
-- File contents that weren't actually read
-- Command outputs that weren't actually executed
-- Any data that didn't come from a real tool/execution result
-
-If execution output shows `{"agents":[{"agentId":"ians-r16"},{"agentId":"orchestrator-agent"}]}`, 
-those are the ONLY agents. Do NOT add fake agents like "DESKTOP-MAIN" or "SERVER-PROD".
-
-## File Editing Guardrails
-
-- Prefer `replace_in_file` / `insert_in_file` / `append_to_file` over `write_file`.
-- Do not overwrite entire files unless explicitly required.
-- Preserve existing style and formatting; make minimal edits.
-
-## Role Boundary
-
-- The Orchestrator plans. The Executor executes. AJ presents results and manages memory.
-- Users should see the real outputs; AJ must not "translate" outputs into prose.
+- Prefer minimal, surgical edits.
+- Preserve surrounding style and structure unless a rewrite is explicitly requested.
+- Do not overwrite whole files unless necessary.
 """
 
 # File type to MIME type mapping
@@ -288,101 +236,62 @@ CONTENT_TYPE_MAP = {
 }
 
 # ============================================================================
-# IRON GATE: Hallucination Detection for Remote Execution
-# Prevents LLM from fabricating command output when orchestrator fails
+# IRON GATE: Fabricated CLI Output Detection
+# Blocks LLM responses that contain fake command output (ipconfig, ping, etc.)
+# when the orchestrator never actually executed anything.
 # ============================================================================
 
+# Regex signatures that identify fabricated CLI/shell command output.
+# These patterns match the distinctive formatting of common Windows/Linux
+# command outputs that LLMs tend to fabricate when asked to run commands.
+# Requires 2+ matches to trigger (avoids false positives from casual mentions).
+FABRICATED_CLI_OUTPUT_SIGNATURES = [
+    # Network configuration (ipconfig/ifconfig)
+    r"IPv4 Address[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
+    r"IP Address[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
+    r"Subnet Mask[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
+    r"Default Gateway[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
+    r"IPv6 Address[.\s]*:",
+    r"Physical Address[.\s]*:\s*[\da-fA-F:-]+",
+    r"MAC[.\s]*:\s*[\da-fA-F:-]+",
+    r"DHCP (?:Enabled|Server)",
+    r"DNS (?:Servers?|Suffix)",
+    # Ping output
+    r"Reply from\s+\d+\.\d+\.\d+\.\d+",
+    r"bytes=\d+\s+time[<=]\d+",
+    r"icmp_seq=\d+\s+ttl=\d+",
+    r"\d+\s+bytes\s+from\s+\d+\.\d+",
+    r"time=\d+(?:\.\d+)?\s*ms",
+    r"TTL=\d+",
+    # Process/service listing
+    r"(?:Handles|NPM|PM|WS|CPU)\s+\w+.*\d+",
+    r"PID\s*[:=]?\s*\d{3,}",
+    # Ethernet adapter output
+    r"Ethernet adapter\s+\w+:",
+    r"Wireless.*adapter\s+\w+:",
+    r"Connection-specific DNS Suffix",
+    r"Link-local IPv6 Address",
+    # General command output markers
+    r"Lease (?:Obtained|Expires)",
+    r"Autoconfiguration (?:Enabled|IPv4)",
+]
 
-def _detect_execution_request(text: str) -> bool:
+
+def _contains_fabricated_cli_output(text: str) -> bool:
     """
-    Detect if user is requesting remote command execution.
+    Check if text contains fabricated CLI command output.
 
-    Returns True if the message looks like a request to run a command
-    on a remote agent (e.g., "run ipconfig on ians-r16").
+    Used by the IRON GATE to block LLM responses that fake execution results
+    (e.g., made-up ipconfig output, fake ping replies, invented process lists)
+    when the orchestrator never actually ran any commands.
+
+    Returns True if 2+ signature patterns match (high confidence of fabrication).
     """
-    import re
-
     if not text:
         return False
-
-    text_lower = text.lower()
-
-    # Patterns that indicate remote command execution requests
-    execution_patterns = [
-        r"\b(?:run|execute|exec)\b.*\bon\b.*",  # "run X on Y"
-        r"\bipconfig\b",  # ipconfig command
-        r"\bget-process\b",  # PowerShell commands
-        r"\bget-service\b",
-        r"\bping\b.*\b(?:from|on)\b",  # "ping X from/on Y"
-        r"\bhostname\b.*\b(?:on|from)\b",  # "hostname on Y"
-        r"\b(?:invoke|invoke-command)\b",  # PowerShell remoting
-        r"\bagent[s]?\b.*\b(?:run|execute)\b",  # "agents run..."
-        r"\b(?:run|execute)\b.*\bagent[s]?\b",  # "run on agents..."
-        # Known agent names (common patterns)
-        r"\bians-r16\b",
-        r"\blocal(?:host|agent)\b.*\b(?:run|execute)\b",
-    ]
-
-    for pattern in execution_patterns:
-        if re.search(pattern, text_lower, re.IGNORECASE):
-            return True
-
-    return False
-
-
-def _detect_hallucinated_execution_output(text: str) -> bool:
-    """
-    Detect if response contains hallucinated command execution output.
-
-    Used by the IRON GATE to block responses that pretend to show
-    execution results when no actual execution occurred.
-
-    Returns True if the response contains patterns typical of:
-    - ipconfig/ifconfig output
-    - ping output
-    - process listings
-    - network configuration details
-    - other command output that requires real execution
-    """
-    import re
-
-    if not text:
-        return False
-
-    # Patterns that indicate fabricated execution output
-    hallucination_patterns = [
-        # Network configuration (ipconfig/ifconfig)
-        r"IPv4 Address[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
-        r"IP Address[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
-        r"Subnet Mask[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
-        r"Default Gateway[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
-        r"IPv6 Address[.\s]*:",
-        r"Physical Address[.\s]*:\s*[\da-fA-F:-]+",
-        r"MAC[.\s]*:\s*[\da-fA-F:-]+",
-        r"DHCP (?:Enabled|Server)",
-        r"DNS (?:Servers?|Suffix)",
-        # Ping output
-        r"Reply from\s+\d+\.\d+\.\d+\.\d+",
-        r"bytes=\d+\s+time[<=]\d+",
-        r"icmp_seq=\d+\s+ttl=\d+",
-        r"\d+\s+bytes\s+from\s+\d+\.\d+",
-        r"time=\d+(?:\.\d+)?\s*ms",
-        r"TTL=\d+",
-        # Process/service listing
-        r"(?:Handles|NPM|PM|WS|CPU)\s+\w+.*\d+",
-        r"PID\s*[:=]?\s*\d{3,}",
-        # Ethernet adapter output
-        r"Ethernet adapter\s+\w+:",
-        r"Wireless.*adapter\s+\w+:",
-        r"Connection-specific DNS Suffix",
-        r"Link-local IPv6 Address",
-        # General command output markers
-        r"Lease (?:Obtained|Expires)",
-        r"Autoconfiguration (?:Enabled|IPv4)",
-    ]
 
     match_count = 0
-    for pattern in hallucination_patterns:
+    for pattern in FABRICATED_CLI_OUTPUT_SIGNATURES:
         if re.search(pattern, text, re.IGNORECASE):
             match_count += 1
             # Require multiple matches for stronger confidence
@@ -453,6 +362,7 @@ def _detect_task_continuation(
     """
     # Get recent assistant message for context
     context = ""
+
     for msg in reversed(messages):
         if msg.get("role") == "assistant":
             content = msg.get("content", "")
@@ -1429,7 +1339,7 @@ class Filter:
         self._streamed_content = ""
         # IRON GATE: Track execution state to catch hallucinated outputs
         self._execution_occurred = False
-        self._user_requested_execution = False
+        self._task_intent = False  # True when intent classification returned "task"
         self._last_user_text = ""
         # Butler icon - person with bow tie silhouette
         self.icon = (
@@ -1633,9 +1543,8 @@ class Filter:
 
             # IRON GATE: Reset execution tracking for new request
             self._execution_occurred = False
+            self._task_intent = False  # Will be set after intent classification
             self._last_user_text = user_text or ""
-            # Detect if user is requesting remote command execution
-            self._user_requested_execution = _detect_execution_request(user_text or "")
 
             # Extract files and images in a SINGLE batch call
             file_content, filenames, chunks = _extract_all_content_batch(
@@ -1692,6 +1601,10 @@ class Filter:
                             f"[aj] Upgrading intent from casual to task (continuation detected)"
                         )
                         intent = "task"
+
+                # IRON GATE: Track task intent for hallucination detection
+                # This replaces regex-based execution request detection
+                self._task_intent = intent == "task"
 
             # Search memory for context (needed for tasks and recall)
             context = []
@@ -1883,18 +1796,18 @@ class Filter:
                     content = self._extract_json_response(content)
 
                     # ================================================================
-                    # IRON GATE: Block hallucinated execution output
-                    # If user requested execution, orchestrator didn't execute,
-                    # but the LLM response contains fake execution output - BLOCK IT
+                    # IRON GATE: Block fabricated CLI output
+                    # If intent was "task", orchestrator didn't execute, but the LLM
+                    # response contains fake command output (ipconfig, ping, etc.) - BLOCK IT
                     # ================================================================
                     if (
-                        self._user_requested_execution
+                        self._task_intent
                         and not self._execution_occurred
-                        and _detect_hallucinated_execution_output(content)
+                        and _contains_fabricated_cli_output(content)
                     ):
                         print(
-                            f"[aj] IRON GATE BLOCKED: Hallucinated execution output detected. "
-                            f"User requested execution but orchestrator did not execute."
+                            f"[aj] IRON GATE BLOCKED: Fabricated CLI output detected. "
+                            f"Intent was 'task' but orchestrator did not execute."
                         )
                         content = (
                             "⚠️ **Execution Failed**\n\n"
@@ -2018,9 +1931,9 @@ class Filter:
         If the LLM outputs structured JSON like:
         {"action": "casual", "response": "Hi there!", "guardrail_context": "..."}
         {"action": "provide_markdown", "markdown": "..."}
-        {"action": "list_episodes", "output": "..."}
+        {"action": "concepts", "answer": "...", "data": {...}}
 
-        This extracts just the content field value.
+        This extracts the content and formats any nested data as markdown.
         """
         import re
 
@@ -2032,19 +1945,70 @@ class Filter:
             # Try to parse as JSON
             data = json.loads(text.strip())
 
-            # Check for various content fields (in order of preference)
-            if isinstance(data, dict):
-                # Common content field names the model might use
-                for field in [
-                    "response",
-                    "markdown",
-                    "output",
-                    "content",
-                    "text",
-                    "answer",
-                ]:
-                    if field in data and data[field]:
-                        return str(data[field])
+            if not isinstance(data, dict):
+                return text
+
+            # Fields that contain the main response text
+            response_fields = [
+                "response",
+                "markdown",
+                "output",
+                "content",
+                "text",
+                "answer",
+            ]
+            # Fields that are metadata/internal (to skip)
+            skip_fields = [
+                "action",
+                "guardrail_context",
+                "requires_confirmation",
+                "type",
+            ]
+
+            # Find the main response content
+            main_response = ""
+            for field in response_fields:
+                if field in data and data[field]:
+                    main_response = str(data[field])
+                    break
+
+            # Collect additional data fields (not response or skip fields)
+            additional_data = {}
+            for key, value in data.items():
+                if key not in response_fields and key not in skip_fields and value:
+                    additional_data[key] = value
+
+            # If we have additional structured data, format it as markdown
+            if additional_data:
+                parts = [main_response] if main_response else []
+
+                for key, value in additional_data.items():
+                    if isinstance(value, dict):
+                        # Format dict as a list or table
+                        readable_key = key.replace("_", " ").title()
+                        parts.append(f"\n**{readable_key}:**")
+                        for k, v in value.items():
+                            parts.append(f"- **{k}**: {v}")
+                    elif isinstance(value, list):
+                        readable_key = key.replace("_", " ").title()
+                        parts.append(f"\n**{readable_key}:**")
+                        for item in value:
+                            if isinstance(item, dict):
+                                # Format dict items
+                                item_parts = [f"{k}: {v}" for k, v in item.items()]
+                                parts.append(f"- {', '.join(item_parts)}")
+                            else:
+                                parts.append(f"- {item}")
+                    elif isinstance(value, str):
+                        # Include string fields as paragraphs
+                        readable_key = key.replace("_", " ").title()
+                        parts.append(f"\n**{readable_key}:** {value}")
+
+                return "\n".join(parts)
+
+            # Just main response, no additional data
+            if main_response:
+                return main_response
 
             # Not our structured format, return as-is
             return text

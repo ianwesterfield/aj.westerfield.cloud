@@ -114,7 +114,8 @@ sequenceDiagram
 | **Memory API**       | Semantic knowledge storage & recall                      | [Qdrant](https://github.com/qdrant/qdrant) vectors + embeddings                              | 8000  |
 | **Extractor API**    | Media processing (PDF, images, audio)                    | [LLaVA](https://github.com/haotian-liu/LLaVA) + [Whisper](https://github.com/openai/whisper) | 8002  |
 | **Qdrant**           | Vector database for semantic search                      | [Qdrant](https://github.com/qdrant/qdrant) (in-memory)                                       | 6333  |
-| **Ollama**           | Local LLM inference                                      | r1-distill-aj:32b-4k                                                                         | 11434 |
+| **Ollama**           | Local LLM inference                                      | r1-distill-aj:32b-8k (Q4_K_M, 8192 context)                                                  | 11434 |
+| **Ollama Facts**     | Fact extraction for memory                               | qwen2.5:1.5b                                                                                 | 11436 |
 
 ---
 
@@ -226,7 +227,16 @@ See [FunnelCloud/README.md](layers/agents/FunnelCloud/README.md) for full setup 
 - GPU (recommended for LLM inference)
 - Python 3.10+
 - Open-WebUI instance
-- 20-30GB VRAM (for full stack) or 2-3GB (with Llama7B)
+- 24GB+ VRAM recommended for 32B models (RTX 3090/4090, A100, H100)
+
+### VRAM Requirements
+
+| Model Configuration              | VRAM Usage | Notes                            |
+| -------------------------------- | ---------- | -------------------------------- |
+| `r1-distill-aj:32b-4k` (Q4_K_M)  | ~20 GB     | Safe headroom on 24GB GPU        |
+| `r1-distill-aj:32b-8k` (Q4_K_M)  | ~22 GB     | Tight fit, may spill ~9% to CPU  |
+| `aj-q8:latest` (Q8_0)            | ~34 GB     | Requires 48GB+ GPU               |
+| `qwen2.5:1.5b` (fact extraction) | ~1 GB      | Runs on separate Ollama instance |
 
 ### Quick Start
 
@@ -248,6 +258,48 @@ docker compose ps
 
 # 5. Deploy AJ filter to Open-WebUI
 ./scripts/deploy-filter.ps1
+```
+
+### Ollama Configuration
+
+AJ uses two Ollama instances to avoid model unloading conflicts:
+
+| Instance       | Port  | Model                  | Purpose                             |
+| -------------- | ----- | ---------------------- | ----------------------------------- |
+| `ollama`       | 11434 | `r1-distill-aj:32b-8k` | Main reasoning (32B, 8k context)    |
+| `ollama-facts` | 11436 | `qwen2.5:1.5b`         | Fact extraction (1.5B, lightweight) |
+
+**Key environment variables:**
+
+```yaml
+environment:
+  - OLLAMA_KEEP_ALIVE=-1 # Keep models loaded forever (never unload)
+  - OLLAMA_NUM_PARALLEL=1 # Only 1 concurrent request to prevent double-loads
+  - OLLAMA_MAX_LOADED_MODELS=1 # Maximum 1 model loaded at a time
+```
+
+**Model quantization (GGUF format):**
+
+| Quantization | Bits | Quality        | 32B Model Size |
+| ------------ | ---- | -------------- | -------------- |
+| Q2_K         | ~2.5 | Poor           | ~12 GB         |
+| Q3_K_M       | ~3.5 | Fair           | ~15 GB         |
+| **Q4_K_M**   | ~4.5 | Good (default) | ~19 GB         |
+| Q5_K_M       | ~5.5 | Very Good      | ~22 GB         |
+| Q6_K         | ~6.5 | Excellent      | ~26 GB         |
+| Q8_0         | 8    | Near-lossless  | ~34 GB         |
+
+**Healthcheck:** The Ollama container runs a test prompt on startup to ensure the model is loaded before marking healthy. The `ollama/ollama:latest` image doesn't include `curl`, so healthchecks use the `ollama` CLI directly.
+
+**Switching models:**
+
+```bash
+# Available r1-distill-aj variants
+ollama list | grep r1-distill
+# r1-distill-aj:32b-2k   (2048 context)
+# r1-distill-aj:32b-4k   (4096 context)
+# r1-distill-aj:32b-8k   (8192 context)
+# r1-distill-aj:32b      (default)
 ```
 
 ### Auto-Start on Windows Boot
@@ -460,6 +512,32 @@ docker network inspect webtools_network
 # Rebuild images
 docker compose up -d --build
 ```
+
+### Ollama model not loading or keeps unloading?
+
+```powershell
+# Check container health status
+wsl docker ps --filter "name=ollama" --format "table {{.Names}}\t{{.Status}}"
+
+# Verify model is loaded
+wsl docker exec ollama ollama ps
+# Should show: r1-distill-aj:32b-8k ... Forever
+
+# Check VRAM usage
+wsl nvidia-smi --query-gpu=memory.used,memory.total --format=csv
+
+# Manually load model with keep-alive
+wsl docker exec ollama sh -c "echo 'ping' | ollama run r1-distill-aj:32b-8k"
+
+# Check healthcheck logs
+wsl docker inspect ollama --format "{{range .State.Health.Log}}ExitCode:{{.ExitCode}} Output:{{.Output}}---{{end}}"
+```
+
+**Common issues:**
+
+- **"curl: not found"** in healthcheck: The `ollama/ollama:latest` image doesn't include curl. Use `ollama list` or `ollama run` instead.
+- **Model unloads after prompt**: Ensure `OLLAMA_KEEP_ALIVE=-1` is set in docker-compose.yaml.
+- **9%/91% CPU/GPU split**: Model partially offloaded to CPU due to VRAM pressure. Consider using 4k context variant.
 
 ### Intent classifier not working?
 

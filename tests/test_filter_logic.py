@@ -297,69 +297,50 @@ class TestContentTypeMapping:
 
 
 # ============================================================================
-# IRON GATE Tests - Hallucinated Execution Output Detection
+# IRON GATE Tests - Fabricated CLI Output Detection
 # ============================================================================
+# Note: Execution request detection is now handled by intent classification
+# in the orchestrator (task vs casual). These tests focus on detecting
+# fabricated command-line output patterns (ipconfig, ping, process lists, etc.)
 
-# Import the detection functions
+# Import the detection function and signatures
 try:
     from aj_filter import (
-        _detect_execution_request,
-        _detect_hallucinated_execution_output,
+        _contains_fabricated_cli_output,
+        FABRICATED_CLI_OUTPUT_SIGNATURES,
     )
 except ImportError:
-    # Create mock functions for testing patterns
+    # Create mock function for testing patterns
     import re
 
-    def _detect_execution_request(text: str) -> bool:
-        """Detect if user is requesting remote command execution."""
-        if not text:
-            return False
-        text_lower = text.lower()
-        execution_patterns = [
-            r"\b(?:run|execute|exec)\b.*\bon\b.*",
-            r"\bipconfig\b",
-            r"\bget-process\b",
-            r"\bget-service\b",
-            r"\bping\b.*\b(?:from|on)\b",
-            r"\bhostname\b.*\b(?:on|from)\b",
-            r"\b(?:invoke|invoke-command)\b",
-            r"\bagent[s]?\b.*\b(?:run|execute)\b",
-            r"\b(?:run|execute)\b.*\bagent[s]?\b",
-            r"\bians-r16\b",
-            r"\blocal(?:host|agent)\b.*\b(?:run|execute)\b",
-        ]
-        for pattern in execution_patterns:
-            if re.search(pattern, text_lower, re.IGNORECASE):
-                return True
-        return False
+    FABRICATED_CLI_OUTPUT_SIGNATURES = [
+        r"IPv4 Address[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
+        r"IP Address[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
+        r"Subnet Mask[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
+        r"Default Gateway[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
+        r"IPv6 Address[.\s]*:",
+        r"Physical Address[.\s]*:\s*[\da-fA-F:-]+",
+        r"DHCP (?:Enabled|Server)",
+        r"DNS (?:Servers?|Suffix)",
+        r"Reply from\s+\d+\.\d+\.\d+\.\d+",
+        r"bytes=\d+\s+time[<=]\d+",
+        r"icmp_seq=\d+\s+ttl=\d+",
+        r"time=\d+(?:\.\d+)?\s*ms",
+        r"TTL=\d+",
+        r"(?:Handles|NPM|PM|WS|CPU)\s+\w+.*\d+",
+        r"PID\s*[:=]?\s*\d{3,}",
+        r"Ethernet adapter\s+\w+:",
+        r"Connection-specific DNS Suffix",
+        r"Link-local IPv6 Address",
+        r"Lease (?:Obtained|Expires)",
+    ]
 
-    def _detect_hallucinated_execution_output(text: str) -> bool:
-        """Detect if response contains hallucinated command execution output."""
+    def _contains_fabricated_cli_output(text: str) -> bool:
+        """Check if text contains fabricated CLI command output."""
         if not text:
             return False
-        hallucination_patterns = [
-            r"IPv4 Address[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
-            r"IP Address[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
-            r"Subnet Mask[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
-            r"Default Gateway[.\s]*:\s*\d+\.\d+\.\d+\.\d+",
-            r"IPv6 Address[.\s]*:",
-            r"Physical Address[.\s]*:\s*[\da-fA-F:-]+",
-            r"DHCP (?:Enabled|Server)",
-            r"DNS (?:Servers?|Suffix)",
-            r"Reply from\s+\d+\.\d+\.\d+\.\d+",
-            r"bytes=\d+\s+time[<=]\d+",
-            r"icmp_seq=\d+\s+ttl=\d+",
-            r"time=\d+(?:\.\d+)?\s*ms",
-            r"TTL=\d+",
-            r"(?:Handles|NPM|PM|WS|CPU)\s+\w+.*\d+",
-            r"PID\s*[:=]?\s*\d{3,}",
-            r"Ethernet adapter\s+\w+:",
-            r"Connection-specific DNS Suffix",
-            r"Link-local IPv6 Address",
-            r"Lease (?:Obtained|Expires)",
-        ]
         match_count = 0
-        for pattern in hallucination_patterns:
+        for pattern in FABRICATED_CLI_OUTPUT_SIGNATURES:
             if re.search(pattern, text, re.IGNORECASE):
                 match_count += 1
                 if match_count >= 2:
@@ -367,50 +348,11 @@ except ImportError:
         return False
 
 
-class TestIronGateExecutionDetection:
-    """Test detection of execution requests in user messages."""
-
-    def test_run_ipconfig_detected(self):
-        """'run ipconfig on ians-r16' should be detected as execution request."""
-        assert _detect_execution_request("run `ipconfig` on `ians-r16`") is True
-
-    def test_execute_command_on_agent(self):
-        """Generic 'execute X on Y' patterns should be detected."""
-        assert _detect_execution_request("execute hostname on server-01") is True
-        assert _detect_execution_request("run Get-Process on localhost") is True
-
-    def test_ipconfig_standalone(self):
-        """Just 'ipconfig' should be detected (implies execution)."""
-        assert _detect_execution_request("ipconfig") is True
-        assert _detect_execution_request("show me ipconfig output") is True
-
-    def test_ping_from_agent(self):
-        """'ping X from Y' should be detected."""
-        assert _detect_execution_request("ping google.com from ians-r16") is True
-
-    def test_known_agent_names(self):
-        """Known agent names like ians-r16 should trigger detection."""
-        assert _detect_execution_request("check ians-r16") is True
-
-    def test_casual_not_detected(self):
-        """Casual questions should not be detected as execution requests."""
-        assert (
-            _detect_execution_request("what is ipconfig used for?") is True
-        )  # Contains ipconfig
-        assert _detect_execution_request("hello how are you") is False
-        assert _detect_execution_request("tell me about python") is False
-
-    def test_empty_text(self):
-        """Empty text should not be detected."""
-        assert _detect_execution_request("") is False
-        assert _detect_execution_request(None) is False
-
-
-class TestIronGateHallucinationDetection:
-    """Test detection of hallucinated execution output in LLM responses."""
+class TestFabricatedCliOutputDetection:
+    """Test detection of fabricated CLI output in LLM responses."""
 
     def test_ipconfig_output_detected(self):
-        """Fake ipconfig output should be detected as hallucination."""
+        """Fake ipconfig output should be detected as fabricated."""
         fake_output = """
         Windows IP Configuration
         
@@ -418,21 +360,21 @@ class TestIronGateHallucinationDetection:
         Subnet Mask . . . . . . . . . : 255.255.255.0
         Default Gateway . . . . . . . : 192.168.1.1
         """
-        assert _detect_hallucinated_execution_output(fake_output) is True
+        assert _contains_fabricated_cli_output(fake_output) is True
 
     def test_ping_output_detected(self):
-        """Fake ping output should be detected as hallucination."""
+        """Fake ping output should be detected as fabricated."""
         fake_output = """
         Reply from 216.58.194.174: bytes=32 time=29ms TTL=57
         """
-        assert _detect_hallucinated_execution_output(fake_output) is True
+        assert _contains_fabricated_cli_output(fake_output) is True
 
     def test_linux_ping_detected(self):
         """Linux-style ping output should be detected."""
         fake_output = """
         64 bytes from lb-in-f174.1e100.net: icmp_seq=1 ttl=57 time=29.7 ms
         """
-        assert _detect_hallucinated_execution_output(fake_output) is True
+        assert _contains_fabricated_cli_output(fake_output) is True
 
     def test_process_listing_detected(self):
         """Fake Get-Process output with multiple indicators should be detected."""
@@ -442,7 +384,7 @@ class TestIronGateHallucinationDetection:
         PID: 23416
         Reply from 192.168.1.1: bytes=32 time<1ms TTL=128
         """
-        assert _detect_hallucinated_execution_output(fake_output) is True
+        assert _contains_fabricated_cli_output(fake_output) is True
 
     def test_ethernet_adapter_detected(self):
         """Ethernet adapter info should be detected."""
@@ -451,12 +393,12 @@ class TestIronGateHallucinationDetection:
            Connection-specific DNS Suffix  . : home.local
            Link-local IPv6 Address . . . . . : fe80::1234:5678:abcd:ef01
         """
-        assert _detect_hallucinated_execution_output(fake_output) is True
+        assert _contains_fabricated_cli_output(fake_output) is True
 
     def test_normal_response_not_detected(self):
         """Normal conversational responses should not be detected."""
         normal = "I'll help you run that command. Let me connect to the agent."
-        assert _detect_hallucinated_execution_output(normal) is False
+        assert _contains_fabricated_cli_output(normal) is False
 
     def test_explanation_not_detected(self):
         """Explanations about commands should not be detected."""
@@ -464,7 +406,7 @@ class TestIronGateHallucinationDetection:
         The ipconfig command on Windows displays network configuration.
         It's similar to ifconfig on Linux systems.
         """
-        assert _detect_hallucinated_execution_output(explanation) is False
+        assert _contains_fabricated_cli_output(explanation) is False
 
     def test_error_message_not_detected(self):
         """Error messages should not be detected."""
@@ -474,44 +416,48 @@ class TestIronGateHallucinationDetection:
         I was unable to execute the command on the remote agent.
         The orchestrator service may be unavailable.
         """
-        assert _detect_hallucinated_execution_output(error) is False
+        assert _contains_fabricated_cli_output(error) is False
 
     def test_single_ip_not_enough(self):
         """A single IP mention shouldn't trigger (needs 2+ patterns)."""
         single_ip = "The server is at 192.168.1.1"
-        assert _detect_hallucinated_execution_output(single_ip) is False
+        assert _contains_fabricated_cli_output(single_ip) is False
 
     def test_empty_text(self):
         """Empty text should not be detected."""
-        assert _detect_hallucinated_execution_output("") is False
-        assert _detect_hallucinated_execution_output(None) is False
+        assert _contains_fabricated_cli_output("") is False
+        assert _contains_fabricated_cli_output(None) is False
 
 
 class TestIronGateIntegration:
-    """Test the complete iron gate logic flow."""
+    """Test the complete IRON GATE logic flow.
+
+    Note: `task_intent` is now determined by intent classification (task vs casual)
+    rather than regex-based execution request detection.
+    """
 
     def test_gate_blocks_when_all_conditions_met(self):
-        """Iron gate should block when: execution requested, not executed, hallucinated output."""
+        """Iron gate should block when: task intent, not executed, fabricated output."""
         # Simulate the conditions
-        user_requested_execution = True
+        task_intent = True  # Intent classified as "task"
         execution_occurred = False
 
-        hallucinated_response = """
+        fabricated_response = """
         IPv4 Address. . . . . . . . . : 192.168.1.100
         Subnet Mask . . . . . . . . . : 255.255.255.0
         """
 
         should_block = (
-            user_requested_execution
+            task_intent
             and not execution_occurred
-            and _detect_hallucinated_execution_output(hallucinated_response)
+            and _contains_fabricated_cli_output(fabricated_response)
         )
 
         assert should_block is True
 
     def test_gate_allows_when_execution_occurred(self):
         """Iron gate should allow if execution actually occurred."""
-        user_requested_execution = True
+        task_intent = True
         execution_occurred = True  # Execution happened
 
         real_output = """
@@ -520,24 +466,24 @@ class TestIronGateIntegration:
         """
 
         should_block = (
-            user_requested_execution
+            task_intent
             and not execution_occurred
-            and _detect_hallucinated_execution_output(real_output)
+            and _contains_fabricated_cli_output(real_output)
         )
 
         assert should_block is False  # Should NOT block
 
     def test_gate_allows_normal_conversation(self):
-        """Iron gate should allow normal conversation."""
-        user_requested_execution = False
+        """Iron gate should allow normal conversation (casual intent)."""
+        task_intent = False  # Intent classified as "casual"
         execution_occurred = False
 
         response = "Hello! How can I help you today?"
 
         should_block = (
-            user_requested_execution
+            task_intent
             and not execution_occurred
-            and _detect_hallucinated_execution_output(response)
+            and _contains_fabricated_cli_output(response)
         )
 
         assert should_block is False
