@@ -912,8 +912,8 @@ class TestHallucinationPrevention:
             if not agents_found and not remote_events:
                 # ...then the final answer should NOT contain fake file listings
                 if final_answer:
-                    # Hallucination indicators - made-up file paths or directory contents
-                    hallucination_patterns = [
+                    # Patterns indicating fabricated file system output
+                    fabricated_filesystem_patterns = [
                         r"C:\\Windows\\[a-zA-Z]+\.exe",  # Made-up executables
                         r"C:\\Windows\\[a-zA-Z]+\.dll",  # Made-up DLLs
                         r"\d+,?\d*\s*(KB|MB|GB|bytes)",  # Made-up file sizes
@@ -926,10 +926,10 @@ class TestHallucinationPrevention:
 
                     import re
 
-                    for pattern in hallucination_patterns:
+                    for pattern in fabricated_filesystem_patterns:
                         if re.search(pattern, final_answer, re.IGNORECASE):
                             pytest.fail(
-                                f"HALLUCINATION DETECTED: Model made up fake results when no agent was available.\n"
+                                f"FABRICATED OUTPUT DETECTED: Model made up fake results when no agent was available.\n"
                                 f"Pattern matched: {pattern}\n"
                                 f"Answer snippet: {final_answer[:500]}"
                             )

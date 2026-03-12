@@ -17,8 +17,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY orchestrator/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy shared module (needed for logging_utils)
+# Copy shared module (needed for logging_utils + wait-for-ollama)
 COPY shared /app/shared
+
+# Make wait-for-ollama executable and fix line endings
+RUN chmod +x /app/shared/wait-for-ollama.sh && \
+    sed -i 's/\r$//' /app/shared/wait-for-ollama.sh
 
 # Copy application code
 COPY orchestrator .

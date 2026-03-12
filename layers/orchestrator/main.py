@@ -37,15 +37,18 @@ from services.reasoning_engine import ReasoningEngine
 # Logging
 # ============================================================================
 
+
 # Configure only our namespace loggers, not the root logger
 # This prevents duplicate logs when uvicorn also configures logging
 def setup_logging():
     """Configure orchestrator logging without duplicating handlers."""
-    formatter = logging.Formatter("[%(asctime)s] %(name)s - %(levelname)s - %(message)s")
-    
+    formatter = logging.Formatter(
+        "[%(asctime)s] %(name)s - %(levelname)s - %(message)s"
+    )
+
     # Get our namespace logger
     orchestrator_logger = logging.getLogger("orchestrator")
-    
+
     # Only add handler if none exist (prevents duplicates on reload)
     if not orchestrator_logger.handlers:
         handler = logging.StreamHandler()
@@ -54,7 +57,7 @@ def setup_logging():
         orchestrator_logger.setLevel(logging.INFO)
         # Don't propagate to root logger (prevents duplicates)
         orchestrator_logger.propagate = False
-    
+
     # Silence noisy httpx logs
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
@@ -67,14 +70,17 @@ logger = logging.getLogger("orchestrator.main")
 # Lifespan (startup/shutdown)
 # ============================================================================
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     logger.info("Starting Orchestrator Service...")
-    
+
     # Pre-load the LLM model at startup so it's ready for requests
-    # This prevents cold-start delays during test execution
-    logger.info("Pre-loading LLM model (this may take a few minutes for large models)...")
+    # This prevents cold-start delays during the first task
+    logger.info(
+        "Pre-loading LLM model (this may take a few minutes for large models)..."
+    )
     try:
         reasoning_engine = ReasoningEngine()
         success = await reasoning_engine.warmup_model()
@@ -84,7 +90,7 @@ async def lifespan(app: FastAPI):
             logger.warning("⚠ LLM model pre-load returned false (may still work)")
     except Exception as e:
         logger.warning(f"⚠ LLM model pre-load failed (non-blocking): {e}")
-    
+
     logger.info("✓ Orchestrator ready on port 8004")
     yield
     logger.info("Shutting down Orchestrator Service...")
@@ -134,6 +140,7 @@ app.include_router(training_router)  # Training capture endpoints at /api/traini
 # ============================================================================
 # Health Check
 # ============================================================================
+
 
 @app.get("/health")
 async def health_check():

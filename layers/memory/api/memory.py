@@ -158,6 +158,32 @@ def _make_uuid(user_id: str, content_hash: str) -> int:
     return int(uuid_obj.int) % (2**63)  # Keep within 64-bit signed range
 
 
+def _normalize_fact_value(value: str) -> str:
+    """
+    Normalize a fact value for deduplication.
+    - Lowercase
+    - Strip leading articles (the, a, an)
+    - Strip extra whitespace
+    """
+    normalized = value.lower().strip()
+    # Strip leading articles
+    for article in ["the ", "a ", "an "]:
+        if normalized.startswith(article):
+            normalized = normalized[len(article) :]
+    # Collapse whitespace
+    normalized = " ".join(normalized.split())
+    return normalized
+
+
+def _make_fact_uuid(user_id: str, fact_type: str, fact_value: str) -> int:
+    """
+    Generate a deterministic ID for a fact based on type + normalized value.
+    """
+    normalized_value = _normalize_fact_value(fact_value)
+    fact_key = f"{fact_type.lower()}:{normalized_value}"
+    return _make_uuid(user_id, fact_key)
+
+
 @router.post("/save", status_code=200)
 def save_memory(req: SaveRequest) -> Dict[str, Any]:
     """
@@ -167,7 +193,7 @@ def save_memory(req: SaveRequest) -> Dict[str, Any]:
     been made by the upstream filter/orchestrator. This endpoint just:
     1. Extracts text and facts
     2. Embeds the content
-    3. Stores in Qdrant
+    3. Stores in Qdrant (one point per fact for deduplication)
 
     No classification, no searching - those happen elsewhere.
     """
@@ -183,9 +209,6 @@ def save_memory(req: SaveRequest) -> Dict[str, Any]:
             user_text = _get_text_content(user_content)
             break
 
-    # Embed the full conversation for storage
-    storage_vector = embed_messages(req.messages)
-
     if not user_text:
         user_text = "[empty message]"
 
@@ -199,50 +222,65 @@ def save_memory(req: SaveRequest) -> Dict[str, Any]:
             "reason": "Content too large (>100MB)",
         }
 
-    # Generate content hash for deduplication
-    content_hash = hashlib.md5(serialized_content.encode()).hexdigest()
-
     # Use pre-extracted facts from pragmatics layer (preferred) or fallback to local extraction
     facts = req.facts if req.facts else []
     if not facts:
         # Fallback: try local extraction (usually no-op)
         facts = extract_facts(user_text) if user_text else []
 
-    # Build payload - only store structured facts
-    payload: Dict[str, Any] = {
-        "user_id": req.user_id,
-    }
+    # If no facts, skip storage (we only store facts now, not raw text)
+    if not facts:
+        return {
+            "status": "skipped",
+            "point_id": None,
+            "content_hash": None,
+            "reason": "No facts to store",
+        }
 
-    # Add structured facts for retrieval (if any)
-    if facts:
-        payload["facts"] = format_facts_for_storage(facts)
-        print(f"[/save] Storing facts: {facts}")
-
-    # Add workspace context if provided
-    if req.workspace_context:
-        payload["workspace_context"] = req.workspace_context
-        print(
-            f"[/save] Including workspace context ({len(req.workspace_context)} chars)"
-        )
-
-    # Add source information
-    if req.source_type:
-        payload["source_type"] = req.source_type
-    if req.source_name:
-        payload["source_name"] = req.source_name
-
-    # Store in Qdrant
     client = _client()
-    point_id = _make_uuid(req.user_id, content_hash)
-    point = models.PointStruct(id=point_id, vector=storage_vector, payload=payload)
-    client.upsert(collection_name=collection_name, points=[point])
+    saved_points = []
 
-    print(f"[/save] user={req.user_id} hash={content_hash[:8]}")
+    # Store each fact as its own point for proper deduplication
+    for fact in facts:
+        fact_type = fact.get("type", "unknown")
+        fact_value = fact.get("value", "")
+
+        if not fact_value:
+            continue
+
+        # Generate embedding for this specific fact
+        fact_text = f"{fact_type}: {fact_value}"
+        fact_vector = embed(fact_text)
+
+        # Build payload for this fact
+        payload: Dict[str, Any] = {
+            "user_id": req.user_id,
+            "facts": fact_text,  # Single fact string for compatibility
+        }
+
+        # Add source information
+        if req.source_type:
+            payload["source_type"] = req.source_type
+        if req.source_name:
+            payload["source_name"] = req.source_name
+
+        # Generate deterministic ID based on type + normalized value
+        # This ensures "The Big Bang Theory" and "Big Bang Theory" get the same ID
+        point_id = _make_fact_uuid(req.user_id, fact_type, fact_value)
+
+        point = models.PointStruct(id=point_id, vector=fact_vector, payload=payload)
+        client.upsert(collection_name=collection_name, points=[point])
+
+        saved_points.append(point_id)
+        print(f"[/save] Stored fact: {fact_type}={fact_value} (id={point_id})")
+
+    print(f"[/save] user={req.user_id} saved {len(saved_points)} facts")
 
     return {
         "status": "saved",
-        "point_id": point_id,
-        "content_hash": content_hash,
+        "point_id": saved_points[0] if saved_points else None,
+        "content_hash": None,
+        "facts_saved": len(saved_points),
     }
 
 

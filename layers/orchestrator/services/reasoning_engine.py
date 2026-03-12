@@ -43,7 +43,7 @@ logger = logging.getLogger("orchestrator.reasoning")
 
 # Ollama configuration
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "r1-distill-aj:32b-4k")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "r1-distill-aj:32b-8k")
 
 # Pragmatics API for intent classification (DistilBERT on CPU)
 PRAGMATICS_API_URL = os.getenv("PRAGMATICS_API_URL", "http://pragmatics_api:8001")

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Orchestrator startup script
-# Starts embedded FunnelCloud agent as sidecar, then the orchestrator API
+# Waits for Ollama, starts FunnelCloud agent sidecar, then orchestrator API
 
 set -e
 
@@ -8,8 +8,16 @@ echo "=========================================="
 echo "Orchestrator Container Startup"
 echo "=========================================="
 
+# ====== Wait for Ollama Model ======
+# Block until the main Ollama instance has the model loaded and responding
+OLLAMA_URL="${OLLAMA_BASE_URL:-http://localhost:11434}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-r1-distill-aj:32b-8k}"
+
+echo "[0/3] Waiting for Ollama model..."
+/app/shared/wait-for-ollama.sh "$OLLAMA_URL" "$OLLAMA_MODEL" 600
+
 # Start FunnelCloud Agent (sidecar) in background
-echo "[1/2] Starting FunnelCloud Agent..."
+echo "[1/3] Starting FunnelCloud Agent..."
 cd /app/funnelcloud-agent
 
 # Set agent environment
@@ -45,6 +53,6 @@ for i in {1..5}; do
 done
 
 # Start Orchestrator API (foreground)
-echo "[2/2] Starting Orchestrator API..."
+echo "[2/3] Starting Orchestrator API..."
 cd /app
 exec uvicorn main:app --host 0.0.0.0 --port 8004
