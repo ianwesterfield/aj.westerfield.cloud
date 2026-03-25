@@ -1,237 +1,81 @@
 """
-LLM-based Fact Extractor
+Memory Summarizer
 
-Extracts structured facts from conversational text using Ollama LLM.
-No regex - pure LLM-based semantic extraction.
+Summarizes what's worth remembering from conversational text using Ollama LLM.
+Instead of extracting structured key:value facts, this creates a concise summary
+of personal information, preferences, and context worth preserving.
 
-Flexible schema: the LLM decides WHAT to extract and HOW to categorize it.
-Each fact has:
-  - type: semantic category (e.g., "firstName", "spouse", "preference", "terminology")
-  - value: the actual fact content
-  - reason: why this is worth saving (for debugging/transparency)
+This is a middle ground between:
+  - Full prompt saving (too much noise)
+  - Structured fact extraction (too brittle, loses context)
 """
 
 import os
-import json
 import logging
 from typing import List, Dict, Any, Optional
 
 import httpx
 
-logger = logging.getLogger("pragmatics.fact_extractor")
+logger = logging.getLogger("pragmatics.memory_summarizer")
 
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "ollama")
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "localhost")
 OLLAMA_PORT = os.getenv("OLLAMA_PORT", "11434")
-OLLAMA_MODEL = os.getenv("FACT_EXTRACTION_MODEL", "qwen2.5:1.5b")
+# Uses the main model - no separate fact extraction model needed
 
-EXTRACTION_PROMPT = """You are a fact extractor. Identify PERSONAL PREFERENCES and IDENTITY FACTS worth remembering from this message.
+SUMMARIZE_PROMPT = """Summarize what's worth REMEMBERING about this user from their message.
 
-For each fact, provide:
-- "type": A semantic category name (camelCase). Choose the MOST SPECIFIC type that describes this fact.
-  Examples: firstName, lastName, spouse, child, boss, favoriteColor, prefersDarkMode, terminology, hometown, occupation, birthday
-- "value": The actual fact content
-- "reason": Brief explanation of why this is worth saving
+Focus ONLY on:
+- Personal identity (name, location, job)
+- Relationships (spouse, family, pets)
+- Preferences and opinions ("I prefer...", "I like...", "I hate...")
+- Custom terminology ("when I say X, I mean Y")
+- Important context for future conversations
 
-CRITICAL GUIDELINES:
-- ONLY extract facts that indicate PREFERENCES, IDENTITY, or RELATIONSHIPS
-- DO NOT extract casual mentions or references (e.g., "I was watching X" is NOT a favorite show)
-- DO NOT extract topics from QUESTIONS (e.g., "How many episodes in Big Bang Theory?" reveals nothing about the user)
-- Look for signal words: "favorite", "love", "prefer", "hate", "always", "my", "I am", "I work as"
-- Use specific types: "spouse" not "relationship", "favoriteColor" not "preference"
-- For terminology definitions ("when I say X, I mean Y"), use type "terminology" with value "X = Y"
-- If nothing indicates a preference or identity fact, return empty array
+DO NOT summarize:
+- General questions (e.g., "What is the capital of France?")
+- Casual mentions without preference signals
+- Technical requests without personal info
 
-OUTPUT FORMAT (JSON array):
-{{"facts": [
-  {{"type": "firstName", "value": "Ian", "reason": "User introduced their first name"}},
-  {{"type": "spouse", "value": "Sarah", "reason": "User mentioned wife's name"}}
-]}}
+If nothing is worth remembering, respond with exactly: NOTHING_TO_REMEMBER
 
-EXAMPLES:
-
-Input: "My name is Ian, I prefer dark mode. When I say agents I mean FunnelCloud Agents."
-Output: {{"facts": [
-  {{"type": "firstName", "value": "Ian", "reason": "User introduced themselves"}},
-  {{"type": "prefersDarkMode", "value": "true", "reason": "Stated UI preference"}},
-  {{"type": "terminology", "value": "agents = FunnelCloud Agents", "reason": "Explicit definition"}}
-]}}
-
-Input: "My wife Sarah and I live in Austin with our dog Max"
-Output: {{"facts": [
-  {{"type": "spouse", "value": "Sarah", "reason": "Named their wife"}},
-  {{"type": "city", "value": "Austin", "reason": "Where they live"}},
-  {{"type": "pet", "value": "Max (dog)", "reason": "Named their pet"}}
-]}}
-
-Input: "I was watching Big Bang Theory last night"
-Output: {{"facts": []}}
-
-Input: "How many episodes are in each season of Big Bang Theory?"
-Output: {{"facts": []}}
-
-Input: "What is the capital of France?"
-Output: {{"facts": []}}
-
-Input: "Can you help me write a Python script?"
-Output: {{"facts": []}}
-
-Input: "Big Bang Theory is my favorite show!"
-Output: {{"facts": [
-  {{"type": "favoriteShow", "value": "Big Bang Theory", "reason": "Explicitly stated as favorite"}}
-]}}
-
-Input: "How are you today?"
-Output: {{"facts": []}}
-
-Input: "I work as a software engineer at Google"
-Output: {{"facts": [
-  {{"type": "occupation", "value": "software engineer", "reason": "Stated their job"}},
-  {{"type": "employer", "value": "Google", "reason": "Where they work"}}
-]}}
+Keep the summary concise - 1-3 sentences max.
 
 Message: {text}
 
-JSON:"""
+Summary:"""
 
 
-# Valid fact types - whitelist of acceptable semantic categories
-VALID_FACT_TYPES = {
-    # Identity
-    "firstname",
-    "lastname",
-    "fullname",
-    "name",
-    "nickname",
-    "preferredname",
-    "birthday",
-    "birthdate",
-    "age",
-    # Location
-    "city",
-    "hometown",
-    "location",
-    "country",
-    "state",
-    "address",
-    # Work
-    "occupation",
-    "job",
-    "employer",
-    "company",
-    "workplace",
-    "role",
-    "title",
-    # Relationships
-    "spouse",
-    "wife",
-    "husband",
-    "partner",
-    "child",
-    "parent",
-    "sibling",
-    "friend",
-    "pet",
-    "dog",
-    "cat",
-    # Preferences
-    "favoritecolor",
-    "favoriteshow",
-    "favoritebook",
-    "favoritemovie",
-    "favoritemusic",
-    "favoritefood",
-    "favoritegenre",
-    "favoriteartist",
-    "prefersdarkmode",
-    "preferslightmode",
-    "preference",
-    # Terminology
-    "terminology",
-    "alias",
-    "definition",
-    # Other personal
-    "hobby",
-    "interest",
-    "skill",
-    "language",
-    "education",
-    "school",
-}
-
-# Invalid value patterns - things that shouldn't be saved as facts
-GREETING_WORDS = {"hola", "hello", "hi", "hey", "howdy", "greetings", "yo", "sup"}
-RESPONSE_PREFIXES = {"yes", "no", "maybe", "sure", "ok", "okay", "yeah", "nah", "nope"}
-
-
-def _is_invalid_fact(fact_type: str, fact_value: str) -> bool:
+async def summarize_for_memory(
+    text: str, model: Optional[str] = None
+) -> Dict[str, Any]:
     """
-    Check if a fact should be rejected.
-
-    Returns True if the fact is invalid and should NOT be saved.
-    """
-    type_lower = fact_type.lower().replace("_", "").replace("-", "")
-    value_lower = fact_value.lower().strip()
-
-    # Reject if type is not in whitelist
-    if type_lower not in VALID_FACT_TYPES:
-        logger.debug(f"Reject: type '{fact_type}' not in whitelist")
-        return True
-
-    # Reject if value is just a number (e.g., "season: 1")
-    if value_lower.isdigit() or value_lower.replace(".", "").isdigit():
-        logger.debug(f"Reject: value is just a number '{fact_value}'")
-        return True
-
-    # Reject if value is a greeting word (e.g., "firstName: Hola!")
-    value_word = value_lower.rstrip("!?.").strip()
-    if value_word in GREETING_WORDS:
-        logger.debug(f"Reject: value is a greeting '{fact_value}'")
-        return True
-
-    # Reject if value starts with a response prefix (e.g., "collaboration: Yes, they...")
-    first_word = value_lower.split(",")[0].split()[0] if value_lower.split() else ""
-    if first_word in RESPONSE_PREFIXES:
-        logger.debug(f"Reject: value starts with response prefix '{fact_value}'")
-        return True
-
-    # Reject if value is too long (likely an answer, not a fact)
-    if len(fact_value) > 100:
-        logger.debug(f"Reject: value too long ({len(fact_value)} chars)")
-        return True
-
-    # Reject if value contains multiple sentences (likely an explanation)
-    if fact_value.count(". ") >= 2:
-        logger.debug(f"Reject: value contains multiple sentences")
-        return True
-
-    return False
-
-
-async def extract_facts_llm(text: str) -> Dict[str, Any]:
-    """
-    Extract structured facts from text using LLM.
+    Summarize what's worth remembering from text using LLM.
 
     Returns dict with:
-      - facts: list of {type, value, reason} dicts
+      - summary: string summary of what to remember (or None if nothing worth saving)
+      - facts: list with one {type: "memory", value: summary} for storage compatibility
 
-    The LLM decides what facts are worth saving and how to categorize them.
+    Uses the main Ollama model for better context understanding.
     """
-    if not text or len(text.strip()) < 5:
+    if not text or len(text.strip()) < 10:
         return _empty_result()
 
-    prompt = EXTRACTION_PROMPT.format(text=text)
+    # Use provided model or default to r1-distill-aj (main model)
+    ollama_model = model or "r1-distill-aj:32b-8k"
+
+    prompt = SUMMARIZE_PROMPT.format(text=text)
 
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
                 f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/generate",
                 json={
-                    "model": OLLAMA_MODEL,
+                    "model": ollama_model,
                     "prompt": prompt,
                     "stream": False,
                     "options": {
-                        "temperature": 0.0,  # Deterministic for structured output
-                        "num_predict": 200,  # Compact JSON, don't need much
+                        "temperature": 0.3,  # Some creativity for natural summaries
+                        "num_predict": 150,  # Short summaries only
                     },
                 },
             )
@@ -241,116 +85,84 @@ async def extract_facts_llm(text: str) -> Dict[str, Any]:
                 return _empty_result()
 
             result = response.json()
-            llm_response = result.get("response", "")
+            summary = result.get("response", "").strip()
 
-            # Parse JSON from response
-            return _parse_llm_response(llm_response)
+            # Check if LLM said nothing worth remembering
+            if not summary or "NOTHING_TO_REMEMBER" in summary.upper():
+                logger.debug(f"LLM found nothing to remember: {text[:50]}...")
+                return _empty_result()
+
+            # Clean up the summary
+            summary = _clean_summary(summary)
+
+            if not summary:
+                return _empty_result()
+
+            logger.info(f"Memory summary: {summary[:100]}...")
+
+            # Return in format compatible with existing storage
+            return {"summary": summary, "facts": [{"type": "memory", "value": summary}]}
 
     except httpx.TimeoutException:
-        logger.warning("Ollama timeout during fact extraction")
+        logger.warning("Ollama timeout during summarization")
         return _empty_result()
     except httpx.ConnectError:
         logger.warning(f"Cannot connect to Ollama at {OLLAMA_HOST}:{OLLAMA_PORT}")
         return _empty_result()
     except Exception as e:
-        logger.error(f"Fact extraction failed: {e}")
+        logger.error(f"Summarization failed: {e}")
         return _empty_result()
 
 
-def _parse_llm_response(response: str) -> Dict[str, Any]:
-    """Parse LLM JSON response with flexible fact array."""
-    response = response.strip()
+def _clean_summary(summary: str) -> str:
+    """Clean up LLM summary output."""
+    # Remove any markdown formatting
+    summary = summary.strip()
 
-    # Extract JSON from markdown code blocks if present
-    if "```json" in response:
-        start = response.find("```json") + 7
-        end = response.find("```", start)
-        if end > start:
-            response = response[start:end].strip()
-    elif "```" in response:
-        start = response.find("```") + 3
-        end = response.find("```", start)
-        if end > start:
-            response = response[start:end].strip()
+    # Remove leading "Summary:" if present
+    if summary.lower().startswith("summary:"):
+        summary = summary[8:].strip()
 
-    # Find JSON object boundaries
-    if "{" in response:
-        start = response.find("{")
-        end = response.rfind("}") + 1
-        if end > start:
-            response = response[start:end]
+    # Remove quotes if wrapped
+    if summary.startswith('"') and summary.endswith('"'):
+        summary = summary[1:-1].strip()
 
-    try:
-        data = json.loads(response)
-        facts_raw = data.get("facts", [])
+    # Reject if too short or generic
+    if len(summary) < 10:
+        return ""
 
-        if not isinstance(facts_raw, list):
-            return _empty_result()
+    # Reject if it's just a restatement of the prompt
+    generic_phrases = [
+        "nothing to remember",
+        "no personal information",
+        "general question",
+        "no preferences",
+    ]
+    if any(phrase in summary.lower() for phrase in generic_phrases):
+        return ""
 
-        # Minimal guard: reject obviously placeholder/template values
-        # that the model may echo from the prompt schema
-        placeholder_values = {"string", "value", "type", "null", "none", ""}
-
-        facts = []
-        for fact in facts_raw:
-            if not isinstance(fact, dict):
-                continue
-
-            fact_type = str(fact.get("type", "")).strip()
-            fact_value = str(fact.get("value", "")).strip()
-            fact_reason = str(fact.get("reason", "")).strip()
-
-            # Skip if type or value is empty or a placeholder
-            if not fact_type or not fact_value:
-                continue
-            if (
-                fact_type.lower() in placeholder_values
-                or fact_value.lower() in placeholder_values
-            ):
-                logger.debug(f"Rejected placeholder fact: {fact_type}={fact_value}")
-                continue
-
-            # POST-PROCESSING VALIDATION: Reject obviously bad facts
-            # The small model doesn't follow instructions well, so we filter here
-            if _is_invalid_fact(fact_type, fact_value):
-                logger.debug(f"Rejected invalid fact: {fact_type}={fact_value}")
-                continue
-
-            facts.append(
-                {
-                    "type": fact_type,
-                    "value": fact_value,
-                    "reason": fact_reason,
-                }
-            )
-
-        return {"facts": facts}
-
-    except json.JSONDecodeError as e:
-        logger.debug(f"Failed to parse LLM response as JSON: {e}")
-        logger.debug(f"Response was: {response[:200]}")
-        return _empty_result()
+    return summary
 
 
 def _empty_result() -> Dict[str, Any]:
-    """Return empty extraction result."""
-    return {"facts": []}
+    """Return empty result."""
+    return {"summary": None, "facts": []}
 
 
-def facts_to_storage_format(facts: Dict[str, Any]) -> List[Dict[str, str]]:
+# Compatibility aliases for existing code
+async def extract_facts_llm(text: str, model: Optional[str] = None) -> Dict[str, Any]:
     """
-    Convert LLM-extracted facts to storage format.
+    Extract facts from text - now uses summarization.
+
+    This is a compatibility wrapper - new code should use summarize_for_memory().
+    """
+    return await summarize_for_memory(text, model)
+
+
+def facts_to_storage_format(result: Dict[str, Any]) -> List[Dict[str, str]]:
+    """
+    Convert summarization result to storage format.
 
     Returns list of {type, value} dicts for Qdrant storage.
-    The LLM already provides semantic types - we just strip the reason field.
     """
-    result = []
-
-    for fact in facts.get("facts", []):
-        fact_type = fact.get("type", "").strip()
-        fact_value = fact.get("value", "").strip()
-
-        if fact_type and fact_value:
-            result.append({"type": fact_type, "value": fact_value})
-
-    return result
+    return result.get("facts", [])

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Pragmatics API startup script
-# Waits for Ollama facts model, then starts the API
+# Waits for Ollama main model, then starts the API
 
 set -e
 
@@ -8,15 +8,15 @@ echo "=========================================="
 echo "Pragmatics Container Startup"
 echo "=========================================="
 
-# ====== Wait for Ollama Facts Model ======
-# Block until ollama-facts instance has the extraction model loaded
+# ====== Wait for Ollama Main Model ======
+# Block until main Ollama instance is ready for memory summarization
 OLLAMA_HOST="${OLLAMA_HOST:-localhost}"
-OLLAMA_PORT="${OLLAMA_PORT:-11436}"
+OLLAMA_PORT="${OLLAMA_PORT:-11434}"
 OLLAMA_URL="http://${OLLAMA_HOST}:${OLLAMA_PORT}"
-FACT_MODEL="${FACT_EXTRACTION_MODEL:-qwen2.5:1.5b}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-r1-distill-aj:32b-8k}"
 
-echo "[1/2] Waiting for Ollama facts model..."
-/app/shared/wait-for-ollama.sh "$OLLAMA_URL" "$FACT_MODEL" 300
+echo "[1/2] Waiting for Ollama at $OLLAMA_URL with model $OLLAMA_MODEL..."
+/app/shared/wait-for-ollama.sh "$OLLAMA_URL" "$OLLAMA_MODEL" 300
 
 # Start Pragmatics API
 echo "[2/2] Starting Pragmatics API..."
