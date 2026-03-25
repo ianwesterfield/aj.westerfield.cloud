@@ -48,45 +48,6 @@ services:
       start_period: 120s
 
   # -------------------------------------------------
-  # Ollama — Fact Extraction (qwen2.5:1.5b ~1GB VRAM)
-  # Tiny model for structured JSON key/value extraction
-  # Used by pragmatics for memory fact extraction
-  # -------------------------------------------------
-  ollama-facts:
-    image: ollama/ollama:latest
-    container_name: ollama-facts
-    network_mode: host
-    environment:
-      - OLLAMA_HOST=0.0.0.0:11436
-      - OLLAMA_KEEP_ALIVE=-1
-      - OLLAMA_NUM_PARALLEL=4 # Tiny model, can handle more concurrency
-      - OLLAMA_MAX_LOADED_MODELS=1
-    volumes:
-      # Share models with main ollama (qwen2.5:1.5b needs to be pulled to main)
-      - /mnt/c/docker-data/ollama/.ollama:/root/.ollama
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    shm_size: 512m
-    restart: unless-stopped
-    # Pre-load qwen2.5:1.5b so fact extraction is instant
-    # Healthcheck actually loads the model (OLLAMA_KEEP_ALIVE=-1 keeps it loaded)
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "OLLAMA_HOST=0.0.0.0:11436 ollama run qwen2.5:1.5b 'hello' 2>&1 | grep -v 'Error' | head -c 50 || exit 1",
-        ]
-      interval: 60s
-      timeout: 120s
-      retries: 3
-      start_period: 60s
-
-  # -------------------------------------------------
   # Qdrant
   # -------------------------------------------------
   qdrant:
@@ -138,7 +99,7 @@ services:
   # -------------------------------------------------
   # Pragmatics API
   # Intent classification: DistilBERT (CPU, baked into image)
-  # Fact extraction: llama3.1:8b via dedicated ollama-facts
+  # Memory summarization: Uses main Ollama model
   # -------------------------------------------------
   pragmatics_api:
     build:
@@ -150,10 +111,10 @@ services:
     network_mode: host
     environment:
       - OLLAMA_HOST=localhost
-      - OLLAMA_PORT=11436
-      - FACT_EXTRACTION_MODEL=qwen2.5:1.5b
+      - OLLAMA_PORT=11434
+      # Uses same model as main Ollama for memory summarization
     depends_on:
-      ollama-facts:
+      ollama:
         condition: service_healthy
     restart: unless-stopped
 

@@ -1,8 +1,8 @@
 """
-End-to-End tests for the fact extractor.
+End-to-End tests for the memory summarizer.
 
-These tests hit the actual ollama-facts instance running in WSL.
-Requires ollama-facts container running on port 11436 with qwen2.5:1.5b model.
+These tests hit the actual ollama instance running in Docker.
+Requires ollama container running on port 11434 with r1-distill-aj model.
 """
 
 import os
@@ -18,15 +18,14 @@ sys.path.insert(
 
 # Override env vars before importing fact_extractor
 os.environ["OLLAMA_HOST"] = "localhost"
-os.environ["OLLAMA_PORT"] = "11436"
-os.environ["FACT_EXTRACTION_MODEL"] = "qwen2.5:1.5b"
+os.environ["OLLAMA_PORT"] = "11434"
 
-from services.fact_extractor import extract_facts_llm, facts_to_storage_format
+from services.fact_extractor import summarize_for_memory, facts_to_storage_format
 
 
-# Check if ollama-facts is reachable
+# Check if ollama is reachable
 def _ollama_reachable(
-    host: str = "localhost", port: int = 11436, timeout: float = 2.0
+    host: str = "localhost", port: int = 11434, timeout: float = 2.0
 ) -> bool:
     try:
         with socket.create_connection((host, port), timeout=timeout):
@@ -35,9 +34,9 @@ def _ollama_reachable(
         return False
 
 
-# Skip all tests if ollama-facts not available
+# Skip all tests if ollama not available
 pytestmark = pytest.mark.skipif(
-    not _ollama_reachable(), reason="ollama-facts not reachable at localhost:11436"
+    not _ollama_reachable(), reason="ollama not reachable at localhost:11434"
 )
 
 
@@ -49,235 +48,143 @@ def event_loop():
     loop.close()
 
 
-class TestExtractFactsE2E:
-    """E2E tests for extract_facts_llm against real Ollama."""
+class TestSummarizeForMemoryE2E:
+    """E2E tests for summarize_for_memory against real Ollama."""
 
     @pytest.mark.asyncio
-    async def test_extract_first_name(self):
-        """Extract first name from introduction."""
-        result = await extract_facts_llm("My name is Ian")
+    async def test_summarize_name(self):
+        """Summarize name introduction."""
+        result = await summarize_for_memory("My name is Ian")
 
+        # Should have a summary
+        assert result.get("summary") is not None
+        assert "Ian" in result["summary"]
+
+        # Should have facts for storage
         facts = result.get("facts", [])
-        types = [f["type"] for f in facts]
-
-        # Should extract firstName
-        assert any(
-            "name" in t.lower() or t == "firstName" for t in types
-        ), f"Expected name-related fact, got {types}"
-
-        # Value should be Ian
-        name_fact = next(
-            (
-                f
-                for f in facts
-                if "name" in f["type"].lower() or f["type"] == "firstName"
-            ),
-            None,
-        )
-        assert name_fact is not None
-        assert "Ian" in name_fact["value"]
+        assert len(facts) == 1
+        assert facts[0]["type"] == "memory"
+        assert "Ian" in facts[0]["value"]
 
     @pytest.mark.asyncio
-    async def test_extract_full_name(self):
-        """Extract full name with first and last."""
-        result = await extract_facts_llm("My name is Ian Westerfield")
+    async def test_summarize_spouse(self):
+        """Summarize spouse information."""
+        result = await summarize_for_memory("My wife's name is Sarah and she loves hiking")
 
-        facts = result.get("facts", [])
-        values = [f["value"] for f in facts]
+        summary = result.get("summary", "")
+        
+        # Should mention Sarah
+        assert "Sarah" in summary, f"Expected Sarah in summary, got: {summary}"
 
-        # Should extract Ian and/or Westerfield somewhere
-        all_values = " ".join(values)
+    @pytest.mark.asyncio
+    async def test_summarize_preference(self):
+        """Summarize user preference."""
+        result = await summarize_for_memory("I prefer dark mode for all my applications")
+
+        summary = result.get("summary", "")
+        
+        # Should mention dark mode
+        assert "dark" in summary.lower(), f"Expected dark mode mention, got: {summary}"
+
+    @pytest.mark.asyncio
+    async def test_summarize_terminology(self):
+        """Summarize custom terminology."""
+        result = await summarize_for_memory("When I say agents I mean FunnelCloud Agents")
+
+        summary = result.get("summary", "")
+        
+        # Should capture the terminology
         assert (
-            "Ian" in all_values or "Westerfield" in all_values
-        ), f"Expected name facts, got {values}"
+            "agent" in summary.lower() or "funnelcloud" in summary.lower()
+        ), f"Expected terminology, got: {summary}"
 
     @pytest.mark.asyncio
-    async def test_extract_spouse(self):
-        """Extract spouse/wife relationship."""
-        result = await extract_facts_llm("My wife's name is Sarah")
+    async def test_summarize_location(self):
+        """Summarize location information."""
+        result = await summarize_for_memory("I live in Austin, Texas")
 
-        facts = result.get("facts", [])
-
-        # Should have a relationship fact
-        assert len(facts) >= 1, f"Expected at least 1 fact, got {facts}"
-
-        # Value should include Sarah
-        values = [f["value"] for f in facts]
-        assert any(
-            "Sarah" in v for v in values
-        ), f"Expected Sarah in values, got {values}"
-
-    @pytest.mark.asyncio
-    async def test_extract_preference(self):
-        """Extract user preference."""
-        result = await extract_facts_llm("I prefer dark mode")
-
-        facts = result.get("facts", [])
-
-        # Should extract some kind of preference
-        assert len(facts) >= 1, f"Expected preference fact, got empty"
-
-        # Check for dark mode related content
-        all_content = " ".join(f"{f['type']} {f['value']}" for f in facts).lower()
+        summary = result.get("summary", "")
+        
         assert (
-            "dark" in all_content or "mode" in all_content
-        ), f"Expected dark mode content, got {all_content}"
+            "Austin" in summary or "Texas" in summary
+        ), f"Expected location, got: {summary}"
 
     @pytest.mark.asyncio
-    async def test_extract_terminology(self):
-        """Extract terminology definition."""
-        result = await extract_facts_llm("When I say agents I mean FunnelCloud Agents")
-
-        facts = result.get("facts", [])
-
-        assert len(facts) >= 1, f"Expected terminology fact, got empty"
-
-        # Check for terminology-related extraction
-        all_content = " ".join(f"{f['type']} {f['value']}" for f in facts).lower()
-        assert (
-            "agents" in all_content or "funnelcloud" in all_content
-        ), f"Expected agents/funnelcloud, got {all_content}"
-
-    @pytest.mark.asyncio
-    async def test_extract_occupation_and_employer(self):
-        """Extract job and employer."""
-        result = await extract_facts_llm("I work as a software engineer at Google")
-
-        facts = result.get("facts", [])
-
-        # Should extract at least occupation or employer
-        assert len(facts) >= 1, f"Expected job facts, got empty"
-
-        all_content = " ".join(f"{f['value']}" for f in facts).lower()
-        assert (
-            "engineer" in all_content or "google" in all_content
-        ), f"Expected job content, got {all_content}"
-
-    @pytest.mark.asyncio
-    async def test_extract_multiple_facts(self):
-        """Extract multiple facts from rich message."""
-        result = await extract_facts_llm(
-            "My name is Ian, I prefer dark mode. When I say agents I mean FunnelCloud Agents."
+    async def test_summarize_multiple_facts(self):
+        """Summarize message with multiple personal facts."""
+        result = await summarize_for_memory(
+            "My name is Ian, I live in Austin, and my wife Sarah loves hiking."
         )
 
-        facts = result.get("facts", [])
-
-        # Should extract multiple facts
-        assert len(facts) >= 2, f"Expected at least 2 facts, got {len(facts)}: {facts}"
+        summary = result.get("summary", "")
+        
+        # Should capture multiple pieces of info
+        assert "Ian" in summary, f"Expected name in summary, got: {summary}"
+        # Should also mention either location or spouse
+        has_location = "Austin" in summary
+        has_spouse = "Sarah" in summary
+        assert has_location or has_spouse, f"Expected location or spouse, got: {summary}"
 
     @pytest.mark.asyncio
     async def test_empty_for_greeting(self):
-        """Greeting should return empty or minimal facts."""
-        result = await extract_facts_llm("How are you today?")
+        """Greeting should return nothing to remember."""
+        result = await summarize_for_memory("How are you today?")
 
-        facts = result.get("facts", [])
+        # Should have no summary for generic greeting
+        summary = result.get("summary")
+        
+        # Either None or empty string is acceptable
+        if summary is not None:
+            # Model might occasionally produce something - skip if so
+            pytest.skip(f"Model produced summary for greeting: {summary}")
 
-        # Should ideally be empty - no personal facts in a greeting
-        # Small models may occasionally hallucinate from prompt examples
-        if len(facts) > 0:
-            pytest.skip(f"Model hallucinated from prompt examples: {facts} - known small model behavior")
+    @pytest.mark.asyncio
+    async def test_empty_for_general_question(self):
+        """General questions should return nothing to remember."""
+        result = await summarize_for_memory("What is the capital of France?")
 
-        assert len(facts) == 0, f"Question should extract nothing, got {facts}"
+        summary = result.get("summary")
+        
+        if summary is not None:
+            pytest.skip(f"Model produced summary for question: {summary}")
 
     @pytest.mark.asyncio
     async def test_short_text_returns_empty(self):
-        """Very short text returns empty (guard in extract_facts_llm)."""
-        result = await extract_facts_llm("Hi")
+        """Very short text returns empty (guard in summarize_for_memory)."""
+        result = await summarize_for_memory("Hi")
 
-        assert result == {"facts": []}
+        assert result == {"summary": None, "facts": []}
 
     @pytest.mark.asyncio
     async def test_empty_text_returns_empty(self):
         """Empty text returns empty."""
-        result = await extract_facts_llm("")
+        result = await summarize_for_memory("")
 
-        assert result == {"facts": []}
+        assert result == {"summary": None, "facts": []}
 
-    @pytest.mark.asyncio
-    async def test_facts_have_reason(self):
-        """Extracted facts should include reason field."""
-        result = await extract_facts_llm("My name is Ian")
 
-        facts = result.get("facts", [])
-        if facts:
-            # At least one fact should have a non-empty reason
-            reasons = [f.get("reason", "") for f in facts]
-            assert any(
-                r for r in reasons
-            ), f"Expected at least one reason, got {reasons}"
+class TestStorageFormatIntegration:
+    """Tests for full pipeline: summarize then convert to storage format."""
 
     @pytest.mark.asyncio
-    async def test_storage_format_integration(self):
-        """Full pipeline: extract then convert to storage format."""
-        result = await extract_facts_llm("My name is Ian and I live in Austin")
+    async def test_storage_format_has_type_and_value(self):
+        """Storage format should have type and value keys."""
+        result = await summarize_for_memory("My name is Ian and I live in Austin")
 
         storage_facts = facts_to_storage_format(result)
 
-        # Storage format should have type and value, no reason
         for fact in storage_facts:
             assert "type" in fact
             assert "value" in fact
-            assert "reason" not in fact
+            assert fact["type"] == "memory"
 
     @pytest.mark.asyncio
-    async def test_extract_location(self):
-        """Extract location/city."""
-        result = await extract_facts_llm("I live in Austin, Texas")
+    async def test_storage_format_preserves_summary(self):
+        """Storage format value should match summary."""
+        result = await summarize_for_memory("I have a dog named Max")
 
-        facts = result.get("facts", [])
+        summary = result.get("summary", "")
+        storage_facts = facts_to_storage_format(result)
 
-        assert len(facts) >= 1, f"Expected location fact, got empty"
-
-        all_content = " ".join(f"{f['value']}" for f in facts).lower()
-        assert (
-            "austin" in all_content or "texas" in all_content
-        ), f"Expected Austin/Texas, got {all_content}"
-
-    @pytest.mark.asyncio
-    async def test_extract_pet(self):
-        """Extract pet information."""
-        result = await extract_facts_llm("I have a dog named Max")
-
-        facts = result.get("facts", [])
-
-        assert len(facts) >= 1, f"Expected pet fact, got empty"
-
-        all_content = " ".join(f"{f['value']}" for f in facts).lower()
-        assert (
-            "max" in all_content or "dog" in all_content
-        ), f"Expected Max/dog, got {all_content}"
-
-
-class TestSemanticTypeQuality:
-    """Tests that the LLM chooses appropriate semantic types."""
-
-    @pytest.mark.asyncio
-    async def test_spouse_not_relationship(self):
-        """Should use specific 'spouse' or 'wife' type, not generic 'relationship'."""
-        result = await extract_facts_llm("My wife's name is Sarah")
-
-        facts = result.get("facts", [])
-        types = [f["type"].lower() for f in facts]
-
-        # Should prefer specific types
-        specific_types = ["spouse", "wife", "partner"]
-        has_specific = any(t in types for t in specific_types)
-
-        # Warn if using generic 'relationship' instead
-        if "relationship" in types and not has_specific:
-            pytest.skip("Model used generic 'relationship' - acceptable but not ideal")
-
-    @pytest.mark.asyncio
-    async def test_uses_camel_case_types(self):
-        """Types should be camelCase (e.g., firstName not first_name)."""
-        result = await extract_facts_llm("My name is Ian and I prefer dark mode")
-
-        facts = result.get("facts", [])
-
-        for fact in facts:
-            fact_type = fact["type"]
-            # Should not contain underscores (snake_case)
-            if "_" in fact_type:
-                pytest.skip(
-                    f"Model used snake_case: {fact_type} - acceptable but not ideal"
-                )
+        if storage_facts:
+            assert storage_facts[0]["value"] == summary

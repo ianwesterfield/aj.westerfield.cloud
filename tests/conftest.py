@@ -1,8 +1,13 @@
 """Shared pytest configuration and fixtures."""
 
 import os
+import sys
 import socket
 import pytest
+
+# Add project paths for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "layers", "orchestrator"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "layers", "pragmatics"))
 
 # Orchestrator URL — override with ORCHESTRATOR_URL env var for WSL, remote, etc.
 ORCHESTRATOR_HOST = os.environ.get("ORCHESTRATOR_HOST", "localhost")
