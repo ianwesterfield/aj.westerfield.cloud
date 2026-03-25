@@ -109,53 +109,34 @@ class TaskPlanner:
         if workspace_context and not workspace_context.parallel_enabled:
             return False
         
-        # Keywords that suggest parallelization
-        parallel_keywords = [
-            "all files",
-            "every file",
-            "each file",
-            "all python",
-            "all typescript",
-            "all javascript",
-            "multiple files",
-            "batch",
-            "parallel",
-            "*.py",
-            "*.ts",
-            "*.js",
-            "*.ps1",
-            "*.md",
-        ]
-        
-        task_lower = task.lower()
-        return any(kw in task_lower for kw in parallel_keywords)
+        # Parallelization decision delegated to LLM (reasoning engine)
+        # NO hardcoded keyword shortcuts - let the model analyze task semantics
+        # The orchestrator will decide based on actual task analysis, not word matching
+        # For now: default to sequential execution (safest)
+        return False
     
     def estimate_task_complexity(self, task: str) -> int:
         """
         Estimate task complexity (number of steps).
         
-        Used for progress reporting and timeout estimation.
+        DEPRECATED: This should not use keyword heuristics.
+        
+        Complexity estimation is now delegated to:
+        1. LLM reasoning (generate_task_plan returns actual steps)
+        2. Token counting on the task description
+        3. Never hardcoded keyword analysis
         
         Returns:
             Estimated number of steps (1-10)
         """
-        # Simple heuristic based on task length and keywords
-        complexity = 1
-        
-        # Multi-step indicators
-        if any(word in task.lower() for word in ["and then", "after that", "finally", "first"]):
-            complexity += 2
-        
-        # Batch indicators
-        if self.detect_parallelization(task):
-            complexity += 3
-        
-        # Analysis indicators
-        if any(word in task.lower() for word in ["analyze", "review", "examine", "check"]):
-            complexity += 1
-        
-        # Write indicators
-        if any(word in task.lower() for word in ["write", "create", "generate", "modify"]):
-            complexity += 1
-        
-        return min(complexity, 10)
+        # Safe default: estimate based on character length only (no keywords)
+        # Actual complexity determined by reasoning engine's task plan
+        char_count = len(task)
+        if char_count < 50:
+            return 1
+        elif char_count < 200:
+            return 2
+        elif char_count < 500:
+            return 3
+        else:
+            return min(4 + (char_count // 500), 10)

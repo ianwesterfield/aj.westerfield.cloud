@@ -12,17 +12,33 @@ FROM ${BASE_REGISTRY}/aj-pragmatics-base:latest
 
 WORKDIR /app
 
+# Copy shared module (needed for wait-for-ollama)
+COPY shared /app/shared
+
+# Make wait-for-ollama executable and fix line endings
+RUN chmod +x /app/shared/wait-for-ollama.sh && \
+    sed -i 's/\r$//' /app/shared/wait-for-ollama.sh
+
 # Only application code (the fast-changing layer)
-COPY . /app
+COPY pragmatics /app
+
+# Make start script executable and fix line endings
+RUN chmod +x /app/start.sh && \
+    sed -i 's/\r$//' /app/start.sh
 
 # Move trained models if present
-# Priority: 4-class intent model > binary memory model
-RUN if [ -d /app/static/distilbert_intent ]; then \
+# Priority: 2-class intent_classifier > 4-class distilbert_intent > binary distilbert_memory
+RUN if [ -d /app/static/intent_classifier ]; then \
+  mv /app/static/intent_classifier /app/distilbert_intent; \
+  elif [ -d /app/static/distilbert_intent ]; then \
   mv /app/static/distilbert_intent /app/distilbert_intent; \
   fi && \
   if [ -d /app/static/distilbert_memory ]; then \
   mv /app/static/distilbert_memory /app/distilbert_memory; \
   fi
 
+# Install any missing dependencies
+RUN pip install --no-cache-dir httpx>=0.27.0
+
 EXPOSE 8001
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["/app/start.sh"]

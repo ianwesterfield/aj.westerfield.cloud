@@ -21,7 +21,7 @@ class CompletedStep:
 
 
 @dataclass
-class WorkspaceState:
+class SessionState:
     scanned_paths: Set[str] = field(default_factory=set)
     files: List[str] = field(default_factory=list)
     dirs: List[str] = field(default_factory=list)
@@ -29,6 +29,7 @@ class WorkspaceState:
     read_files: Set[str] = field(default_factory=set)
     completed_steps: List[CompletedStep] = field(default_factory=list)
     user_info: Dict[str, str] = field(default_factory=dict)
+    discovered_agents: Dict[str, Any] = field(default_factory=dict)  # FunnelCloud agents
     
     def update_from_step(self, tool: str, params: Dict[str, Any], output: str, success: bool) -> None:
         step_id = f"S{len(self.completed_steps) + 1:03d}"
@@ -49,7 +50,7 @@ class TestMaxStepsGuardrail:
     
     def test_triggers_after_15_steps_without_progress(self):
         """Should force completion after 15 steps without edits."""
-        state = WorkspaceState()
+        state = SessionState()
         
         # Add 15 non-edit steps
         for i in range(15):
@@ -73,7 +74,7 @@ class TestMaxStepsGuardrail:
     
     def test_does_not_trigger_with_recent_edits(self):
         """Should allow continuation if recent edits were made."""
-        state = WorkspaceState()
+        state = SessionState()
         
         # Add 14 read steps
         for i in range(14):
@@ -109,7 +110,7 @@ class TestRepeatedFailuresGuardrail:
     
     def test_detects_repeated_replace_failures(self):
         """Should detect repeated replace_in_file failures on same file."""
-        state = WorkspaceState()
+        state = SessionState()
         
         # Add 3 failed replace attempts on same file
         for i in range(3):
@@ -134,7 +135,7 @@ class TestRepeatedFailuresGuardrail:
     
     def test_different_files_not_flagged(self):
         """Failures on different files should not trigger guardrail."""
-        state = WorkspaceState()
+        state = SessionState()
         
         # Add failures on different files
         state.completed_steps.append(CompletedStep(
@@ -166,7 +167,7 @@ class TestReReadGuardrail:
     
     def test_blocks_reread_of_already_read_file(self):
         """Should block reading a file that's already been read."""
-        state = WorkspaceState()
+        state = SessionState()
         state.read_files.add("already_read.py")
         
         # Simulate check
@@ -177,7 +178,7 @@ class TestReReadGuardrail:
     
     def test_allows_first_read(self):
         """Should allow first read of a file."""
-        state = WorkspaceState()
+        state = SessionState()
         
         path = "new_file.py"
         should_block = path in state.read_files
@@ -226,7 +227,7 @@ class TestDuplicateCommandGuardrail:
     
     def test_detects_same_shell_command_twice(self):
         """Should detect same shell command run twice."""
-        state = WorkspaceState()
+        state = SessionState()
         
         state.completed_steps.append(CompletedStep(
             step_id="S001",
@@ -255,7 +256,7 @@ class TestDuplicateCommandGuardrail:
     
     def test_different_commands_allowed(self):
         """Different commands should not trigger guardrail."""
-        state = WorkspaceState()
+        state = SessionState()
         
         state.completed_steps.append(CompletedStep(
             step_id="S001",
@@ -287,7 +288,7 @@ class TestPathValidationGuardrail:
     
     def test_path_in_scanned_files_accepted(self):
         """Paths in scanned files should be accepted."""
-        state = WorkspaceState()
+        state = SessionState()
         state.files = ["src/main.py", "tests/test_main.py", "README.md"]
         
         path = "src/main.py"
@@ -297,7 +298,7 @@ class TestPathValidationGuardrail:
     
     def test_unknown_path_flagged(self):
         """Paths not in scanned files should be flagged."""
-        state = WorkspaceState()
+        state = SessionState()
         state.files = ["src/main.py", "README.md"]
         
         path = "nonexistent/file.py"
@@ -307,7 +308,7 @@ class TestPathValidationGuardrail:
     
     def test_similar_path_suggestion(self):
         """Should find similar paths for correction."""
-        state = WorkspaceState()
+        state = SessionState()
         state.files = [
             ".github/copilot-instructions.md",
             "src/config.py",
@@ -329,7 +330,7 @@ class TestWriteFileRepeatedGuardrail:
     
     def test_detects_double_write_to_same_file(self):
         """Should detect writing to the same file twice."""
-        state = WorkspaceState()
+        state = SessionState()
         
         state.update_from_step(
             "write_file",
@@ -347,7 +348,7 @@ class TestWriteFileRepeatedGuardrail:
     
     def test_allows_first_write(self):
         """First write to a file should be allowed."""
-        state = WorkspaceState()
+        state = SessionState()
         
         already_edited = "new_file.txt" in state.edited_files
         assert already_edited is False
@@ -358,7 +359,7 @@ class TestGuardrailIntegration:
     
     def test_multiple_guardrails_can_trigger(self):
         """Multiple guardrail conditions can be true simultaneously."""
-        state = WorkspaceState()
+        state = SessionState()
         
         # Add many steps (max steps guardrail)
         for i in range(16):
@@ -389,6 +390,164 @@ class TestGuardrailIntegration:
         
         assert too_many_steps is True
         assert repeated_failures is True
+
+
+class TestRemoteExecutionHallucinationGuardrail:
+    """
+    Test guardrails that prevent hallucinated results when no FunnelCloud agents are available.
+    
+    Critical scenario from production:
+    - User asks: "Which 10 files take up the most space on ian-r16?"
+    - list_agents returns: "No FunnelCloud agents discovered"
+    - BAD: Model hallucinates fake file list like "/home/user/largefile1.bin 4.5G"
+    - GOOD: Model returns error "No agents available, cannot access remote machine"
+    """
+    
+    def test_detects_hallucination_after_empty_list_agents(self):
+        """Should detect when model hallucinates results after list_agents returns empty."""
+        state = SessionState()
+        state.discovered_agents = {}  # No agents discovered
+        
+        # Simulate list_agents being called (empty result)
+        state.completed_steps.append(CompletedStep(
+            step_id="S001",
+            tool="list_agents",
+            params={},
+            output_summary="No FunnelCloud agents discovered",
+            success=True,
+        ))
+        
+        # Model tries to complete with fake results
+        fake_answer = """Here are the top 10 largest files on ian-r16:
+/home/user/largefile1.bin    4.5G
+/home/user/video_collection/bigmovie.mp4   3.2G
+/home/user/backups/backup_2023-12-01.tar.gz  2.8G"""
+        
+        # Check for hallucination indicators
+        hallucination_indicators = [
+            "here are the",
+            "top 10",
+            "largest files",
+            "scanned",
+            "/home/",
+            "/user/",
+            ".bin",
+            ".tar",
+            ".iso",
+        ]
+        
+        recent_steps = state.completed_steps[-3:]
+        last_was_list_agents = any(s.tool == "list_agents" for s in recent_steps)
+        is_hallucinating = any(ind in fake_answer.lower() for ind in hallucination_indicators)
+        
+        assert last_was_list_agents is True
+        assert state.discovered_agents == {}
+        assert is_hallucinating is True
+    
+    def test_allows_legitimate_completion_with_error(self):
+        """Should allow completion that honestly reports no agents available."""
+        state = SessionState()
+        state.discovered_agents = {}
+        
+        state.completed_steps.append(CompletedStep(
+            step_id="S001",
+            tool="list_agents",
+            params={},
+            output_summary="No FunnelCloud agents discovered",
+            success=True,
+        ))
+        
+        # Legitimate error response
+        honest_answer = "No FunnelCloud agents are available. I cannot access remote machines without an agent running."
+        
+        hallucination_indicators = [
+            "here are the",
+            "top 10",
+            "largest files",
+            "/home/",
+            ".bin",
+            ".tar",
+        ]
+        
+        is_hallucinating = any(ind in honest_answer.lower() for ind in hallucination_indicators)
+        
+        assert is_hallucinating is False
+    
+    def test_allows_results_when_agent_discovered(self):
+        """Should allow results when an agent was actually discovered."""
+        state = SessionState()
+        state.discovered_agents = {"ian-r16": {"name": "ian-r16", "host": "192.168.1.100"}}
+        
+        state.completed_steps.append(CompletedStep(
+            step_id="S001",
+            tool="list_agents",
+            params={},
+            output_summary="Found 1 agent: ian-r16",
+            success=True,
+        ))
+        
+        state.completed_steps.append(CompletedStep(
+            step_id="S002",
+            tool="remote_execute",
+            params={"agent_id": "ian-r16", "command": "Get-ChildItem -Recurse | Sort-Object Length -Descending | Select-Object -First 10"},
+            output_summary="Got 10 file entries",
+            success=True,
+        ))
+        
+        # With agent discovered AND remote_execute done, results are legitimate
+        did_remote_work = any(s.tool == "remote_execute" for s in state.completed_steps)
+        has_agent = len(state.discovered_agents) > 0
+        
+        assert has_agent is True
+        assert did_remote_work is True
+    
+    def test_blocks_lazy_completion_after_discovering_agents(self):
+        """Should block completion without remote work when agents ARE available."""
+        state = SessionState()
+        state.discovered_agents = {"ian-r16": {"name": "ian-r16"}}
+        
+        state.completed_steps.append(CompletedStep(
+            step_id="S001",
+            tool="list_agents",
+            params={},
+            output_summary="Found 1 agent: ian-r16",
+            success=True,
+        ))
+        
+        # Model tries to complete without calling remote_execute
+        recent_steps = state.completed_steps[-3:]
+        last_was_list_agents = any(s.tool == "list_agents" for s in recent_steps)
+        did_remote_work = any(s.tool == "remote_execute" for s in state.completed_steps)
+        has_agents = len(state.discovered_agents) > 0
+        
+        # Guardrail should trigger
+        should_block = last_was_list_agents and not did_remote_work and has_agents
+        
+        assert should_block is True
+    
+    def test_repeated_list_agents_without_progress(self):
+        """Should detect when model keeps calling list_agents without making progress."""
+        state = SessionState()
+        state.discovered_agents = {}
+        
+        # Model calls list_agents multiple times
+        for i in range(3):
+            state.completed_steps.append(CompletedStep(
+                step_id=f"S{i:03d}",
+                tool="list_agents",
+                params={},
+                output_summary="No FunnelCloud agents discovered",
+                success=True,
+            ))
+        
+        # Count list_agents calls in recent steps
+        recent_list_agents = sum(
+            1 for s in state.completed_steps[-5:]
+            if s.tool == "list_agents"
+        )
+        
+        # Should be flagged as loop
+        assert recent_list_agents >= 2
 
 
 if __name__ == "__main__":

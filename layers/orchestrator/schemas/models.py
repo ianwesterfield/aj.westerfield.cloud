@@ -162,7 +162,8 @@ class RunTaskRequest(BaseModel):
     user_id: Optional[str] = Field(None, description="User ID")
     memory_context: Optional[List[Dict[str, Any]]] = Field(None, description="User context from memory")
     max_steps: int = Field(default=100, description="Maximum steps before forced completion")
-    preserve_state: bool = Field(default=False, description="If True, don't reset workspace state (for follow-up questions)")
+    preserve_state: bool = Field(default=False, description="If True, don't reset session state (for follow-up questions)")
+    model: Optional[str] = Field(None, description="Ollama model to use (from Open-WebUI selection)")
 
 
 class TaskEvent(BaseModel):
@@ -220,3 +221,42 @@ class BatchResult(BaseModel):
             f"**Failures:**\n{failures}\n\n"
             f"Continuing with next step using successful results..."
         )
+
+
+# ============================================================================
+# Training Data Capture
+# ============================================================================
+
+class TrainingType(str, Enum):
+    """Type of training example."""
+    GOOD_EXAMPLE = "good_example"
+    EDGE_CASE = "edge_case"
+    HARD_NEGATIVE = "hard_negative"
+    KNOWLEDGE_GRAPH = "knowledge_graph"
+    FEEDBACK = "feedback"
+
+
+class TrainingCaptureRequest(BaseModel):
+    """Request to capture training data."""
+    session_id: str = Field(..., description="Chat session ID")
+    message_id: str = Field(default="", description="Message ID")
+    timestamp: str = Field(default="", description="ISO timestamp")
+    user_prompt: str = Field(..., description="User's input prompt")
+    model_response: str = Field(..., description="Model's response")
+    rating: int = Field(default=3, ge=1, le=5, description="User rating 1-5")
+    training_type: str = Field(default="feedback", description="Type of training example")
+    tags: List[str] = Field(default_factory=list, description="User-provided tags")
+    model_id: str = Field(default="", description="Model that generated response")
+    user_id: str = Field(default="", description="User who captured this")
+    # Orchestrator will add these
+    tools_used: List[str] = Field(default_factory=list, description="Tools used in this interaction")
+    guardrails_triggered: List[str] = Field(default_factory=list, description="Guardrails that fired")
+    errors: List[str] = Field(default_factory=list, description="Errors encountered")
+    session_state: Optional[Dict[str, Any]] = Field(default=None, description="Session state snapshot")
+
+
+class TrainingCaptureResponse(BaseModel):
+    """Response from training capture."""
+    success: bool = Field(..., description="Whether capture succeeded")
+    vector_id: str = Field(default="", description="Qdrant vector ID")
+    message: str = Field(default="", description="Status message")

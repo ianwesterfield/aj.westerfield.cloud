@@ -16,34 +16,81 @@ Architecture:
   - Memory Connector: Pattern retrieval + storage for learning
 """
 
+import sys
+import os
 import logging
+import asyncio
 from contextlib import asynccontextmanager
+
+# Add parent directory to path so we can import shared module
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.orchestrator import router
+from api.training import router as training_router
+from services.reasoning_engine import ReasoningEngine
 
 
 # ============================================================================
 # Logging
 # ============================================================================
 
+
+# Configure only our namespace loggers, not the root logger
+# This prevents duplicate logs when uvicorn also configures logging
+def setup_logging():
+    """Configure orchestrator logging without duplicating handlers."""
+    formatter = logging.Formatter(
+        "[%(asctime)s] %(name)s - %(levelname)s - %(message)s"
+    )
+
+    # Get our namespace logger
+    orchestrator_logger = logging.getLogger("orchestrator")
+
+    # Only add handler if none exist (prevents duplicates on reload)
+    if not orchestrator_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(formatter)
+        orchestrator_logger.addHandler(handler)
+        orchestrator_logger.setLevel(logging.INFO)
+        # Don't propagate to root logger (prevents duplicates)
+        orchestrator_logger.propagate = False
+
+    # Silence noisy httpx logs
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
+setup_logging()
 logger = logging.getLogger("orchestrator.main")
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] %(name)s - %(levelname)s - %(message)s",
-)
 
 
 # ============================================================================
 # Lifespan (startup/shutdown)
 # ============================================================================
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     logger.info("Starting Orchestrator Service...")
+
+    # Pre-load the LLM model at startup so it's ready for requests
+    # This prevents cold-start delays during the first task
+    logger.info(
+        "Pre-loading LLM model (this may take a few minutes for large models)..."
+    )
+    try:
+        reasoning_engine = ReasoningEngine()
+        success = await reasoning_engine.warmup_model()
+        if success:
+            logger.info("✓ LLM model pre-loaded successfully")
+        else:
+            logger.warning("⚠ LLM model pre-load returned false (may still work)")
+    except Exception as e:
+        logger.warning(f"⚠ LLM model pre-load failed (non-blocking): {e}")
+
     logger.info("✓ Orchestrator ready on port 8004")
     yield
     logger.info("Shutting down Orchestrator Service...")
@@ -87,11 +134,13 @@ app.add_middleware(
 # ============================================================================
 
 app.include_router(router, prefix="/api/orchestrate")
+app.include_router(training_router)  # Training capture endpoints at /api/training/*
 
 
 # ============================================================================
 # Health Check
 # ============================================================================
+
 
 @app.get("/health")
 async def health_check():

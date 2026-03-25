@@ -2,6 +2,14 @@ networks:
   webtools_network:
     external: true
 
+secrets:
+  huggingface_pat:
+    file: ./secrets/huggingface_pat.txt
+  funnel_local_agent_host:
+    file: ./secrets/funnel_local_agent_host.txt
+  funnel_gossip_seed_host:
+    file: ./secrets/funnel_gossip_seed_host.txt
+
 services:
   # -------------------------------------------------
   # Ollama
@@ -9,15 +17,14 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
-    runtime: nvidia
+    network_mode: host
     environment:
       - OLLAMA_HOST=0.0.0.0
-      - OLLAMA_KEEP_ALIVE=-1 # Keep models loaded forever (no auto-unload)
-      - OLLAMA_NUM_PARALLEL=2 # Allow 2 concurrent requests
-    ports:
-      - "11434:11434"
+      - OLLAMA_KEEP_ALIVE=-1 # Keep models loaded forever (never unload)
+      - OLLAMA_NUM_PARALLEL=1 # CRITICAL: Only 1 concurrent request to prevent double-loads
+      - OLLAMA_MAX_LOADED_MODELS=1 # CRITICAL: Maximum 1 model loaded at a time
     volumes:
-      - C:\\docker-data\\ollama\\.ollama:/root/.ollama
+      - /mnt/c/docker-data/ollama/.ollama:/root/.ollama
     deploy:
       resources:
         reservations:
@@ -27,8 +34,18 @@ services:
               capabilities: [gpu]
     shm_size: 2g
     restart: unless-stopped
-    networks:
-      - webtools_network
+    # Pre-load r1-distill-aj:32b-8k on startup (Manchurian Candidate trained model)
+    # Healthcheck loads the model and runs a test prompt (OLLAMA_KEEP_ALIVE=-1 keeps it loaded)
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "ollama run r1-distill-aj:32b-8k 'ping' 2>&1 | grep -v 'Error' | head -c 50 || exit 1",
+        ]
+      interval: 60s
+      timeout: 300s
+      retries: 3
+      start_period: 120s
 
   # -------------------------------------------------
   # Qdrant
@@ -36,20 +53,16 @@ services:
   qdrant:
     image: qdrant/qdrant:latest
     container_name: qdrant
+    network_mode: host
     environment:
       - QDRANT__LOG_LEVEL=DEBUG
       # Flush WAL more frequently to reduce corruption risk on shutdown
       - QDRANT__STORAGE__OPTIMIZERS__FLUSH_INTERVAL_SEC=1
-    ports:
-      - "5100:5100" # Dashboard UI
-      - "6333:6333" # HTTP API
     volumes:
-      - C:/docker-data/qdrant/storage:/qdrant/storage
+      - /mnt/c/docker-data/qdrant/storage:/qdrant/storage
     restart: unless-stopped
     # Give Qdrant time to flush WAL and close cleanly
     stop_grace_period: 30s
-    networks:
-      - webtools_network
 
   # -------------------------------------------------
   # Memory API (Memory + Agent Core)
@@ -61,50 +74,49 @@ services:
       args:
         BASE_REGISTRY: ${BASE_REGISTRY:-ianwesterfield}
     container_name: memory_api
+    network_mode: host
     environment:
-      - QDRANT_HOST=qdrant
+      - QDRANT_HOST=localhost
       - QDRANT_PORT=6333
       - INDEX_NAME=user_memory_collection
       - EMBEDDING_PROVIDER=sentence_transformers # Keep ST for embeddings (768-dim, fast)
-      - OLLAMA_BASE_URL=http://ollama:11434
-      - OLLAMA_MODEL=qwen2.5:32b # Use same model as orchestrator
+      - OLLAMA_BASE_URL=http://localhost:11434
+      # OLLAMA_MODEL is now passed dynamically from Open-WebUI selection
       - SUMMARY_MODEL=sshleifer/distilbart-cnn-12-6
-      - SUMMARY_DEVICE=0 # Use cpu for summarizer (or 0 for GPU)
+      - SUMMARY_DEVICE=0
       - HF_HOME=/models
+      - HF_TOKEN_FILE=/run/secrets/huggingface_pat
       - FILTERS_PATH=/filters
+    secrets:
+      - huggingface_pat
     volumes:
-      - C:/docker-data/models:/models
+      - /mnt/c/docker-data/models:/models
       - ./filters:/filters:ro
-    ports:
-      - "8000:8000"
     depends_on:
       - qdrant
     restart: unless-stopped
-    networks:
-      - webtools_network
 
   # -------------------------------------------------
-  # Pragmatics API (Intent Classification)
+  # Pragmatics API
+  # Intent classification: DistilBERT (CPU, baked into image)
+  # Memory summarization: Uses main Ollama model
   # -------------------------------------------------
   pragmatics_api:
     build:
-      context: ./layers/pragmatics
-      dockerfile: Dockerfile
+      context: ./layers
+      dockerfile: pragmatics/Dockerfile
       args:
         BASE_REGISTRY: ${BASE_REGISTRY:-ianwesterfield}
     container_name: pragmatics_api
-    ports:
-      - "8001:8001"
+    network_mode: host
     environment:
-      # Use 4-class intent model (casual/save/recall/task)
-      # Fallback to distilbert_memory if distilbert_intent not found
-      - CLASSIFIER_MODEL=distilbert_intent
-      - INTENT_CONFIDENCE_THRESHOLD=0.50
+      - OLLAMA_HOST=localhost
+      - OLLAMA_PORT=11434
+      # Uses same model as main Ollama for memory summarization
     depends_on:
-      - memory_api
+      ollama:
+        condition: service_healthy
     restart: unless-stopped
-    networks:
-      - webtools_network
 
   # -------------------------------------------------
   # Extractor API (Media -> Text)
@@ -116,14 +128,16 @@ services:
       args:
         BASE_REGISTRY: ${BASE_REGISTRY:-ianwesterfield}
     container_name: extractor_api
-    ports:
-      - "8002:8002"
+    network_mode: host
     environment:
       - WHISPER_MODEL=large-v3
       - IMAGE_MODEL=llava # Options: llava-4bit (~4GB), llava (~14GB), florence (~4GB)
       - HF_HOME=/models
+      - HF_TOKEN_FILE=/run/secrets/huggingface_pat
+    secrets:
+      - huggingface_pat
     volumes:
-      - C:/docker-data/models:/models
+      - /mnt/c/docker-data/models:/models
     deploy:
       resources:
         reservations:
@@ -132,71 +146,103 @@ services:
               count: 1
               capabilities: [gpu]
     restart: unless-stopped
-    networks:
-      - webtools_network
 
   # -------------------------------------------------
-  # Orchestrator API (Agentic Reasoning Engine)
-  # -------------------------------------------------
   # Orchestrator API (Agentic Reasoning + Execution Engine)
-  # NOTE: Executor is now merged into orchestrator (no separate container)
+  # Includes embedded FunnelCloud Agent for localhost bootstrap
   # -------------------------------------------------
   orchestrator_api:
     build:
-      context: ./layers/orchestrator
-      dockerfile: Dockerfile
+      context: ./layers
+      dockerfile: orchestrator/Dockerfile
     container_name: orchestrator_api
-    ports:
-      - "8004:8004"
+    network_mode: host
     environment:
-      - OLLAMA_HOST=http://ollama:11434
-      - OLLAMA_MODEL=qwen2.5:32b
-      - MEMORY_API_URL=http://memory_api:8000
+      # Share main Ollama instance with Open-WebUI
+      - OLLAMA_BASE_URL=http://localhost:11434
+      # Default model - 8k context window for multi-step reasoning
+      - OLLAMA_MODEL=r1-distill-aj:32b-8k
+      - MEMORY_API_URL=http://localhost:8000
+      # Pragmatics API for intent classification (DistilBERT on CPU)
+      - PRAGMATICS_API_URL=http://localhost:8001
       - MAX_PARALLEL_TASKS=5
       - WORKSPACE_ROOT=/workspace
-      - HOST_WORKSPACE_PATH=${HOST_WORKSPACE_PATH:-C:/Code}
+      - HOST_WORKSPACE_PATH=${HOST_WORKSPACE_PATH:-/mnt/c/Code}
+
       # Executor settings (now local)
       - DEFAULT_TIMEOUT=30
       - MAX_TIMEOUT=120
+
+      # ====== Embedded FunnelCloud Agent ======
+      # The orchestrator container runs its own FunnelCloud agent
+      # This provides the localhost bootstrap for discover-peers
+      - FUNNEL_AGENT_ID=orchestrator-agent
+      - FUNNEL_INSECURE=${FUNNEL_INSECURE:-true}
+
+      # FunnelCloud agent discovery
+      - FUNNEL_DISCOVERY_PORT=41420
+      - FUNNEL_GRPC_PORT=41235
+      - FUNNEL_DISCOVERY_TIMEOUT=3.0
+      # HTTP port for agent REST API (health, discover-peers)
+      - FUNNEL_AGENT_HTTP_PORT=41421
+      # Gossip config - how many rounds to expand peer discovery
+      - FUNNEL_GOSSIP_MAX_ROUNDS=3
+      - FUNNEL_GOSSIP_TIMEOUT=2.0
+      # Gossip seed - ONE reachable agent IP to bootstrap cross-subnet discovery
+      # (only needed when embedded agent can't multicast to other subnets)
+      - FUNNEL_LOCAL_AGENT_HOST_FILE=/run/secrets/funnel_local_agent_host
+      - FUNNEL_GOSSIP_SEED_HOST_FILE=/run/secrets/funnel_gossip_seed_host
+      # mTLS certificates for FunnelCloud gRPC
+      - ORCHESTRATOR_CERT_PATH=/app/certs/agents/orchestrator/agent.crt
+      - ORCHESTRATOR_KEY_PATH=/app/certs/agents/orchestrator/agent.key
+      - CA_CERT_PATH=/app/certs/ca/ca.crt
+    secrets:
+      - funnel_local_agent_host
+      - funnel_gossip_seed_host
     volumes:
-      - ${HOST_WORKSPACE_PATH:-C:/Code}:/workspace:rw
+      - ${HOST_WORKSPACE_PATH:-/mnt/c/Code}:/workspace:rw
+      - ./layers/agents/FunnelCloud/certs:/app/certs:ro
     depends_on:
-      - ollama
-      - memory_api
+      ollama:
+        condition: service_healthy
+      memory_api:
+        condition: service_started
     restart: unless-stopped
-    networks:
-      - webtools_network
 
   # -------------------------------------------------
   # Open-WebUI
   # -------------------------------------------------
   open-webui:
-    image: ghcr.io/open-webui/open-webui:latest
+    image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
     environment:
       - USER_AGENT=WesterfieldCloud-OpenWebUI/1.0
       - GLOBAL_LOG_LEVEL=DEBUG
-      - OLLAMA_BASE_URL=http://ollama:11434
+      # All backend services are on host network - use Docker bridge gateway (172.17.0.1)
+      # Note: host.docker.internal doesn't route to WSL2 host network in this setup
+      - OLLAMA_BASE_URL=http://172.17.0.1:11434
       - ENABLE_API_KEY=true # Allow API key authentication
-
-      # Note: Set these manually or use docker secrets in production
-      # - WEBUI_ADMIN_USERNAME=admin
-      # - WEBUI_ADMIN_PASSWORD=changeme
-
       - RAG_EMBEDDING_ENGINE=ollama
       - EMBEDDING_MODEL=BAAI/bge-large-en-v1.5
       - MEMORY_ENABLED=true
       - MEMORY_SHORT_TERM_MEMORY_DEPTH=15
       - TOOLS_FUNCTION_CALLING_ENABLED=true
       - TOOLS_FUNCTION_CALLING_LLMS=ollama
-      - MEMORY_API_URL=http://memory_api:8000
-      - TOOLS_DISCOVERY_URL=http://memory_api:8000/api/tools
+      - MEMORY_API_URL=http://172.17.0.1:8000
+      - TOOLS_DISCOVERY_URL=http://172.17.0.1:8000/api/tools
+      # Orchestrator for AJ filter task execution
+      - ORCHESTRATOR_API_URL=http://172.17.0.1:8004
+      # Pragmatics for AJ filter intent classification
+      - PRAGMATICS_API_URL=http://172.17.0.1:8001
+      # Extractor for AJ filter media extraction
+      - EXTRACTOR_API_URL=http://172.17.0.1:8002
     ports:
       - "8180:8080" # Host 8180 -> Container 8080 (8080 often reserved by Windows/Hyper-V)
     volumes:
-      - c:/docker-data/open-webui/data:/app/backend/data
+      - /mnt/c/docker-data/open-webui/data:/app/backend/data
     deploy:
       resources:
         limits:
