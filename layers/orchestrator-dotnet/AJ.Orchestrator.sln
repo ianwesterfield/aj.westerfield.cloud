@@ -9,6 +9,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AJ.Shared", "AJ.Shared\AJ.S
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AJ.Orchestrator.Tests", "AJ.Orchestrator.Tests\AJ.Orchestrator.Tests.csproj", "{C5E8E4F3-6EB7-4CE5-81E6-393D889413D7}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AJ.Orchestrator.Abstractions", "AJ.Orchestrator.Abstractions\AJ.Orchestrator.Abstractions.csproj", "{DEC0B034-F42D-4720-8242-BC29BF24A098}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -55,6 +57,18 @@ Global
 		{C5E8E4F3-6EB7-4CE5-81E6-393D889413D7}.Release|x64.Build.0 = Release|Any CPU
 		{C5E8E4F3-6EB7-4CE5-81E6-393D889413D7}.Release|x86.ActiveCfg = Release|Any CPU
 		{C5E8E4F3-6EB7-4CE5-81E6-393D889413D7}.Release|x86.Build.0 = Release|Any CPU
+		{DEC0B034-F42D-4720-8242-BC29BF24A098}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DEC0B034-F42D-4720-8242-BC29BF24A098}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DEC0B034-F42D-4720-8242-BC29BF24A098}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{DEC0B034-F42D-4720-8242-BC29BF24A098}.Debug|x64.Build.0 = Debug|Any CPU
+		{DEC0B034-F42D-4720-8242-BC29BF24A098}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{DEC0B034-F42D-4720-8242-BC29BF24A098}.Debug|x86.Build.0 = Debug|Any CPU
+		{DEC0B034-F42D-4720-8242-BC29BF24A098}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DEC0B034-F42D-4720-8242-BC29BF24A098}.Release|Any CPU.Build.0 = Release|Any CPU
+		{DEC0B034-F42D-4720-8242-BC29BF24A098}.Release|x64.ActiveCfg = Release|Any CPU
+		{DEC0B034-F42D-4720-8242-BC29BF24A098}.Release|x64.Build.0 = Release|Any CPU
+		{DEC0B034-F42D-4720-8242-BC29BF24A098}.Release|x86.ActiveCfg = Release|Any CPU
+		{DEC0B034-F42D-4720-8242-BC29BF24A098}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

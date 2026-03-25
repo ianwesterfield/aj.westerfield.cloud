@@ -36,12 +36,12 @@ message TaskRequest {
 
 enum TaskType {
     TASK_TYPE_UNSPECIFIED = 0;
-    SHELL = 1;           // Native shell (cmd/bash)
-    POWERSHELL = 2;      // PowerShell Core
-    READ_FILE = 3;       // Read file contents
-    WRITE_FILE = 4;      // Write file contents
-    LIST_DIRECTORY = 5;  // List directory contents
-    DOTNET_CODE = 6;     // Execute .NET code snippet
+    SHELL = 1; // Native shell (cmd/bash)
+    POWERSHELL = 2; // PowerShell Core
+    READ_FILE = 3; // Read file contents
+    WRITE_FILE = 4; // Write file contents
+    LIST_DIRECTORY = 5; // List directory contents
+    DOTNET_CODE = 6; // Execute .NET code snippet
 }
 
 // Task execution result
@@ -105,7 +105,7 @@ enum TaskState {
 // Cancel request
 message CancelRequest {
     string task_id = 1;
-    bool force = 2;  // Force kill if graceful cancel fails
+    bool force = 2; // Force kill if graceful cancel fails
 }
 
 message CancelResponse {

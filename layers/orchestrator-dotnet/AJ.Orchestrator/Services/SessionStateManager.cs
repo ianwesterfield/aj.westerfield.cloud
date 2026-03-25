@@ -1,5 +1,5 @@
 using System.Collections.Concurrent;
-using AJ.Orchestrator.Models;
+using AJ.Orchestrator.Abstractions.Models;
 
 namespace AJ.Orchestrator.Services;
 
@@ -9,25 +9,25 @@ namespace AJ.Orchestrator.Services;
 /// </summary>
 public class SessionStateManager
 {
-    private readonly ConcurrentDictionary<string, SessionState> _sessions = new();
+  private readonly ConcurrentDictionary<string, SessionState> _sessions = new();
 
-    public SessionState GetOrCreate(string userId)
-    {
-        return _sessions.GetOrAdd(userId, _ => new SessionState());
-    }
+  public SessionState GetOrCreate(string userId)
+  {
+    return _sessions.GetOrAdd(userId, _ => new SessionState());
+  }
 
-    public void Reset(string userId)
+  public void Reset(string userId)
+  {
+    if (_sessions.TryGetValue(userId, out var session))
     {
-        if (_sessions.TryGetValue(userId, out var session))
-        {
-            session.Reset();
-        }
+      session.Reset();
     }
+  }
 
-    public void Remove(string userId)
-    {
-        _sessions.TryRemove(userId, out _);
-    }
+  public void Remove(string userId)
+  {
+    _sessions.TryRemove(userId, out _);
+  }
 }
 
 /// <summary>
@@ -35,50 +35,50 @@ public class SessionStateManager
 /// </summary>
 public class SessionState
 {
-    private readonly List<StepResult> _history = new();
-    private readonly object _lock = new();
+  private readonly List<StepResult> _history = new();
+  private readonly object _lock = new();
 
-    public string? CurrentTask { get; set; }
-    public WorkspaceContext? Workspace { get; set; }
-    public DateTime StartedAt { get; private set; } = DateTime.UtcNow;
+  public string? CurrentTask { get; set; }
+  public WorkspaceContext? Workspace { get; set; }
+  public DateTime StartedAt { get; private set; } = DateTime.UtcNow;
 
-    public IReadOnlyList<StepResult> History
+  public IReadOnlyList<StepResult> History
+  {
+    get
     {
-        get
-        {
-            lock (_lock)
-            {
-                return _history.ToList();
-            }
-        }
+      lock (_lock)
+      {
+        return _history.ToList();
+      }
     }
+  }
 
-    public void AddResult(StepResult result)
+  public void AddResult(StepResult result)
+  {
+    lock (_lock)
     {
-        lock (_lock)
-        {
-            _history.Add(result);
-        }
+      _history.Add(result);
     }
+  }
 
-    public void Reset()
+  public void Reset()
+  {
+    lock (_lock)
     {
-        lock (_lock)
-        {
-            _history.Clear();
-            CurrentTask = null;
-            StartedAt = DateTime.UtcNow;
-        }
+      _history.Clear();
+      CurrentTask = null;
+      StartedAt = DateTime.UtcNow;
     }
+  }
 
-    public int StepCount
+  public int StepCount
+  {
+    get
     {
-        get
-        {
-            lock (_lock)
-            {
-                return _history.Count;
-            }
-        }
+      lock (_lock)
+      {
+        return _history.Count;
+      }
     }
+  }
 }

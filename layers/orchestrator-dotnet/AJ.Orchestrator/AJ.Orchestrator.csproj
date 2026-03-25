@@ -7,7 +7,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\AJ.Shared\AJ.Shared.csproj" />
+    <ProjectReference Include="..\AJ.Orchestrator.Abstractions\AJ.Orchestrator.Abstractions.csproj" />
   </ItemGroup>
 
   <ItemGroup>
