@@ -13,11 +13,53 @@ sys.path.insert(
     0, os.path.join(os.path.dirname(__file__), "..", "layers", "orchestrator")
 )
 
-from services.helpers.response_parser import ResponseParser
-from schemas.models import Step
+try:
+    from services.helpers.response_parser import ResponseParser  # type: ignore[import-not-found]
+    from schemas.models import Step  # type: ignore[import-not-found]
+except ImportError:
+    # Fallback: try importing from the added path directly
+    import importlib.util
+
+    rp_path = os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "layers",
+        "orchestrator",
+        "services",
+        "helpers",
+        "response_parser.py",
+    )
+
+    spec = importlib.util.spec_from_file_location("response_parser", rp_path)
+
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load module spec from {rp_path}")
+
+    response_parser = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(response_parser)
+    ResponseParser = response_parser.ResponseParser
+
+    models_path = os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "layers",
+        "orchestrator",
+        "schemas",
+        "models.py",
+    )
+
+    spec = importlib.util.spec_from_file_location("models", models_path)
+
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load module spec from {models_path}")
+
+    models = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(models)
+    Step = models.Step
 
 
 # ==== detect_hallucination ====
+
 
 class TestDetectHallucinationPatterns:
     """Cover lines 68-81: hallucination pattern matching and narrative detection."""
@@ -76,6 +118,7 @@ class TestDetectHallucinationPatterns:
 
 # ==== detect_completion_hallucination ====
 
+
 class TestDetectCompletionHallucinationWindows:
     """Cover lines 95-97: Windows path regex hallucination detection."""
 
@@ -100,6 +143,7 @@ class TestDetectCompletionHallucinationWindows:
 
 
 # ==== extract_first_json_object ====
+
 
 class TestExtractFirstJsonObjectEdgeCases:
     """Cover lines 105, 114-118, 131: edge cases in JSON extraction."""
@@ -129,6 +173,7 @@ class TestExtractFirstJsonObjectEdgeCases:
 
 
 # ==== parse_response - legacy action normalization ====
+
 
 class TestParseResponseLegacyActions:
     """Cover lines 197-201: LEGACY_ACTION_MAP normalization."""
@@ -196,6 +241,7 @@ class TestParseResponseLegacyActions:
 
 # ==== parse_response - long tool name normalization ====
 
+
 class TestParseResponseLongToolName:
     """Cover lines 203-220: long tool name normalization."""
 
@@ -225,6 +271,7 @@ class TestParseResponseLongToolName:
 
 
 # ==== parse_response - param extraction fallbacks ====
+
 
 class TestParseResponseParamFallbacks:
     """Cover lines 224-236: top-level param extraction for legacy schemas."""
@@ -261,12 +308,15 @@ class TestParseResponseParamFallbacks:
 
     def test_thought_param_extracted(self):
         """Line 236: 'thought' key becomes params['thought']."""
-        response = '{"action": "reason", "thought": "I should scan the workspace first"}'
+        response = (
+            '{"action": "reason", "thought": "I should scan the workspace first"}'
+        )
         step = ResponseParser.parse_response(response, "task")
         assert step.params.get("thought") == "I should scan the workspace first"
 
 
 # ==== parse_response - agent_id defaulting ====
+
 
 class TestParseResponseAgentIdDefault:
     """Cover lines 240-246: agent_id defaulted to localhost for legacy execute."""
@@ -295,6 +345,7 @@ class TestParseResponseAgentIdDefault:
 
 
 # ==== parse_response - hallucination block in parse_response ====
+
 
 class TestParseResponseHallucinationBlock:
     """Cover lines 141-149: hallucination early return in parse_response."""

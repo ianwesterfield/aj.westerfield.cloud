@@ -1,0 +1,11 @@
+[tool.pytest.ini_options]
+pythonpath = [
+    "layers/orchestrator",
+    "layers/pragmatics",
+    "layers/memory",
+    "layers/extractor",
+]
+testpaths = ["tests"]
+markers = [
+    "integration: marks tests as integration tests requiring a running orchestrator",
+]

@@ -12,10 +12,10 @@ sys.path.insert(
     0, os.path.join(os.path.dirname(__file__), "..", "layers", "orchestrator")
 )
 
-from services.helpers.stream_parser import ThinkingStreamParser
-
+from services.helpers.stream_parser import ThinkingStreamParser  # type: ignore[import-not-found]
 
 # ==== feed() - not-in-think buffering with '<' ====
+
 
 class TestFeedNotInThinkBuffering:
     """Cover line 43: pending trimmed to '<' when not yet inside <think>."""
@@ -39,6 +39,7 @@ class TestFeedNotInThinkBuffering:
 
 # ==== feed() - danger zone pass (line 62) ====
 
+
 class TestFeedDangerZonePass:
     """Cover line 62: 'pass' when short pending has '<' or '/'."""
 
@@ -59,6 +60,7 @@ class TestFeedDangerZonePass:
 
 
 # ==== flush() ====
+
 
 class TestFlushMethod:
     """Cover lines 70-77: flush() method."""
@@ -99,6 +101,7 @@ class TestFlushMethod:
 
 # ==== get_content() ====
 
+
 class TestGetContent:
     """Cover line 81: get_content() return."""
 
@@ -125,6 +128,7 @@ class TestGetContent:
 
 
 # ==== extract_thinking() static method ====
+
 
 class TestExtractThinking:
     """Cover lines 86-87: extract_thinking() static method."""
@@ -159,6 +163,7 @@ class TestExtractThinking:
 
 # ==== extract_json() static method ====
 
+
 class TestExtractJson:
     """Cover lines 92-94: extract_json() static method."""
 
@@ -181,7 +186,5 @@ class TestExtractJson:
 
     def test_extract_json_with_whitespace_after_think(self):
         """Lines 92-93: Whitespace after </think> is stripped."""
-        result = ThinkingStreamParser.extract_json(
-            "<think>thinking</think>   \n   {}"
-        )
+        result = ThinkingStreamParser.extract_json("<think>thinking</think>   \n   {}")
         assert result == "{}"
