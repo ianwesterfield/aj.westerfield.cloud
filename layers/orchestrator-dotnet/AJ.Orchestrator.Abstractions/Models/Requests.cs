@@ -117,10 +117,38 @@ public record ClassifyResponse(
 
 public record SetWorkspaceResponse
 {
-  public required bool Success { get; init; }
-  public string? WorkspacePath { get; init; }
-  public string? SessionId { get; init; }
-  public string? Error { get; init; }
+    public required bool Success { get; init; }
+    public string? WorkspacePath { get; init; }
+    public string? SessionId { get; init; }
+    public string? Error { get; init; }
 }
 
 public record ResetStateRequest(string? SessionId = null);
+
+public record ResetStateResponse
+{
+    public required bool Success { get; init; }
+    public string? Message { get; init; }
+}
+
+public record HealthResponse
+{
+    public required string Status { get; init; }
+    public required string Service { get; init; }
+    public required string Version { get; init; }
+}
+
+public record AgentsResponse
+{
+    public required List<AgentInfo> Agents { get; init; }
+}
+
+public record AgentInfo
+{
+    public required string AgentId { get; init; }
+    public required string Hostname { get; init; }
+    public required string Platform { get; init; }
+    public required List<string> Capabilities { get; init; }
+    public required int GrpcPort { get; init; }
+    public required string IpAddress { get; init; }
+}
