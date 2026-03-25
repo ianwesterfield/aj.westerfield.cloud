@@ -69,30 +69,36 @@ class TestSummarizeForMemoryE2E:
     @pytest.mark.asyncio
     async def test_summarize_spouse(self):
         """Summarize spouse information."""
-        result = await summarize_for_memory("My wife's name is Sarah and she loves hiking")
+        result = await summarize_for_memory(
+            "My wife's name is Sarah and she loves hiking"
+        )
 
         summary = result.get("summary", "")
-        
+
         # Should mention Sarah
         assert "Sarah" in summary, f"Expected Sarah in summary, got: {summary}"
 
     @pytest.mark.asyncio
     async def test_summarize_preference(self):
         """Summarize user preference."""
-        result = await summarize_for_memory("I prefer dark mode for all my applications")
+        result = await summarize_for_memory(
+            "I prefer dark mode for all my applications"
+        )
 
         summary = result.get("summary", "")
-        
+
         # Should mention dark mode
         assert "dark" in summary.lower(), f"Expected dark mode mention, got: {summary}"
 
     @pytest.mark.asyncio
     async def test_summarize_terminology(self):
         """Summarize custom terminology."""
-        result = await summarize_for_memory("When I say agents I mean FunnelCloud Agents")
+        result = await summarize_for_memory(
+            "When I say agents I mean FunnelCloud Agents"
+        )
 
         summary = result.get("summary", "")
-        
+
         # Should capture the terminology
         assert (
             "agent" in summary.lower() or "funnelcloud" in summary.lower()
@@ -104,7 +110,7 @@ class TestSummarizeForMemoryE2E:
         result = await summarize_for_memory("I live in Austin, Texas")
 
         summary = result.get("summary", "")
-        
+
         assert (
             "Austin" in summary or "Texas" in summary
         ), f"Expected location, got: {summary}"
@@ -117,13 +123,15 @@ class TestSummarizeForMemoryE2E:
         )
 
         summary = result.get("summary", "")
-        
+
         # Should capture multiple pieces of info
         assert "Ian" in summary, f"Expected name in summary, got: {summary}"
         # Should also mention either location or spouse
         has_location = "Austin" in summary
         has_spouse = "Sarah" in summary
-        assert has_location or has_spouse, f"Expected location or spouse, got: {summary}"
+        assert (
+            has_location or has_spouse
+        ), f"Expected location or spouse, got: {summary}"
 
     @pytest.mark.asyncio
     async def test_empty_for_greeting(self):
@@ -132,7 +140,7 @@ class TestSummarizeForMemoryE2E:
 
         # Should have no summary for generic greeting
         summary = result.get("summary")
-        
+
         # Either None or empty string is acceptable
         if summary is not None:
             # Model might occasionally produce something - skip if so
@@ -144,7 +152,7 @@ class TestSummarizeForMemoryE2E:
         result = await summarize_for_memory("What is the capital of France?")
 
         summary = result.get("summary")
-        
+
         if summary is not None:
             pytest.skip(f"Model produced summary for question: {summary}")
 

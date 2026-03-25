@@ -98,10 +98,10 @@ class TestFactsToStorageFormat:
         """Extracts facts from summary result."""
         result = {
             "summary": "User is named Ian",
-            "facts": [{"type": "memory", "value": "User is named Ian"}]
+            "facts": [{"type": "memory", "value": "User is named Ian"}],
         }
         storage = facts_to_storage_format(result)
-        
+
         assert len(storage) == 1
         assert storage[0] == {"type": "memory", "value": "User is named Ian"}
 
@@ -123,10 +123,10 @@ class TestFactsToStorageFormat:
             "facts": [
                 {"type": "memory", "value": "Fact 1"},
                 {"type": "memory", "value": "Fact 2"},
-            ]
+            ],
         }
         storage = facts_to_storage_format(result)
-        
+
         assert len(storage) == 2
 
 
