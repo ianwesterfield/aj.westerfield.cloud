@@ -130,6 +130,7 @@ target_modules:
   - q_proj, k_proj, v_proj, o_proj # Attention
   - gate_proj, up_proj, down_proj # MLP
 
+
 # Results in ~536M trainable params (1.61% of 32.76B)
 ```
 
@@ -344,15 +345,16 @@ tmux attach -t training
 
 ## Reference: Tool Schema
 
-AJ uses 5 core tools for the "FunnelCloud Remote Execute" philosophy:
+AJ uses 4 core tools in the .NET 9 orchestrator:
 
-| Tool                 | Purpose                   | Example                       |
-| -------------------- | ------------------------- | ----------------------------- |
-| `remote_execute`     | Execute on ONE agent      | Run PowerShell on `domain01`  |
-| `remote_execute_all` | Execute on ALL agents     | Get hostname from every agent |
-| `list_agents`        | Discover available agents | Show FunnelCloud agents       |
-| `think`              | Reasoning step (internal) | Plan before execution         |
-| `complete`           | Task completion signal    | Mark task finished            |
+| Tool          | Purpose                     | Example                      |
+| ------------- | --------------------------- | ---------------------------- |
+| `execute`     | Execute on a specific agent | Run PowerShell on `domain01` |
+| `list_agents` | Discover available agents   | Show FunnelCloud agents      |
+| `think`       | Reasoning step (internal)   | Plan before execution        |
+| `complete`    | Task completion signal      | Mark task finished           |
+
+> **Training data note**: Older training examples may reference `remote_execute` / `remote_execute_all`. The orchestrator's `NormalizeTool()` method maps these to `execute` at runtime.
 
 **Note**: All commands are LLM-generated from training. The orchestrator does NOT provide bash, file read/write, or code execution tools. The LLM knows how to construct PowerShell (Windows) or Bash (Linux) commands.
 

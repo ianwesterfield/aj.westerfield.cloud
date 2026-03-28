@@ -10,17 +10,29 @@ import sys
 import socket
 import pytest
 import asyncio
-
-# Add project paths
-sys.path.insert(
-    0, os.path.join(os.path.dirname(__file__), "..", "layers", "pragmatics")
-)
+import importlib.util
 
 # Override env vars before importing fact_extractor
 os.environ["OLLAMA_HOST"] = "localhost"
 os.environ["OLLAMA_PORT"] = "11434"
 
-from services.fact_extractor import summarize_for_memory, facts_to_storage_format
+# Load fact_extractor module directly from pragmatics layer
+_pragmatics_path = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "layers",
+    "pragmatics",
+    "services",
+    "fact_extractor.py",
+)
+_spec = importlib.util.spec_from_file_location(
+    "pragmatics_fact_extractor", _pragmatics_path
+)
+_fact_extractor = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_fact_extractor)
+
+summarize_for_memory = _fact_extractor.summarize_for_memory
+facts_to_storage_format = _fact_extractor.facts_to_storage_format
 
 
 # Check if ollama is reachable
@@ -85,7 +97,7 @@ class TestSummarizeForMemoryE2E:
             "I prefer dark mode for all my applications"
         )
 
-        summary = result.get("summary", "")
+        summary = result.get("summary") or ""
 
         # Should mention dark mode
         assert "dark" in summary.lower(), f"Expected dark mode mention, got: {summary}"

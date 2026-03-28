@@ -11,7 +11,7 @@ FunnelCloud extends AJ's capabilities beyond Docker containers to any machine on
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                         AJ Orchestrator                         │
-│                    (Docker - layers/orchestrator)               │
+│                  (Docker - layers/orchestrator-dotnet)          │
 └───────────────────────────┬─────────────────────────────────────┘
                             │ gRPC (mTLS)
             ┌───────────────┼───────────────┐
@@ -26,9 +26,9 @@ FunnelCloud extends AJ's capabilities beyond Docker containers to any machine on
 
 ### Key Features
 
-- **UDP Discovery**: Agents announce themselves on the network (port 41420)
-- **gRPC Task Execution**: Secure RPC for task submission and results (port 41235)
-- **mTLS Security**: Certificate-based mutual authentication
+- **Gossip-Seed Discovery**: Agents discovered via HTTP gossip-seed endpoint (port 41421)
+- **gRPC Task Execution**: RPC for task submission and results (port 41235, h2c)
+- **Certificate Infrastructure**: CA and agent certs exist; mTLS enforcement planned (infrastructure exists, enforcement planned)
 - **Windows Service**: Runs as a background service with auto-start
 
 ---
@@ -45,10 +45,10 @@ FunnelCloud extends AJ's capabilities beyond Docker containers to any machine on
 
 ### Network Ports
 
-| Port  | Protocol | Purpose                      |
-| ----- | -------- | ---------------------------- |
-| 41420 | UDP      | Discovery broadcast/response |
-| 41235 | TCP      | gRPC task execution (mTLS)   |
+| Port  | Protocol | Purpose                                 |
+| ----- | -------- | --------------------------------------- |
+| 41421 | HTTP     | Discovery / gossip-seed endpoint        |
+| 41235 | TCP      | gRPC task execution (h2c, mTLS planned) |
 
 ### Security Model
 
@@ -207,7 +207,7 @@ One-click deployment from a client machine.
 | BuildServer | ians-r16             | Build server hostname/IP |
 | AgentId     | $env:COMPUTERNAME    | Unique agent identifier  |
 | InstallPath | C:\FunnelCloud\Agent | Local installation path  |
-| Insecure    | false                | Skip mTLS (testing only) |
+| Insecure    | false                | Skip mTLS / use h2c      |
 
 ---
 
@@ -308,7 +308,7 @@ $env:FUNNEL_INSECURE = "true"
 
 ### Agent not discovered?
 
-1. Check firewall allows UDP 41420 and TCP 41235
+1. Check firewall allows HTTP 41421 and TCP 41235
 2. Verify agent is running: `Get-Service FunnelCloudAgent`
 3. Check logs: `Get-Content "C:\FunnelCloud\Agent\logs\stderr.log" -Tail 50`
 
@@ -389,20 +389,16 @@ $env:Logging__LogLevel__Default = "Debug"
 
 The orchestrator discovers and communicates with agents automatically:
 
-```python
-# layers/orchestrator/services/agent_discovery.py
-async def discover_agents() -> List[AgentInfo]:
-    """Discover all FunnelCloud agents on the network."""
-    # UDP broadcast on port 41420
-    # Returns list of agents with capabilities
+```csharp
+// layers/orchestrator-dotnet/AJ.Orchestrator/Services/AgentDiscoveryService.cs
+// HTTP gossip-seed discovery at port 41421
+// Returns list of agents with capabilities, roles, and addresses
 ```
 
-```python
-# layers/orchestrator/services/grpc_client.py
-async def execute_remote_task(agent: AgentInfo, task: TaskRequest) -> TaskResult:
-    """Execute a task on a remote agent via gRPC."""
-    # mTLS connection to port 41235
-    # Returns execution result
+```csharp
+// layers/orchestrator-dotnet/AJ.Orchestrator.Abstractions/Protos/GrpcAgentClient.cs
+// gRPC h2c connection to port 41235
+// TaskService.TaskServiceClient sends TaskRequest, receives TaskResult
 ```
 
 ---
@@ -413,8 +409,8 @@ async def execute_remote_task(agent: AgentInfo, task: TaskRequest) -> TaskResult
 2. **Use unique agent IDs** - each machine should have its own certificate
 3. **Rotate certificates** before expiration (default: 2 years)
 4. **Restrict network access** - only allow gRPC traffic from known orchestrator IPs
-5. **Enable mTLS in production** - never use insecure mode outside testing
+5. **Enable mTLS in production** — currently using h2c (insecure); enforcement planned
 
 ---
 
-_Last Updated: January 4, 2026_
+_Last Updated: March 8, 2026_
