@@ -15,13 +15,14 @@ The AI tooling ecosystem is crowded. Here's where AJ sits — and why it exists.
 
 ### The "FunnelCloud Remote Execute" Philosophy
 
-At its core, AJ relies on LLM reasoning and a single tool: `remote_execute`. The LLM generates commands from its training — PowerShell for Windows, Bash for Linux — and the orchestrator runs them on FunnelCloud agents.
+At its core, AJ relies on LLM reasoning and four tools: `list_agents`, `execute`, `think`, and `complete`. The LLM generates commands from its training — PowerShell for Windows, Bash for Linux — and the orchestrator dispatches them to FunnelCloud agents via gRPC.
 
 - **FunnelCloud agents** on Windows/Linux machines (full capability detection)
 - **LLM-generated commands**: The model knows how to construct commands from its training
 - **No local execution**: All commands run on remote agents, never in the orchestrator container
+- **R1 reasoning**: The model uses `<think>` blocks for chain-of-thought before producing tool calls
 
-The orchestrator doesn't provide bash, file read/write, or code execution tools. Instead, the LLM reasons about what commands to run and uses `remote_execute` to dispatch them to the appropriate agent.
+The orchestrator doesn't provide bash, file read/write, or code execution tools. Instead, the LLM reasons about what commands to run and uses `execute` to dispatch them to the appropriate agent.
 
 The trick is not only knowing _what_ command to generate, but also _which agent_ to run it on. That's where AJ differs from pure tool-exposure protocols.
 
@@ -72,9 +73,8 @@ They're complementary. AJ could _be called by_ a workflow builder as an automati
 sequenceDiagram
     participant U as 🤖 User (Open-WebUI)
     participant F as AJ Filter
-    participant O as Orchestrator
+    participant O as Orchestrator (.NET 9)
     participant M as Memory (Qdrant)
-    participant T as Tools
     participant A as FunnelCloud Agents
 
     U->>F: Message
@@ -84,18 +84,14 @@ sequenceDiagram
     alt Intent: CASUAL
         F-->>U: LLM responds directly
     else Intent: TASK
-        F->>O: Execute task
+        F->>O: Execute task (SSE stream)
         O->>M: Retrieve context
         M-->>O: Session history
-        O->>O: Plan steps
+        O->>O: Plan steps (LLM reasoning)
         loop Each step
-            O->>T: Execute tool
-            alt Local task
-                T-->>O: Result
-            else Remote task
-                T->>A: gRPC call (mTLS)
-                A-->>T: Result
-                T-->>O: Result
+            alt Remote task
+                O->>A: gRPC h2c TaskRequest
+                A-->>O: TaskResult
             end
             O->>O: Reason about result
         end
@@ -110,7 +106,7 @@ sequenceDiagram
 | Component            | Purpose                                                  | Technology                                                                                   | Port  |
 | -------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ----- |
 | **Filter**           | Intent routing & LLM coordination                        | [Open-WebUI](https://github.com/open-webui/open-webui) Python filter                         | N/A   |
-| **Orchestrator API** | Reasoning engine + intent classification + tool dispatch | Python/FastAPI + [Ollama](https://github.com/ollama/ollama)                                  | 8004  |
+| **Orchestrator API** | Reasoning engine + intent classification + tool dispatch | .NET 9 (C#) + [Ollama](https://github.com/ollama/ollama)                                     | 8004  |
 | **Memory API**       | Semantic knowledge storage & recall                      | [Qdrant](https://github.com/qdrant/qdrant) vectors + embeddings                              | 8000  |
 | **Extractor API**    | Media processing (PDF, images, audio)                    | [LLaVA](https://github.com/haotian-liu/LLaVA) + [Whisper](https://github.com/openai/whisper) | 8002  |
 | **Qdrant**           | Vector database for semantic search                      | [Qdrant](https://github.com/qdrant/qdrant) (in-memory)                                       | 6333  |
@@ -163,48 +159,43 @@ For network equipment (UniFi, Cisco, etc.), MCP servers can provide the same sel
 
 ```mermaid
 graph LR
-    M{{"AJ<br/>(Orchestrator)"}}
-    D>"Docker<br/>(Local Tasks)"]
+    M{{"AJ<br/>(Orchestrator .NET 9)"}}
     W1(["Windows<br/>Machine"])
     L1(["Linux<br/>Workstation"])
     S1(["Server<br/>Farm"])
 
-    M ==>|"mTLS Pinned"| D
-    M -.->|"Discover & Execute"| W1
-    M -.->|"Discover & Execute"| L1
-    M -.->|"Discover & Execute"| S1
+    M -.->|"gRPC h2c"| W1
+    M -.->|"gRPC h2c"| L1
+    M -.->|"gRPC h2c"| S1
 ```
 
 **Agent Discovery Sequence:**
 
 ```mermaid
 sequenceDiagram
-    participant O as Orchestrator
-    participant N as Network (UDP)
+    participant O as Orchestrator (.NET 9)
+    participant S as Gossip Seed Agent
     participant A1 as Agent 1
     participant A2 as Agent 2
 
-    Note over O: Conversation starts
-    O->>N: UDP Broadcast "FUNNEL_DISCOVER"
-    N-->>A1: Discovery packet
-    N-->>A2: Discovery packet
-    A1-->>O: "I'm here" + capabilities
-    A2-->>O: "I'm here" + capabilities
-    O->>O: Cache discovered agents
+    Note over O: Task starts
+    O->>S: HTTP GET /discover-peers
+    S-->>O: Agent list (IP, hostname, capabilities)
+    O->>O: Merge with local agent, cache all
 
     Note over O: Task execution
-    O->>A1: gRPC task (mTLS)
-    A1-->>O: Result
+    O->>A1: gRPC h2c TaskRequest
+    A1-->>O: TaskResult (stdout, stderr, exit code)
 
     Note over O,A1: Agent fails mid-session
     O-xA1: Connection lost
-    O->>N: Re-discover (lazy)
+    O->>S: Re-discover (lazy)
     A2-->>O: Available
     O->>A2: Retry task
 ```
 
-- **mTLS + fingerprint pinning** (cryptographic identity)
-- **Try-then-elevate** permission model
+- **Gossip-seed discovery** (HTTP-based, cross-subnet capable)
+- **gRPC h2c** (insecure HTTP/2 for task execution — mTLS planned)
 - **One-click deployment** to Windows machines
 - **Server role detection** (Windows: DC, DNS, DHCP, Exchange, SQL Server, IIS, Hyper-V, File Server; Linux: nginx, Apache, MySQL, PostgreSQL, Docker, Kubernetes)
 
@@ -357,19 +348,26 @@ See [training/README.md](training/README.md) for complete instructions.
 ```
 layers/
 ├── shared/               # Shared utilities (logging, schemas)
-├── orchestrator/         # Reasoning + tool dispatch (core)
-│   └── services/
-│       ├── bash_dispatcher.py   # FunnelCloud Remote Execute - 5 tools
-│       ├── reasoning_engine.py  # LLM planning & step generation
-│       ├── session_state.py     # Conversation state tracking
-│       └── grpc_client.py       # FunnelCloud agent communication
+├── orchestrator-dotnet/  # .NET 9 orchestrator (active, production)
+│   ├── AJ.Orchestrator.API/        # ASP.NET Core API (controllers, endpoints)
+│   ├── AJ.Orchestrator.Domain/     # Domain services
+│   │   └── Services/
+│   │       ├── ReasoningEngine.cs      # LLM reasoning loop + response parsing
+│   │       ├── GrpcAgentClient.cs      # FunnelCloud gRPC task execution
+│   │       ├── AgentDiscoveryService.cs # Gossip-seed agent discovery
+│   │       ├── SessionStateManager.cs  # Conversation state tracking
+│   │       └── TaskPlanner.cs          # Task planning + workspace analysis
+│   ├── AJ.Orchestrator.Abstractions/ # Interfaces, models, proto-gen
+│   ├── AJ.Orchestrator.Tests/       # 262 unit tests
+│   └── AJ.Shared/                   # Shared contracts
+├── orchestrator/         # Python orchestrator (DEPRECATED — retained for reference)
 ├── memory/              # Semantic storage + retrieval
 ├── pragmatics/          # Intent classification
 ├── extractor/           # Media processing
 └── agents/              # Distributed agent network
     └── FunnelCloud/     # .NET 8 gRPC agent framework
         ├── certs/       # Certificate Authority + agent certs
-        ├── FunnelCloud.Agent/   # Agent service
+        ├── FunnelCloud.Agent/   # Agent service (84 unit tests)
         └── FunnelCloud.Shared/  # Shared contracts
 
 filters/
@@ -383,20 +381,28 @@ training/
 
 ### Extending AJ
 
-**Add a new tool:**
+**The orchestrator is .NET 9 (C#)**. The Python orchestrator is deprecated.
 
 The "FunnelCloud Remote Execute" philosophy means most operations are commands run on agents.
 The LLM generates appropriate commands (PowerShell/Bash) from its training.
-For truly custom tools, add them to `bash_dispatcher.py`:
 
-```python
-# In layers/orchestrator/services/bash_dispatcher.py
+**Available tools** (defined in `ReasoningEngine.cs`):
 
-# Add to dispatch_tool():
-if tool == "custom_tool":
-    # Your custom logic here
-    return {"success": True, "output": "result", "error": None}
-```
+| Tool          | Purpose                            | Parameters            |
+| ------------- | ---------------------------------- | --------------------- |
+| `list_agents` | Discover online FunnelCloud agents | None                  |
+| `execute`     | Run a command on any agent         | `agent_id`, `command` |
+| `think`       | Planning/reasoning step            | `thought`             |
+| `complete`    | Final response to user             | `answer`              |
+
+**Key files:**
+
+| File                                                                                   | Purpose                                             |
+| -------------------------------------------------------------------------------------- | --------------------------------------------------- |
+| `layers/orchestrator-dotnet/AJ.Orchestrator.Domain/Services/ReasoningEngine.cs`        | LLM reasoning loop, system prompt, response parsing |
+| `layers/orchestrator-dotnet/AJ.Orchestrator.Domain/Services/GrpcAgentClient.cs`        | gRPC task execution on FunnelCloud agents           |
+| `layers/orchestrator-dotnet/AJ.Orchestrator.Domain/Services/AgentDiscoveryService.cs`  | Gossip-seed agent discovery                         |
+| `layers/orchestrator-dotnet/AJ.Orchestrator.API/Controllers/OrchestratorController.cs` | API endpoints (classify, run-task SSE)              |
 
 **Retrain intent classifier:**
 
@@ -412,7 +418,7 @@ docker compose up -d --build pragmatics_api
 
 ### Security
 
-- **Encrypted Communication**: mTLS for all agent-to-orchestrator calls
+- **gRPC Communication**: Currently h2c (insecure HTTP/2); mTLS planned for production
 - **Workspace Isolation**: Each user has isolated memory and state
 - **Permission Gating**: Tools validate permissions before execution
 - **No External Calls**: Everything stays on your infrastructure
@@ -448,19 +454,36 @@ docker compose up -d --build pragmatics_api
 
 ### Phase 2: FunnelCloud Agents ✅
 
-- [x] Agent discovery protocol (UDP broadcast)
-- [x] mTLS credential management (CA + agent certs)
-- [x] Certificate pinning (SHA256 fingerprint)
+- [x] Agent discovery protocol (HTTP gossip-seed)
+- [x] Cross-subnet gossip-seed bootstrap
+- [x] Certificate infrastructure (CA + agent certs — not yet enforced)
 - [x] gRPC service definition (task_service.proto)
 - [x] Windows service installation (NSSM)
 - [x] One-click deployment scripts
 - [x] Server role detection (Exchange, DC, DNS, DHCP, IIS, SQL Server, etc.)
 - [x] Self-contained deployment (no .NET runtime dependency)
+- [x] Cross-subnet gossip-seed discovery
+- [x] gRPC h2c remote command execution
+- [ ] mTLS security (currently h2c insecure)
 - [ ] Multi-agent orchestration (parallel execution)
 
 See [FunnelCloud/README.md](layers/agents/FunnelCloud/README.md) for detailed deployment instructions.
 
-### Phase 3: Model Fine-Tuning 🔄 (In Progress)
+### Phase 3: .NET Orchestrator Migration ✅
+
+**Completed**: Full rewrite of orchestrator from Python/FastAPI to .NET 9 (C#).
+
+- [x] ReasoningEngine with 4-tool architecture (list_agents, execute, think, complete)
+- [x] R1-Distill `<think>` block stripping and code fence handling
+- [x] Tool name normalization (hallucination recovery)
+- [x] Parameter alias normalization (agent_id, target_agent_name, etc.)
+- [x] Gossip-seed cross-subnet agent discovery
+- [x] gRPC h2c remote command execution
+- [x] SSE streaming events (status, step, result, complete, error)
+- [x] Session state management
+- [x] 346 unit tests (262 orchestrator + 84 FunnelCloud)
+
+### Phase 4: Model Fine-Tuning 🔄 (In Progress)
 
 **Current models:**
 | Model | Base | Purpose |
@@ -480,14 +503,14 @@ See [FunnelCloud/README.md](layers/agents/FunnelCloud/README.md) for detailed de
 
 See [training/README.md](training/README.md) for details.
 
-### Phase 4: Knowledge Graph 📅
+### Phase 5: Knowledge Graph 📅
 
 - [ ] Entity extraction from conversations
 - [ ] Relationship mapping
 - [ ] Temporal reasoning (time-aware recall)
 - [ ] Pattern detection (workflow learning)
 
-### Phase 5: Advanced Features 📅
+### Phase 6: Advanced Features 📅
 
 - [ ] **MCP-native tool APIs** (migrate from REST to Model Context Protocol)
 - [ ] Adaptive tool selection (learning from outcomes)
@@ -570,18 +593,14 @@ Get-Service FunnelCloudAgent
 # View agent logs
 Get-Content "C:\FunnelCloud\Agent\logs\stdout.log" -Tail 50
 
-# Test UDP discovery manually (from orchestrator container)
-docker exec -it orchestrator_api python -c "
-import socket
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-sock.settimeout(5)
-sock.sendto(b'FUNNEL_DISCOVER', ('255.255.255.255', 41420))
-print(sock.recvfrom(1024))
-"
+# Test gossip-seed discovery (from orchestrator container)
+wsl docker exec orchestrator_api curl -s http://GOSSIP_SEED_IP:41421/api/discovery/agents
 
-# Check firewall allows UDP 41420 and TCP 41235
-netsh advfirewall firewall show rule name=all | findstr "41420 41235"
+# Test agent HTTP endpoint directly
+Invoke-RestMethod http://AGENT_IP:41421/api/discovery/agents
+
+# Check firewall allows HTTP 41421 and gRPC 41235
+netsh advfirewall firewall show rule name=all | findstr "41421 41235"
 ```
 
 ### FunnelCloud deployment fails?

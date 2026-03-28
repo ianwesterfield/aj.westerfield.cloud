@@ -148,66 +148,51 @@ services:
     restart: unless-stopped
 
   # -------------------------------------------------
-  # Orchestrator API (Agentic Reasoning + Execution Engine)
+  # Orchestrator API (.NET) - Agentic Reasoning + Execution Engine
   # Includes embedded FunnelCloud Agent for localhost bootstrap
   # -------------------------------------------------
   orchestrator_api:
     build:
-      context: ./layers
-      dockerfile: orchestrator/Dockerfile
+      context: ./layers/orchestrator-dotnet
+      dockerfile: Dockerfile
     container_name: orchestrator_api
     network_mode: host
     environment:
-      # Share main Ollama instance with Open-WebUI
+      # .NET Core configuration
+      - ASPNETCORE_URLS=http://+:8004
+      - ASPNETCORE_ENVIRONMENT=Production
+      # Ollama configuration (host network - use localhost)
+      - Ollama__Url=http://localhost:11434
+      - Ollama__Model=r1-distill-aj:32b-8k
       - OLLAMA_BASE_URL=http://localhost:11434
-      # Default model - 8k context window for multi-step reasoning
       - OLLAMA_MODEL=r1-distill-aj:32b-8k
-      - MEMORY_API_URL=http://localhost:8000
-      # Pragmatics API for intent classification (DistilBERT on CPU)
+      # Pragmatics API for intent classification
+      - Pragmatics__Url=http://localhost:8001
       - PRAGMATICS_API_URL=http://localhost:8001
-      - MAX_PARALLEL_TASKS=5
-      - WORKSPACE_ROOT=/workspace
-      - HOST_WORKSPACE_PATH=${HOST_WORKSPACE_PATH:-/mnt/c/Code}
-
-      # Executor settings (now local)
-      - DEFAULT_TIMEOUT=30
-      - MAX_TIMEOUT=120
-
-      # ====== Embedded FunnelCloud Agent ======
-      # The orchestrator container runs its own FunnelCloud agent
-      # This provides the localhost bootstrap for discover-peers
-      - FUNNEL_AGENT_ID=orchestrator-agent
-      - FUNNEL_INSECURE=${FUNNEL_INSECURE:-true}
-
-      # FunnelCloud agent discovery
-      - FUNNEL_DISCOVERY_PORT=41420
-      - FUNNEL_GRPC_PORT=41235
-      - FUNNEL_DISCOVERY_TIMEOUT=3.0
-      # HTTP port for agent REST API (health, discover-peers)
-      - FUNNEL_AGENT_HTTP_PORT=41421
-      # Gossip config - how many rounds to expand peer discovery
-      - FUNNEL_GOSSIP_MAX_ROUNDS=3
-      - FUNNEL_GOSSIP_TIMEOUT=2.0
-      # Gossip seed - ONE reachable agent IP to bootstrap cross-subnet discovery
-      # (only needed when embedded agent can't multicast to other subnets)
-      - FUNNEL_LOCAL_AGENT_HOST_FILE=/run/secrets/funnel_local_agent_host
-      - FUNNEL_GOSSIP_SEED_HOST_FILE=/run/secrets/funnel_gossip_seed_host
-      # mTLS certificates for FunnelCloud gRPC
-      - ORCHESTRATOR_CERT_PATH=/app/certs/agents/orchestrator/agent.crt
-      - ORCHESTRATOR_KEY_PATH=/app/certs/agents/orchestrator/agent.key
-      - CA_CERT_PATH=/app/certs/ca/ca.crt
-    secrets:
-      - funnel_local_agent_host
-      - funnel_gossip_seed_host
-    volumes:
-      - ${HOST_WORKSPACE_PATH:-/mnt/c/Code}:/workspace:rw
-      - ./layers/agents/FunnelCloud/certs:/app/certs:ro
+      # FunnelCloud agent discovery (use WSL gateway IP to reach Windows host)
+      - FunnelCloud__Url=http://172.25.224.1:41421
+      # Gossip seed for cross-subnet agent discovery
+      - FunnelCloud__GossipSeedHost=192.168.10.166
     depends_on:
       ollama:
         condition: service_healthy
       memory_api:
         condition: service_started
     restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:8004/health",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   # -------------------------------------------------
   # Open-WebUI

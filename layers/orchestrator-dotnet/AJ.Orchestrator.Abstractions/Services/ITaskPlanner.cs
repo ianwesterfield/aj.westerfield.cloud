@@ -1,4 +1,4 @@
-using AJ.Orchestrator.Abstractions.Models;
+using AJ.Orchestrator.Abstractions.Models.Workspace;
 
 namespace AJ.Orchestrator.Abstractions.Services;
 
