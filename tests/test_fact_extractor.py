@@ -7,17 +7,26 @@ Tests the helper functions and response formatting without network calls.
 import sys
 import os
 import pytest
+import importlib.util
 
-# Add project paths
-sys.path.insert(
-    0, os.path.join(os.path.dirname(__file__), "..", "layers", "pragmatics")
+# Load fact_extractor module directly from pragmatics layer
+_pragmatics_path = os.path.join(
+    os.path.dirname(__file__),
+    "..",
+    "layers",
+    "pragmatics",
+    "services",
+    "fact_extractor.py",
 )
+_spec = importlib.util.spec_from_file_location(
+    "pragmatics_fact_extractor", _pragmatics_path
+)
+_fact_extractor = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_fact_extractor)
 
-from services.fact_extractor import (
-    _empty_result,
-    _clean_summary,
-    facts_to_storage_format,
-)
+_empty_result = _fact_extractor._empty_result
+_clean_summary = _fact_extractor._clean_summary
+facts_to_storage_format = _fact_extractor.facts_to_storage_format
 
 
 class TestEmptyResult:

@@ -6,9 +6,7 @@ import socket
 import pytest
 
 # Add project paths for imports
-sys.path.insert(
-    0, os.path.join(os.path.dirname(__file__), "..", "layers", "orchestrator")
-)
+# Note: Python orchestrator removed - now using .NET orchestrator
 sys.path.insert(
     0, os.path.join(os.path.dirname(__file__), "..", "layers", "pragmatics")
 )
@@ -19,6 +17,10 @@ ORCHESTRATOR_PORT = int(os.environ.get("ORCHESTRATOR_PORT", "8004"))
 ORCHESTRATOR_URL = os.environ.get(
     "ORCHESTRATOR_URL", f"http://{ORCHESTRATOR_HOST}:{ORCHESTRATOR_PORT}"
 )
+
+# NOTE: E2E tests must run sequentially (no pytest-xdist).
+# The .NET orchestrator handles one reasoning loop at a time per session.
+# pyproject.toml disables xdist with: addopts = "-p no:xdist"
 
 
 def pytest_configure(config):
