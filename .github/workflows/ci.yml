@@ -22,9 +22,11 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest pytest-cov pytest-asyncio
-          pip install -r layers/orchestrator/requirements.txt
+          pip install -r layers/requirements.txt
+          pip install -r layers/pragmatics/requirements.txt
 
       - name: Run unit tests
         run: |
-          pytest tests/test_cov_*.py -v --tb=short \
-            --cov=layers/orchestrator --cov-report=term-missing
+          pytest tests/ -v --tb=short \
+            --ignore=tests/test_e2e_*.py \
+            --cov=layers/pragmatics --cov-report=term-missing
