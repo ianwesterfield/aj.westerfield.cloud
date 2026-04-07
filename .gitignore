@@ -51,6 +51,7 @@ raw/
 secrets/
 Thumbs.db
 training/**/data/
+!training/data/context_switching.jsonl
 training/datasets/__pycache__/
 training/datasets/processed/
 training/datasets/raw/

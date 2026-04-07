@@ -103,15 +103,52 @@ sequenceDiagram
 
 ### System Components
 
-| Component            | Purpose                                                  | Technology                                                                                   | Port  |
-| -------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ----- |
-| **Filter**           | Intent routing & LLM coordination                        | [Open-WebUI](https://github.com/open-webui/open-webui) Python filter                         | N/A   |
-| **Orchestrator API** | Reasoning engine + intent classification + tool dispatch | .NET 9 (C#) + [Ollama](https://github.com/ollama/ollama)                                     | 8004  |
-| **Memory API**       | Semantic knowledge storage & recall                      | [Qdrant](https://github.com/qdrant/qdrant) vectors + embeddings                              | 8000  |
-| **Extractor API**    | Media processing (PDF, images, audio)                    | [LLaVA](https://github.com/haotian-liu/LLaVA) + [Whisper](https://github.com/openai/whisper) | 8002  |
-| **Qdrant**           | Vector database for semantic search                      | [Qdrant](https://github.com/qdrant/qdrant) (in-memory)                                       | 6333  |
-| **Ollama**           | Local LLM inference                                      | r1-distill-aj:32b-8k (Q4_K_M, 8192 context)                                                  | 11434 |
-| **Ollama Facts**     | Fact extraction for memory                               | qwen2.5:1.5b                                                                                 | 11436 |
+| Component            | Purpose                                            | Technology                                                                                   | Port  |
+| -------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------- | ----- |
+| **Filter**           | Intent routing, IRON GATE fabrication detection    | [Open-WebUI](https://github.com/open-webui/open-webui) Python filter                         | N/A   |
+| **Orchestrator API** | Reasoning engine + skill execution + tool dispatch | .NET 9 (C#) + [Ollama](https://github.com/ollama/ollama)                                     | 8004  |
+| **Pragmatics API**   | Intent classification + entity extraction          | DistilBERT 4-class + spaCy NER                                                               | 8001  |
+| **Memory API**       | Semantic knowledge storage & recall                | [Qdrant](https://github.com/qdrant/qdrant) vectors + embeddings                              | 8000  |
+| **Extractor API**    | Media processing (PDF, images, audio)              | [LLaVA](https://github.com/haotian-liu/LLaVA) + [Whisper](https://github.com/openai/whisper) | 8002  |
+| **Qdrant**           | Vector database for semantic search                | [Qdrant](https://github.com/qdrant/qdrant) (in-memory)                                       | 6333  |
+| **Ollama**           | Local LLM inference                                | r1-distill-aj:32b-8k (Q4_K_M, 8192 context)                                                  | 11434 |
+| **Ollama Facts**     | Fact extraction for memory                         | qwen2.5:1.5b                                                                                 | 11436 |
+
+### Two-Tier Skill System
+
+AJ uses a hybrid approach for task execution:
+
+```mermaid
+flowchart TD
+    U[User Request] --> M{Skill<br/>Matcher}
+    M -->|"Pattern/keyword ≥0.5"| T1["Tier 1: Deterministic<br/>(skill.yaml)"]
+    M -->|"No match"| T2["Tier 2: LLM Reasoning<br/>(SKILL.md injected)"]
+    T1 --> E1[Execute Workflow Steps]
+    T2 --> E2[LLM Generates Tool Calls]
+    E1 --> R[Return Response]
+    E2 --> R
+```
+
+| Tier  | File         | Execution                          | When Used                          |
+| ----- | ------------ | ---------------------------------- | ---------------------------------- |
+| **1** | `skill.yaml` | **Deterministic** (no LLM)         | Pattern match ≥0.9 or keyword ≥0.5 |
+| **2** | `SKILL.md`   | **LLM-guided** (context injection) | Novel tasks, no YAML match         |
+
+**Tier 1** bypasses the LLM entirely — extracting parameters via regex and executing templated commands. Fast, reliable, predictable.
+
+**Tier 2** injects relevant SKILL.md files into the LLM context, guiding reasoning without dictating exact commands.
+
+### IRON GATE: Fabrication Detection
+
+The filter includes an "IRON GATE" safeguard that detects when the LLM fabricates CLI output instead of actually executing commands:
+
+```python
+# Detects patterns like fabricated ipconfig, ping, dir output
+if contains_fabricated_output(response):
+    return "[IRON GATE] I detected fabricated output. Let me actually run this command..."
+```
+
+This prevents hallucinated results from reaching the user when no execution occurred.
 
 ---
 
@@ -140,6 +177,41 @@ This is **agentic reasoning**: not just executing, but thinking, adapting, and l
 ## FunnelCloud: Distributed Agents
 
 For machines that can run software, FunnelCloud agents provide rich capability detection and secure execution. For everything else (switches, appliances, cloud services), the orchestrator uses SSH or API calls directly.
+
+### Agent Ports
+
+| Port  | Protocol | Purpose                                     |
+| ----- | -------- | ------------------------------------------- |
+| 41420 | UDP      | Multicast discovery (group 239.255.77.77)   |
+| 41421 | HTTP     | REST API (/health, /peers, /discover-peers) |
+| 41235 | gRPC     | Task execution (mTLS planned)               |
+
+### Three-Layer Discovery Protocol
+
+```mermaid
+flowchart TB
+    subgraph "Layer 1: UDP Multicast"
+        O[Orchestrator] -->|FUNNEL_DISCOVER| M((239.255.77.77:41420))
+        M --> A1[Agent 1]
+        M --> A2[Agent 2]
+    end
+
+    subgraph "Layer 2: Gossip"
+        A1 <-->|"Peer list every 30s"| A2
+        A1 <-->|"Cross-subnet via unicast"| A3[Agent 3<br/>different VLAN]
+    end
+
+    subgraph "Layer 3: HTTP API"
+        O -->|"GET /discover-peers"| S[Seed Agent]
+        S -->|"All known peers"| O
+    end
+```
+
+**Why three layers?**
+
+- **Multicast**: Fast LAN discovery, but doesn't cross subnets
+- **Gossip**: Cross-subnet propagation (unicast TTL=32)
+- **HTTP API**: Fallback when multicast fails (Docker/WSL NAT)
 
 ### Why Agents? Self-Describing Infrastructure
 
@@ -338,7 +410,7 @@ AJ includes infrastructure for fine-tuning DeepSeek-R1-Distill-Qwen-32B with LoR
 - **Hardware**: DigitalOcean H200 GPU Droplet (141GB VRAM, $3.44/hr)
 - **Dataset**: Mixed-v1 (~300K examples: 50% conversational, 40% domain knowledge, 10% strategic reasoning)
 - **Context Switching**: Model learns `contextType: external/internal` signal for output mode control
-- **Method**: Single-GPU LoRA (no distributed training complexity)
+  ff- **Method**: Single-GPU LoRA (no distributed training complexity)
 - **Output**: Q4_K_M GGUF for RTX 4090 deployment (~18GB)
 
 See [training/README.md](training/README.md) for complete instructions.
