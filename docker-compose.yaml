@@ -161,11 +161,13 @@ services:
       # .NET Core configuration
       - ASPNETCORE_URLS=http://+:8004
       - ASPNETCORE_ENVIRONMENT=Production
-      # Ollama configuration (host network - use localhost)
-      - Ollama__Url=http://localhost:11434
-      - Ollama__Model=r1-distill-aj:32b-8k
-      - OLLAMA_BASE_URL=http://localhost:11434
-      - OLLAMA_MODEL=r1-distill-aj:32b-8k
+      # Ollama configuration
+      # For remote GPU: set OLLAMA_REMOTE_URL in .env or override here
+      # Example: OLLAMA_REMOTE_URL=http://192.168.1.100:11434 (your rented GPU)
+      - Ollama__Url=${OLLAMA_REMOTE_URL:-http://localhost:11434}
+      - Ollama__Model=${OLLAMA_MODEL:-r1-distill-aj:32b-8k}
+      - OLLAMA_BASE_URL=${OLLAMA_REMOTE_URL:-http://localhost:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-r1-distill-aj:32b-8k}
       # Pragmatics API for intent classification
       - Pragmatics__Url=http://localhost:8001
       - PRAGMATICS_API_URL=http://localhost:8001
@@ -173,6 +175,10 @@ services:
       - FunnelCloud__Url=http://172.25.224.1:41421
       # Gossip seed for cross-subnet agent discovery
       - FunnelCloud__GossipSeedHost=192.168.10.166
+      # Skills paths (mounted volume)
+      - Skills__Paths__0=/skills
+    volumes:
+      - ./skills:/skills:ro
     depends_on:
       ollama:
         condition: service_healthy
