@@ -45,6 +45,9 @@ public class AgentDiscoveryService : IAgentDiscovery
 
   public async Task<List<AgentCapabilities>> DiscoverAgentsAsync(CancellationToken ct = default)
   {
+    // Clear cache - always perform fresh discovery
+    _agents.Clear();
+    
     // Step 1: Query the local FunnelCloud agent
     await QueryDiscoverPeersAsync("funnel", ct);
 
@@ -56,7 +59,7 @@ public class AgentDiscoveryService : IAgentDiscovery
       await QueryDiscoverPeersAsync("funnel-seed", ct);
     }
 
-    _logger.LogInformation("Discovery complete: {Count} agent(s)", _agents.Count);
+    _logger.LogInformation("Discovery complete: {Count} agent(s) (fresh)", _agents.Count);
     return _agents.Values.ToList();
   }
 

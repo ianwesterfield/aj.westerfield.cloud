@@ -38,6 +38,8 @@ if (!string.IsNullOrEmpty(seedHost))
 builder.Services.AddSingleton<SessionStateManager>();
 builder.Services.AddSingleton<IAgentDiscovery, AgentDiscoveryService>();
 builder.Services.AddSingleton<IGrpcAgentClient, GrpcAgentClient>();
+builder.Services.AddSingleton<ISkillDiscoveryService, SkillDiscoveryService>();
+builder.Services.AddSingleton<ISkillExecutor, SkillExecutor>();
 builder.Services.AddScoped<ITaskPlanner, TaskPlanner>();
 builder.Services.AddScoped<IReasoningEngine, ReasoningEngine>();
 
@@ -66,6 +68,18 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
+// Load skills at startup
+var skillService = app.Services.GetRequiredService<ISkillDiscoveryService>();
+await skillService.LoadSkillsAsync();
+
+// Load executable YAML skills for deterministic execution
+var skillExecutor = app.Services.GetRequiredService<ISkillExecutor>();
+if (skillExecutor is SkillExecutor executor)
+{
+    var skillPaths = builder.Configuration.GetSection("Skills:Paths").Get<string[]>() ?? ["/skills"];
+    await executor.LoadSkillsAsync(skillPaths);
+}
+
 // Configure the HTTP request pipeline
 if (app.Environment.IsDevelopment())
 {
@@ -78,6 +92,36 @@ app.MapControllers();
 
 // Health endpoint
 app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "orchestrator-dotnet" }));
+
+// Skills endpoints for inspection and management
+app.MapGet("/skills", (ISkillDiscoveryService skills) =>
+{
+    var allSkills = skills.GetAllSkills();
+    return Results.Ok(new
+    {
+        count = allSkills.Count,
+        skills = allSkills.Select(s => new
+        {
+            name = s.Name,
+            description = s.Description,
+            tags = s.Tags,
+            targetAgent = s.TargetAgent,
+            sourcePath = s.SourcePath
+        })
+    });
+});
+
+app.MapGet("/skills/{name}", (string name, ISkillDiscoveryService skills) =>
+{
+    var skill = skills.GetSkill(name);
+    return skill != null ? Results.Ok(skill) : Results.NotFound();
+});
+
+app.MapPost("/skills/reload", async (ISkillDiscoveryService skills) =>
+{
+    await skills.ReloadSkillsAsync();
+    return Results.Ok(new { message = "Skills reloaded", count = skills.GetAllSkills().Count });
+});
 
 var port = Environment.GetEnvironmentVariable("ASPNETCORE_URLS")?.Split(':').LastOrDefault() ?? "8004";
 Console.WriteLine($"AJ Orchestrator (.NET) starting on port {port}...");

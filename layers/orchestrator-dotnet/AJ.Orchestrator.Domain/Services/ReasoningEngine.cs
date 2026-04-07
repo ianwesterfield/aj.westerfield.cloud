@@ -13,6 +13,7 @@ namespace AJ.Orchestrator.Domain.Services;
 
 /// <summary>
 /// Reasoning engine that coordinates with Ollama for step generation.
+/// Now skill-aware: injects relevant skill instructions into context.
 /// </summary>
 public class ReasoningEngine : IReasoningEngine
 {
@@ -20,51 +21,73 @@ public class ReasoningEngine : IReasoningEngine
   private readonly ILogger<ReasoningEngine> _logger;
   private readonly IGrpcAgentClient _agentClient;
   private readonly SessionStateManager _sessionManager;
+  private readonly ISkillDiscoveryService _skillDiscovery;
+  private readonly ISkillExecutor _skillExecutor;
 
   private readonly string _ollamaBaseUrl;
   private readonly string _ollamaModel;
   private readonly string _pragmaticsApiUrl;
 
-  private const string SystemPrompt = """
+  private const string BaseSystemPrompt = """
         You are AJ, an infrastructure and context aware AI assistant.
         RESPONSE FORMAT (strict JSON, no markdown): {"tool": "name", "params": {...}, "reasoning": "why"}
 
         TOOLS — these four are the ONLY tools that exist. Do NOT invent other tool names:
-        - list_agents: {"params": {}} — Returns all online FunnelCloud agents. CALL THIS FIRST unless user specifies an agent.
+        - list_agents: {"params": {}} — Discover all CURRENTLY online FunnelCloud agents. Always fresh.
         - execute: {"params": {"agent_id": "hostname", "command": "..."}} — Runs a command on an agent. REQUIRES agent_id.
-        - think: {"params": {"thought": "..."}} — Planning step
-        - complete: {"params": {"answer": "NATURAL LANGUAGE only"}} — Final response to user. The answer MUST be plain text summarizing results, NOT another tool call or JSON.
+        - think: {"params": {"thought": "..."}} — Plan your approach before acting.
+        - complete: {"params": {"answer": "NATURAL LANGUAGE only"}} — Final response to user.
 
-        WORKFLOW:
-        1. If user names a specific agent (e.g., "on ians-r16"), execute directly on that agent.
-        2. Otherwise, call list_agents FIRST to discover available agents, then choose the right one.
-        3. After execute succeeds, call complete with a NATURAL LANGUAGE summary of results.
+        MANDATORY WORKFLOW (follow these steps IN ORDER):
+        1. FIRST STEP: Call list_agents to discover available agents. You MUST know what agents exist before executing.
+        2. ANALYZE: Review the agent list. Match agent capabilities to the task (e.g., postfix01 for mail, domain01 for AD).
+        3. EXECUTE: Run commands on the appropriate agent using execute with agent_id.
+        4. COMPLETE: After execute returns data, immediately call complete with a plain text summary.
+
+        NEVER skip step 1. Even if a skill mentions a target agent, you must verify it's online via list_agents first.
 
         RULES:
         1. NEVER fabricate output. All data must come from tool results.
-        2. COMPLETE AS SOON AS POSSIBLE: Once execute returns data, call complete IMMEDIATELY with plain text summary.
-        3. STOP AFTER FAILURES: If 2-3 attempts fail, call complete with "I couldn't retrieve the data because..."
-        4. Output may be truncated — if you see useful data, USE IT and complete.
-        5. Answer ONLY what was asked. No follow-up questions. No extra commands.
-        6. complete.answer must be NATURAL LANGUAGE, never JSON or code. Wrong: {"answer": "{...}"} Right: {"answer": "The user is in 5 groups: ..."}
+        2. NEVER call execute as your first action. Always list_agents first.
+        3. COMPLETE AS SOON AS POSSIBLE: Once execute returns data, call complete IMMEDIATELY.
+        4. STOP AFTER FAILURES: If 2-3 attempts fail, call complete with "I couldn't complete the task because..."
+        5. Answer ONLY what was asked. No follow-up questions.
+        6. complete.answer must be NATURAL LANGUAGE, never JSON or code.
+
+        SKILL INTERPRETATION:
+        Skills below provide workflow guidance. They may come from various sources (AI-generated, manual, templates)
+        and may vary in structure - some detailed with examples, others minimal with just patterns.
+        
+        ALWAYS interpret skills this way:
+        - Skills show WHICH AGENT handles a task type (use targetAgent or infer from description)
+        - Skills show COMMAND PATTERNS (the structure/syntax of commands)
+        - Skills show the WORKFLOW (sequence of operations)
+        - ANY example values, domains, filenames, or usernames in skills are PLACEHOLDERS
+        - Extract ACTUAL values from the USER'S REQUEST - this is the only source of truth
+        
+        Example: If skill shows "echo 'spammer.com REJECT'" and user says "block jojoscarinsurance.com",
+        you MUST use "jojoscarinsurance.com" - the skill's "spammer.com" is just showing the pattern.
 
         EXAMPLES:
-        - "List agents" → {"tool": "list_agents", "params": {}, "reasoning": "discover agents"}
-        - "Get AD groups for ian" → {"tool": "list_agents", "params": {}, "reasoning": "need to find a domain controller first"}
-        - "Ping google from ians-r16" → {"tool": "execute", "params": {"agent_id": "ians-r16", "command": "Test-Connection google.com -Count 1"}, "reasoning": "user specified agent"}
-        - After successful execute → {"tool": "complete", "params": {"answer": "Ian is a member of Domain Users, Domain Admins, and Schema Admins."}, "reasoning": "summarizing results"}
+        - First step for ANY task → {"tool": "list_agents", "params": {}, "reasoning": "discovering available agents"}
+        - After list_agents shows postfix01 → {"tool": "execute", "params": {"agent_id": "postfix01", "command": "..."}, "reasoning": "postfix01 handles mail"}
+        - After successful execute → {"tool": "complete", "params": {"answer": "Done. Added domain to spam block list and reloaded postfix."}, "reasoning": "task complete"}
         """;
 
   public ReasoningEngine(
       IHttpClientFactory httpClientFactory,
       ILogger<ReasoningEngine> logger,
       IGrpcAgentClient agentClient,
-      SessionStateManager sessionManager)
+      SessionStateManager sessionManager,
+      ISkillDiscoveryService skillDiscovery,
+      ISkillExecutor skillExecutor)
   {
     _httpClientFactory = httpClientFactory;
     _logger = logger;
     _agentClient = agentClient;
     _sessionManager = sessionManager;
+    _skillDiscovery = skillDiscovery;
+    _skillExecutor = skillExecutor;
 
     _ollamaBaseUrl = Environment.GetEnvironmentVariable("OLLAMA_BASE_URL") ?? "http://ollama:11434";
     _ollamaModel = Environment.GetEnvironmentVariable("OLLAMA_MODEL") ?? "r1-distill-aj:32b-8k";
@@ -107,9 +130,19 @@ public class ReasoningEngine : IReasoningEngine
       List<StepResult> history,
       WorkspaceContext? workspace = null)
   {
-    var prompt = BuildPrompt(task, history, workspace);
+    // Find relevant skills for this task
+    var relevantSkills = _skillDiscovery.FindRelevantSkills(task).Take(3).ToList();
 
-    var response = await CallOllamaAsync(prompt);
+    if (relevantSkills.Count > 0)
+    {
+      _logger.LogInformation("Found {Count} relevant skill(s) for task: {Skills}",
+          relevantSkills.Count, string.Join(", ", relevantSkills.Select(s => s.Name)));
+    }
+
+    var prompt = BuildPrompt(task, history, workspace);
+    var systemPrompt = BuildSystemPromptWithSkills(relevantSkills);
+
+    var response = await CallOllamaAsync(prompt, systemPrompt);
     var parsed = ParseResponse(response);
 
     return new NextStepResponse(
@@ -129,6 +162,66 @@ public class ReasoningEngine : IReasoningEngine
     {
       session.Reset();
     }
+
+    // ===== V2 ARCHITECTURE: Try deterministic skill execution first =====
+    var skillMatch = _skillExecutor.TryMatch(request.Task);
+    if (skillMatch != null)
+    {
+      _logger.LogInformation("Deterministic skill match: {Name} (confidence: {Confidence:P0})",
+          skillMatch.Skill.Name, skillMatch.Confidence);
+
+      yield return new TaskEvent
+      {
+        EventType = "status",
+        StepNum = 1,
+        Status = $"Matched skill: {skillMatch.Skill.Name}"
+      };
+
+      yield return new TaskEvent
+      {
+        EventType = "step",
+        StepNum = 1,
+        Tool = "skill_execute",
+        Status = $"Executing {skillMatch.Skill.Name}",
+        Result = new Dictionary<string, object?>
+        {
+          ["skill"] = skillMatch.Skill.Name,
+          ["agent"] = skillMatch.Skill.Target.Agent,
+          ["parameters"] = skillMatch.Parameters,
+          ["reasoning"] = $"Matched via {skillMatch.MatchedBy}"
+        }
+      };
+
+      var execResult = await _skillExecutor.ExecuteAsync(skillMatch, ct);
+
+      yield return new TaskEvent
+      {
+        EventType = "result",
+        StepNum = 2,
+        Tool = "skill_execute",
+        Status = execResult.Success ? "Completed" : "Failed",
+        Result = new Dictionary<string, object?>
+        {
+          ["success"] = execResult.Success,
+          ["message"] = execResult.Message,
+          ["steps"] = execResult.StepResults.Select(s => new { s.StepName, s.Success, s.Output, s.Error }),
+          ["answer"] = execResult.Message
+        },
+        Done = true
+      };
+
+      yield break; // Done - no LLM needed
+    }
+
+    _logger.LogInformation("No deterministic skill match, falling back to LLM reasoning");
+
+    // ===== FALLBACK: LLM-based reasoning for novel/complex tasks =====
+
+    // Find skills once at task start - used for command syntax guidance
+    var relevantSkills = _skillDiscovery.FindRelevantSkills(request.Task).Take(3).ToList();
+
+    // Track whether agents have been discovered this task
+    var agentsDiscovered = false;
 
     var stepNum = 0;
     var maxSteps = request.MaxSteps;
@@ -216,6 +309,8 @@ public class ReasoningEngine : IReasoningEngine
         var agentList = string.Join("\n", agents.Select(a => $"- {a.AgentId} ({a.Hostname}, {a.Platform})"));
         var output = $"Found {agents.Count} agent(s):\n{agentList}";
 
+        agentsDiscovered = true;
+
         stepResult = new StepResult
         {
           StepId = $"step-{stepNum}",
@@ -226,34 +321,49 @@ public class ReasoningEngine : IReasoningEngine
       }
       else if (nextStep.Tool == "execute")
       {
-        var agentId = nextStep.Params.GetValueOrDefault("agent_id")?.ToString();
-        var command = nextStep.Params.GetValueOrDefault("command")?.ToString() ?? "";
-
-        // Require agent_id — no more defaulting to "localhost"
-        if (string.IsNullOrWhiteSpace(agentId))
+        // Guard: must discover agents before executing
+        if (!agentsDiscovered)
         {
-          _logger.LogWarning("execute called without agent_id at step {Step}", stepNum);
+          _logger.LogWarning("execute called before list_agents at step {Step}", stepNum);
           stepResult = new StepResult
           {
             StepId = $"step-{stepNum}",
             Tool = "execute",
             Status = StepStatus.Failed,
-            Error = "Missing agent_id. Call list_agents first to discover available agents, then specify agent_id."
+            Error = "You must call list_agents first to discover available agents before executing commands."
           };
         }
         else
         {
-          var execResult = await _agentClient.ExecuteAsync(agentId, command, 30, ct);
+          var agentId = nextStep.Params.GetValueOrDefault("agent_id")?.ToString();
+          var command = nextStep.Params.GetValueOrDefault("command")?.ToString() ?? "";
 
-          stepResult = new StepResult
+          // Require agent_id
+          if (string.IsNullOrWhiteSpace(agentId))
           {
-            StepId = $"step-{stepNum}",
-            Tool = "execute",
-            Status = execResult.Success ? StepStatus.Success : StepStatus.Failed,
-            Output = execResult.Stdout,
-            Error = execResult.Stderr ?? execResult.ErrorMessage,
-            ExecutionTime = execResult.DurationMs / 1000.0
-          };
+            _logger.LogWarning("execute called without agent_id at step {Step}", stepNum);
+            stepResult = new StepResult
+            {
+              StepId = $"step-{stepNum}",
+              Tool = "execute",
+              Status = StepStatus.Failed,
+              Error = "Missing agent_id. Specify which agent to run the command on."
+            };
+          }
+          else
+          {
+            var execResult = await _agentClient.ExecuteAsync(agentId, command, 30, ct);
+
+            stepResult = new StepResult
+            {
+              StepId = $"step-{stepNum}",
+              Tool = "execute",
+              Status = execResult.Success ? StepStatus.Success : StepStatus.Failed,
+              Output = execResult.Stdout,
+              Error = execResult.Stderr ?? execResult.ErrorMessage,
+              ExecutionTime = execResult.DurationMs / 1000.0
+            };
+          }
         }
       }
       else if (nextStep.Tool == "think")
@@ -369,7 +479,17 @@ public class ReasoningEngine : IReasoningEngine
     return sb.ToString();
   }
 
-  private async Task<string> CallOllamaAsync(string prompt)
+  private string BuildSystemPromptWithSkills(IEnumerable<AJ.Orchestrator.Abstractions.Models.Skills.Skill> skills)
+  {
+    var skillContext = _skillDiscovery.FormatSkillContext(skills);
+
+    if (string.IsNullOrEmpty(skillContext))
+      return BaseSystemPrompt;
+
+    return $"{BaseSystemPrompt}\n\n{skillContext}";
+  }
+
+  private async Task<string> CallOllamaAsync(string prompt, string systemPrompt)
   {
     var client = _httpClientFactory.CreateClient();
 
@@ -377,7 +497,7 @@ public class ReasoningEngine : IReasoningEngine
     {
       model = _ollamaModel,
       prompt = prompt,
-      system = SystemPrompt,
+      system = systemPrompt,
       stream = false,
       options = new { temperature = 0.1 }
     };

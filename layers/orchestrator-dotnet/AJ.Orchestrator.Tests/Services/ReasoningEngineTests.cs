@@ -1,4 +1,5 @@
 using AJ.Orchestrator.Abstractions.Models.Classification;
+using AJ.Orchestrator.Abstractions.Models.Skills;
 using AJ.Orchestrator.Abstractions.Models.Tasks;
 using AJ.Orchestrator.Abstractions.Models.Workspace;
 using AJ.Orchestrator.Abstractions.Services;
@@ -20,6 +21,8 @@ public class ReasoningEngineTests
   private readonly Mock<IHttpClientFactory> _httpClientFactoryMock;
   private readonly Mock<ILogger<ReasoningEngine>> _loggerMock;
   private readonly Mock<IGrpcAgentClient> _agentClientMock;
+  private readonly Mock<ISkillDiscoveryService> _skillDiscoveryMock;
+  private readonly Mock<ISkillExecutor> _skillExecutorMock;
   private readonly SessionStateManager _sessionManager;
 
   public ReasoningEngineTests()
@@ -27,7 +30,18 @@ public class ReasoningEngineTests
     _httpClientFactoryMock = new Mock<IHttpClientFactory>();
     _loggerMock = new Mock<ILogger<ReasoningEngine>>();
     _agentClientMock = new Mock<IGrpcAgentClient>();
+    _skillDiscoveryMock = new Mock<ISkillDiscoveryService>();
+    _skillExecutorMock = new Mock<ISkillExecutor>();
     _sessionManager = new SessionStateManager();
+
+    // Default skill discovery mock returns empty results
+    _skillDiscoveryMock.Setup(s => s.FindRelevantSkills(It.IsAny<string>(), It.IsAny<string[]?>()))
+        .Returns(Enumerable.Empty<Skill>());
+    _skillDiscoveryMock.Setup(s => s.FormatSkillContext(It.IsAny<IEnumerable<Skill>>()))
+        .Returns(string.Empty);
+
+    // Default skill executor mock returns no match (fall through to LLM)
+    _skillExecutorMock.Setup(s => s.TryMatch(It.IsAny<string>())).Returns((SkillMatch?)null);
   }
 
   private ReasoningEngine CreateEngine(HttpClient? client = null)
@@ -50,7 +64,9 @@ public class ReasoningEngineTests
         _httpClientFactoryMock.Object,
         _loggerMock.Object,
         _agentClientMock.Object,
-        _sessionManager);
+        _sessionManager,
+        _skillDiscoveryMock.Object,
+        _skillExecutorMock.Object);
   }
 
   #region ClassifyIntentAsync Tests
