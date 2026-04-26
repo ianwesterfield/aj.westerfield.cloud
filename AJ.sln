@@ -1,4 +1,4 @@
-
+﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
@@ -26,6 +26,10 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FunnelCloud.Agent", "layers\agents\FunnelCloud\FunnelCloud.Agent\FunnelCloud.Agent.csproj", "{B0AF75B6-23B4-48A6-91E2-260B1798FF92}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FunnelCloud.Tests", "layers\agents\FunnelCloud\FunnelCloud.Tests\FunnelCloud.Tests.csproj", "{697190E9-63CB-4644-B0A3-E92F86DE982B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FunnelCloud.Cli", "layers\agents\FunnelCloud\FunnelCloud.Cli\FunnelCloud.Cli.csproj", "{67619033-D60C-4006-B3B7-AE6F0D37F075}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FunnelCloud.Tray", "layers\agents\FunnelCloud\FunnelCloud.Tray\FunnelCloud.Tray.csproj", "{3D4461C8-BF91-4761-A69C-A7B50272871B}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -133,6 +137,30 @@ Global
 		{697190E9-63CB-4644-B0A3-E92F86DE982B}.Release|x64.Build.0 = Release|Any CPU
 		{697190E9-63CB-4644-B0A3-E92F86DE982B}.Release|x86.ActiveCfg = Release|Any CPU
 		{697190E9-63CB-4644-B0A3-E92F86DE982B}.Release|x86.Build.0 = Release|Any CPU
+		{67619033-D60C-4006-B3B7-AE6F0D37F075}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{67619033-D60C-4006-B3B7-AE6F0D37F075}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{67619033-D60C-4006-B3B7-AE6F0D37F075}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{67619033-D60C-4006-B3B7-AE6F0D37F075}.Debug|x64.Build.0 = Debug|Any CPU
+		{67619033-D60C-4006-B3B7-AE6F0D37F075}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{67619033-D60C-4006-B3B7-AE6F0D37F075}.Debug|x86.Build.0 = Debug|Any CPU
+		{67619033-D60C-4006-B3B7-AE6F0D37F075}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{67619033-D60C-4006-B3B7-AE6F0D37F075}.Release|Any CPU.Build.0 = Release|Any CPU
+		{67619033-D60C-4006-B3B7-AE6F0D37F075}.Release|x64.ActiveCfg = Release|Any CPU
+		{67619033-D60C-4006-B3B7-AE6F0D37F075}.Release|x64.Build.0 = Release|Any CPU
+		{67619033-D60C-4006-B3B7-AE6F0D37F075}.Release|x86.ActiveCfg = Release|Any CPU
+		{67619033-D60C-4006-B3B7-AE6F0D37F075}.Release|x86.Build.0 = Release|Any CPU
+		{3D4461C8-BF91-4761-A69C-A7B50272871B}.Debug|Any CPU.ActiveCfg = Debug|x64
+		{3D4461C8-BF91-4761-A69C-A7B50272871B}.Debug|Any CPU.Build.0 = Debug|x64
+		{3D4461C8-BF91-4761-A69C-A7B50272871B}.Debug|x64.ActiveCfg = Debug|x64
+		{3D4461C8-BF91-4761-A69C-A7B50272871B}.Debug|x64.Build.0 = Debug|x64
+		{3D4461C8-BF91-4761-A69C-A7B50272871B}.Debug|x86.ActiveCfg = Debug|x64
+		{3D4461C8-BF91-4761-A69C-A7B50272871B}.Debug|x86.Build.0 = Debug|x64
+		{3D4461C8-BF91-4761-A69C-A7B50272871B}.Release|Any CPU.ActiveCfg = Release|x64
+		{3D4461C8-BF91-4761-A69C-A7B50272871B}.Release|Any CPU.Build.0 = Release|x64
+		{3D4461C8-BF91-4761-A69C-A7B50272871B}.Release|x64.ActiveCfg = Release|x64
+		{3D4461C8-BF91-4761-A69C-A7B50272871B}.Release|x64.Build.0 = Release|x64
+		{3D4461C8-BF91-4761-A69C-A7B50272871B}.Release|x86.ActiveCfg = Release|x64
+		{3D4461C8-BF91-4761-A69C-A7B50272871B}.Release|x86.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -149,5 +177,7 @@ Global
 		{4440803C-C2AD-4716-8212-63A21A659CA1} = {27F22917-2C8E-EB5D-922E-E452FB4E92BF}
 		{B0AF75B6-23B4-48A6-91E2-260B1798FF92} = {27F22917-2C8E-EB5D-922E-E452FB4E92BF}
 		{697190E9-63CB-4644-B0A3-E92F86DE982B} = {27F22917-2C8E-EB5D-922E-E452FB4E92BF}
+		{67619033-D60C-4006-B3B7-AE6F0D37F075} = {27F22917-2C8E-EB5D-922E-E452FB4E92BF}
+		{3D4461C8-BF91-4761-A69C-A7B50272871B} = {27F22917-2C8E-EB5D-922E-E452FB4E92BF}
 	EndGlobalSection
 EndGlobal

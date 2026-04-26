@@ -1,6 +1,7 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using FunnelCloud.Agent.Services.Events;
 using FunnelCloud.Shared.Contracts;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -25,6 +26,7 @@ public class GrpcServerHost : BackgroundService
   private readonly ILogger<GrpcServerHost> _logger;
   private readonly AgentCapabilities _capabilities;
   private readonly TaskExecutor _executor;
+  private readonly IAgentEventPublisher _events;
   private readonly int _port;
   private IHost? _host;
 
@@ -32,11 +34,13 @@ public class GrpcServerHost : BackgroundService
       ILogger<GrpcServerHost> logger,
       AgentCapabilities capabilities,
       TaskExecutor executor,
+      IAgentEventPublisher events,
       int? port = null)
   {
     _logger = logger;
     _capabilities = capabilities;
     _executor = executor;
+    _events = events;
     _port = port ?? TrustConfig.GrpcPort;
   }
 
@@ -116,6 +120,7 @@ public class GrpcServerHost : BackgroundService
       builder.Services.AddGrpc();
       builder.Services.AddSingleton(_capabilities);
       builder.Services.AddSingleton(_executor);
+      builder.Services.AddSingleton<IAgentEventPublisher>(_events);
       builder.Services.AddSingleton<TaskServiceImpl>();
 
       builder.WebHost.ConfigureKestrel(options =>
@@ -167,6 +172,7 @@ public class GrpcServerHost : BackgroundService
                 services.AddGrpc();
                 services.AddSingleton(_capabilities);
                 services.AddSingleton(_executor);
+                services.AddSingleton<IAgentEventPublisher>(_events);
                 services.AddSingleton<TaskServiceImpl>();
               });
 

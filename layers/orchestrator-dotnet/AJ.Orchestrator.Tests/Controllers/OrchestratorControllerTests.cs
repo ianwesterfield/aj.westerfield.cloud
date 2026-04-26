@@ -166,7 +166,8 @@ public class OrchestratorControllerTests
         .Setup(r => r.GenerateNextStepAsync(
             request.Task,
             It.IsAny<List<StepResult>>(),
-            It.IsAny<WorkspaceContext?>()))
+            It.IsAny<WorkspaceContext?>(),
+            It.IsAny<List<Dictionary<string, object?>>?>()))
         .ReturnsAsync(expected);
 
     var result = await _controller.NextStep(request);
@@ -205,7 +206,8 @@ public class OrchestratorControllerTests
         .Setup(r => r.GenerateNextStepAsync(
             request.Task,
             It.Is<List<StepResult>>(h => h.Count == 1),
-            It.IsAny<WorkspaceContext?>()))
+            It.IsAny<WorkspaceContext?>(),
+            It.IsAny<List<Dictionary<string, object?>>?>()))
         .ReturnsAsync(expected);
 
     var result = await _controller.NextStep(request);

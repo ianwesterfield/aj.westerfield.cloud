@@ -172,6 +172,10 @@ ORCHESTRATOR_API_URL = os.getenv("ORCHESTRATOR_API_URL", "http://orchestrator_ap
 EXECUTOR_API_URL = os.getenv("EXECUTOR_API_URL", "http://executor_api:8005")
 PRAGMATICS_API_URL = os.getenv("PRAGMATICS_API_URL", "http://pragmatics_api:8001")
 
+# FunnelCloud tray app HTTP listener for event forwarding (Docker -> host)
+# Uses host.docker.internal on Windows/Mac Docker Desktop
+TRAY_EVENT_URL = os.getenv("TRAY_EVENT_URL", "http://host.docker.internal:6666")
+
 # System prompt describing AJ capabilities and output contracts
 # This is injected into the chat LLM that presents results to users
 AJ_SYSTEM_PROMPT = """# AJ
@@ -540,6 +544,72 @@ def _format_json_plan_as_list(content: str) -> str:
     return ""
 
 
+# ============================================================================
+# Tray Event Forwarding
+# ============================================================================
+
+import uuid
+from datetime import datetime, timezone
+
+# Global httpx client for tray events (reused across requests)
+_tray_client = None
+
+
+def _get_tray_client():
+    """Get or create the httpx client for tray events."""
+    global _tray_client
+    if _tray_client is None:
+        import httpx
+
+        _tray_client = httpx.Client(timeout=1.0)  # Short timeout, non-blocking
+    return _tray_client
+
+
+def _forward_event_to_tray(
+    kind: str,
+    command: str = None,
+    task_id: str = None,
+    agent_id: str = None,
+    exit_code: int = None,
+    stdout: str = None,
+    stderr: str = None,
+    duration_seconds: float = None,
+    error_message: str = None,
+):
+    """
+    Forward an event to the FunnelCloud tray app via HTTP.
+    This is fire-and-forget - errors are silently ignored.
+    """
+    try:
+        event = {
+            "event_id": uuid.uuid4().hex,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "kind": kind,
+        }
+        if task_id:
+            event["task_id"] = task_id
+        if command:
+            event["command"] = command
+        if agent_id:
+            event["agent_id"] = agent_id
+        if exit_code is not None:
+            event["exit_code"] = exit_code
+        if stdout:
+            event["stdout"] = stdout[:1000]  # Truncate for tray display
+        if stderr:
+            event["stderr"] = stderr[:500]
+        if duration_seconds is not None:
+            event["duration_seconds"] = duration_seconds
+        if error_message:
+            event["error_message"] = error_message
+
+        client = _get_tray_client()
+        client.post(f"{TRAY_EVENT_URL}/event", json=event)
+    except Exception:
+        # Silently ignore - tray may not be running
+        pass
+
+
 async def _orchestrate_task(
     user_id: str,
     messages: List[dict],
@@ -664,6 +734,27 @@ async def _orchestrate_task(
                                 {"type": "message", "data": {"content": content}}
                             )
 
+                    elif event_type == "step":
+                        # Forward task_received to tray for any agent execution —
+                        # covers built-in execute tools AND skill-based executions
+                        # (e.g. funnelcloud-agents) that carry agent_id + command.
+                        step_result = event.get("result", {})
+                        step_tool = step_result.get("tool", "")
+                        step_params = step_result.get("params", {})
+                        cmd = step_params.get("command", "")
+                        agent_id = step_params.get("agent_id", "")
+                        is_agent_exec_tool = step_tool in (
+                            "execute",
+                            "remote_execute",
+                            "remote_execute_all",
+                        )
+                        if is_agent_exec_tool or (agent_id and cmd):
+                            _forward_event_to_tray(
+                                kind="task_received",
+                                command=cmd,
+                                agent_id=agent_id,
+                            )
+
                     elif event_type == "result":
                         # Stream tool output in a code block
                         tool = event.get("tool", "")
@@ -714,6 +805,32 @@ async def _orchestrate_task(
                             # IRON GATE: Mark that actual execution occurred
                             execution_occurred = True
 
+                            # Forward task_completed to tray for any agent execution —
+                            # covers built-in execute tools AND skill-based executions
+                            # (e.g. funnelcloud-agents) that carry agent_id + command.
+                            is_agent_exec_tool = tool in (
+                                "execute",
+                                "remote_execute",
+                                "remote_execute_all",
+                            )
+                            if is_agent_exec_tool or (agent_id and cmd):
+                                exit_code = result.get("exit_code")
+                                is_error = result.get("is_error", False) or (
+                                    exit_code is not None and exit_code != 0
+                                )
+                                _forward_event_to_tray(
+                                    kind=(
+                                        "task_failed" if is_error else "task_completed"
+                                    ),
+                                    command=cmd,
+                                    agent_id=agent_id,
+                                    exit_code=exit_code,
+                                    stdout=output,
+                                    error_message=(
+                                        result.get("error") if is_error else None
+                                    ),
+                                )
+
                     elif event_type == "error":
                         await __event_emitter__(
                             create_error_dict(status, LogCategory.FILTER, done=done)
@@ -722,6 +839,20 @@ async def _orchestrate_task(
                     elif event_type == "complete":
                         result = event.get("result", {})
                         final_context = result.get("context")
+                        # CRITICAL: Capture orchestrator's final answer
+                        # This is the answer we want to use instead of letting
+                        # Open-WebUI call Ollama again (which would hallucinate)
+                        orchestrator_answer = result.get("answer")
+                        if orchestrator_answer:
+                            print(
+                                f"[aj] Orchestrator complete with answer: {orchestrator_answer[:100]}..."
+                            )
+                            # Stream the answer so it appears in UI
+                            answer_block = f"\n\n{orchestrator_answer}"
+                            streamed_content += answer_block
+                            await __event_emitter__(
+                                {"type": "message", "data": {"content": answer_block}}
+                            )
                         # Emit final completion status
                         complete_status = event.get("status", "Done")
                         await __event_emitter__(
@@ -1797,9 +1928,9 @@ class Filter:
 
                     # ================================================================
                     # IRON GATE: Block fabricated CLI output
-                    # If intent was "task", orchestrator didn't execute, but the LLM
-                    # response contains fake command output (ipconfig, ping, etc.) - BLOCK IT
                     # ================================================================
+
+                    # Case 1: Task intent but orchestrator didn't execute at all
                     if (
                         self._task_intent
                         and not self._execution_occurred
@@ -1823,6 +1954,17 @@ class Filter:
                         messages[i]["content"] = content
                         break
 
+                    # Case 2: Execution occurred but LLM added MORE fabricated output
+                    # This catches the pattern where real output was shown, then the
+                    # model hallucinates additional CLI-style content
+                    if self._execution_occurred and _contains_fabricated_cli_output(
+                        content
+                    ):
+                        print(
+                            f"[aj] IRON GATE: Stripping post-execution fabricated CLI output"
+                        )
+                        content = self._strip_fabricated_cli_blocks(content)
+
                     # CRITICAL: Detect user message echo (model confusion)
                     # If the assistant's response contains the user's exact message, remove it
                     if last_user_msg and len(last_user_msg) > 5:
@@ -1837,15 +1979,26 @@ class Filter:
                                 flags=re.IGNORECASE,
                             )
 
-                    # Prepend any streamed thinking/results from orchestrator
+                    # Handle orchestrator streamed content
                     if self._streamed_content:
                         # Clean streamed content - remove raw JSON planning output
                         cleaned_streamed = self._clean_streamed_content(
                             self._streamed_content
                         )
                         if cleaned_streamed.strip():
-                            # Add separator between streamed content and LLM response
-                            content = cleaned_streamed + "\n\n---\n\n" + content
+                            # CRITICAL FIX: If orchestrator executed and returned content,
+                            # USE ONLY THE ORCHESTRATOR'S RESPONSE.
+                            # The model's response (content) is redundant/hallucinated
+                            # since orchestrator already used the same 70B model.
+                            if self._execution_occurred or self._task_intent:
+                                # Orchestrator handled this - use its output only
+                                print(
+                                    f"[aj] Using orchestrator response, discarding model output"
+                                )
+                                content = cleaned_streamed
+                            else:
+                                # Non-task: prepend context but keep model response
+                                content = cleaned_streamed + "\n\n---\n\n" + content
                         # Clear for next request
                         self._streamed_content = ""
                     messages[i]["content"] = self._format_response(content)
@@ -2026,6 +2179,64 @@ class Filter:
                         return match.group(1)
 
             return text
+
+    def _strip_fabricated_cli_blocks(self, text: str) -> str:
+        """
+        IRON GATE: Strip fabricated CLI output from LLM response.
+
+        When execution occurred (real output was streamed), the LLM sometimes
+        still adds fabricated CLI-style content. This method removes:
+        - Code blocks containing fabricated ping/ipconfig patterns
+        - Inline code blocks with fabricated network output
+
+        Preserves:
+        - Natural language commentary
+        - Code blocks that don't match fabrication signatures
+        """
+        if not text:
+            return text
+
+        import re
+
+        # Pattern to match fenced code blocks
+        code_block_pattern = r"```(?:\w*\n)?(.*?)```"
+
+        def is_fabricated_block(block_content: str) -> bool:
+            """Check if a code block contains fabricated CLI output."""
+            # Check against fabrication signatures
+            match_count = 0
+            for pattern in FABRICATED_CLI_OUTPUT_SIGNATURES:
+                if re.search(pattern, block_content, re.IGNORECASE):
+                    match_count += 1
+                    if match_count >= 2:
+                        return True
+            return False
+
+        # Find and evaluate each code block
+        def replace_fabricated(match):
+            block_content = match.group(1)
+            if is_fabricated_block(block_content):
+                print(f"[aj] IRON GATE: Removed fabricated code block")
+                return ""  # Remove the entire block
+            return match.group(0)  # Keep original
+
+        cleaned = re.sub(code_block_pattern, replace_fabricated, text, flags=re.DOTALL)
+
+        # Also check for inline fabricated content outside code blocks
+        # Pattern: looks like command output but not in a code block
+        # e.g., "64 bytes from 142.250.185.142: icmp_seq=1 ttl=116 time=8.47 ms"
+        inline_ping_pattern = (
+            r"\n\d+\s+bytes\s+from\s+[\d.]+.*?(?:icmp_seq|time=).*(?:\n|$)"
+        )
+        if re.search(inline_ping_pattern, cleaned, re.IGNORECASE):
+            # Remove inline fabricated ping output
+            cleaned = re.sub(inline_ping_pattern, "\n", cleaned, flags=re.IGNORECASE)
+            print(f"[aj] IRON GATE: Removed inline fabricated ping output")
+
+        # Clean up any double newlines left behind
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+
+        return cleaned.strip()
 
     def _format_response(self, text: str) -> str:
         """

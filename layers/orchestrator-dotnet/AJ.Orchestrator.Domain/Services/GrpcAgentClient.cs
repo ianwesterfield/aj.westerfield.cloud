@@ -131,7 +131,7 @@ public class GrpcAgentClient : IGrpcAgentClient
       [EnumeratorCancellation] CancellationToken ct = default)
   {
     // For all agents, delegate to non-streaming gRPC and return lines
-    var result = await ExecuteAsync(agentId, command, 30, ct);
+    var result = await ExecuteAsync(agentId, command, 3600, ct);
     if (result.Stdout != null)
     {
       foreach (var line in result.Stdout.Split('\n'))
