@@ -20,7 +20,8 @@ public interface IReasoningEngine
     Task<NextStepResponse> GenerateNextStepAsync(
         string task,
         List<StepResult> history,
-        WorkspaceContext? workspace = null);
+        WorkspaceContext? workspace = null,
+        List<Dictionary<string, object?>>? memoryContext = null);
 
     /// <summary>
     /// Run a complete task with streaming updates.

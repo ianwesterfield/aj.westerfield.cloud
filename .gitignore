@@ -47,11 +47,11 @@ processed/
 publish-linux/
 publish-selfcontained/
 publish/
+publish-tray/
 raw/
 secrets/
 Thumbs.db
 training/**/data/
-!training/data/context_switching.jsonl
 training/datasets/__pycache__/
 training/datasets/processed/
 training/datasets/raw/
@@ -59,3 +59,21 @@ training/logs/
 training/models/
 unsloth_compiled_cache/
 venv/
+
+# .NET build artifacts
+**/bin/
+**/obj/
+**/publish/
+**/publish-*/
+**/*.exe
+**/*.dll
+**/*.pdb
+**/*.user
+**/*.suo
+*.nupkg
+*.snupkg
+
+# Visual Studio
+.vs/
+*.vsidx
+*.lock.json

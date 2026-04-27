@@ -1,9 +1,11 @@
 """
 Memory Summarizer
 
-Summarizes what's worth remembering from conversational text using Ollama LLM.
-Instead of extracting structured key:value facts, this creates a concise summary
-of personal information, preferences, and context worth preserving.
+Summarizes what's worth remembering from conversational text using the local
+LLM (llama.cpp llama-server via its OpenAI-compatible /v1/chat/completions
+endpoint). Instead of extracting structured key:value facts, this creates a
+concise summary of personal information, preferences, and context worth
+preserving.
 
 This is a middle ground between:
   - Full prompt saving (too much noise)
@@ -18,9 +20,15 @@ import httpx
 
 logger = logging.getLogger("pragmatics.memory_summarizer")
 
-OLLAMA_HOST = os.getenv("OLLAMA_HOST", "localhost")
-OLLAMA_PORT = os.getenv("OLLAMA_PORT", "11434")
-# Uses the main model - no separate fact extraction model needed
+# Kept as OLLAMA_* env vars for backwards compatibility with existing
+# deployments; the new target is llama.cpp's llama-server on port 8081.
+# LLM_BASE_URL (preferred) > OLLAMA_BASE_URL > host+port fallback.
+LLM_BASE_URL = (
+    os.getenv("LLM_BASE_URL")
+    or os.getenv("OLLAMA_BASE_URL")
+    or f"http://{os.getenv('OLLAMA_HOST', 'localhost')}:{os.getenv('OLLAMA_PORT', '8081')}"
+)
+LLM_DEFAULT_MODEL = os.getenv("LLM_MODEL") or os.getenv("OLLAMA_MODEL") or "ajr1-32b"
 
 SUMMARIZE_PROMPT = """Summarize what's worth REMEMBERING about this user from their message.
 
@@ -60,32 +68,34 @@ async def summarize_for_memory(
     if not text or len(text.strip()) < 10:
         return _empty_result()
 
-    # Use provided model or default to r1-distill-aj (main model)
-    ollama_model = model or "r1-distill-aj:32b-8k"
+    llm_model = model or LLM_DEFAULT_MODEL
 
     prompt = SUMMARIZE_PROMPT.format(text=text)
 
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(
-                f"http://{OLLAMA_HOST}:{OLLAMA_PORT}/api/generate",
+                f"{LLM_BASE_URL.rstrip('/')}/v1/chat/completions",
                 json={
-                    "model": ollama_model,
-                    "prompt": prompt,
+                    "model": llm_model,
+                    "messages": [
+                        {"role": "user", "content": prompt},
+                    ],
                     "stream": False,
-                    "options": {
-                        "temperature": 0.3,  # Some creativity for natural summaries
-                        "num_predict": 150,  # Short summaries only
-                    },
+                    "temperature": 0.3,
+                    "max_tokens": 150,
                 },
             )
 
             if response.status_code != 200:
-                logger.warning(f"Ollama returned {response.status_code}")
+                logger.warning(f"LLM returned {response.status_code}")
                 return _empty_result()
 
             result = response.json()
-            summary = result.get("response", "").strip()
+            choices = result.get("choices") or []
+            if not choices:
+                return _empty_result()
+            summary = (choices[0].get("message") or {}).get("content", "").strip()
 
             # Check if LLM said nothing worth remembering
             if not summary or "NOTHING_TO_REMEMBER" in summary.upper():
@@ -104,10 +114,10 @@ async def summarize_for_memory(
             return {"summary": summary, "facts": [{"type": "memory", "value": summary}]}
 
     except httpx.TimeoutException:
-        logger.warning("Ollama timeout during summarization")
+        logger.warning("LLM timeout during summarization")
         return _empty_result()
     except httpx.ConnectError:
-        logger.warning(f"Cannot connect to Ollama at {OLLAMA_HOST}:{OLLAMA_PORT}")
+        logger.warning(f"Cannot connect to LLM at {LLM_BASE_URL}")
         return _empty_result()
     except Exception as e:
         logger.error(f"Summarization failed: {e}")

@@ -8,6 +8,13 @@ public record ExecutableSkill
 {
   public required string Name { get; init; }
   public int Version { get; init; } = 1;
+
+  /// <summary>
+  /// Human-readable description of what this skill does.
+  /// Used by LLM to decide when to use this skill.
+  /// </summary>
+  public string? Description { get; init; }
+
   public required SkillTriggers Triggers { get; init; }
   public required Dictionary<string, SkillParameter> Parameters { get; init; }
   public required SkillTarget Target { get; init; }
@@ -65,11 +72,6 @@ public record SkillTarget
   public required string Agent { get; init; }
 
   /// <summary>
-  /// Expected platform (linux, windows) for validation
-  /// </summary>
-  public string? Platform { get; init; }
-
-  /// <summary>
   /// Human-readable description of the target system
   /// </summary>
   public string? Description { get; init; }
@@ -88,9 +90,17 @@ public record WorkflowStep
   public required string Name { get; init; }
 
   /// <summary>
-  /// Command template. Use {{paramName}} for parameter substitution.
+  /// Default command template (platform-agnostic or fallback).
+  /// Use {{paramName}} for parameter substitution.
   /// </summary>
-  public required string Command { get; init; }
+  public string? Command { get; init; }
+
+  /// <summary>
+  /// Per-platform command templates (keys: "linux", "windows", "macos", etc.).
+  /// When present, executor selects based on the resolved agent's platform.
+  /// Falls back to <see cref="Command"/> when no match.
+  /// </summary>
+  public Dictionary<string, string>? Commands { get; init; }
 
   /// <summary>
   /// If true, continue workflow even if this step fails

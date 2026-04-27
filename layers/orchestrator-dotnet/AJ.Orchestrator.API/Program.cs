@@ -8,9 +8,14 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddOptions();
 
 // HTTP clients for external services
+// Named "ollama" is kept for backwards compat in any consumers; ReasoningEngine
+// uses an unnamed client and reads LLM_BASE_URL / OLLAMA_BASE_URL from env.
 builder.Services.AddHttpClient("ollama", c =>
 {
-    c.BaseAddress = new Uri(builder.Configuration["Ollama:Url"] ?? "http://localhost:11434");
+    c.BaseAddress = new Uri(
+        builder.Configuration["Llm:Url"]
+        ?? builder.Configuration["Ollama:Url"]
+        ?? "http://localhost:8081");
     c.Timeout = TimeSpan.FromMinutes(5);
 });
 
