@@ -2,7 +2,6 @@
 name: postfix-spam-blocking
 description: Block unwanted sender domains on the postfix01 mail server
 tags: [mail, spam, postfix, security, email, block]
-targetAgent: postfix01
 ---
 
 # Postfix Spam Domain Blocking

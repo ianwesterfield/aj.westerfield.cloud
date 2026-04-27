@@ -16,12 +16,18 @@ namespace AJ.Orchestrator.Domain.Services;
 /// 
 /// Skill paths are configured in appsettings.json under Skills:Paths
 /// or default to ./skills and ~/.aj/skills
+/// 
+/// File watching is enabled by default - skills auto-reload on changes.
 /// </summary>
-public partial class SkillDiscoveryService : ISkillDiscoveryService
+public partial class SkillDiscoveryService : ISkillDiscoveryService, IDisposable
 {
   private readonly ILogger<SkillDiscoveryService> _logger;
   private readonly List<string> _skillPaths;
   private readonly ConcurrentDictionary<string, Skill> _skills = new();
+  private readonly List<FileSystemWatcher> _watchers = new();
+  private readonly object _reloadLock = new();
+  private CancellationTokenSource? _debounceCts;
+  private bool _disposed;
 
   // Regex to extract YAML frontmatter (content between --- markers)
   [GeneratedRegex(@"^---\s*\n(.*?)\n---\s*\n", RegexOptions.Singleline)]
@@ -83,6 +89,143 @@ public partial class SkillDiscoveryService : ISkillDiscoveryService
 
     _logger.LogInformation("Loaded {Count} skill(s): {Names}",
         _skills.Count, string.Join(", ", _skills.Keys));
+
+    // Set up file watchers for auto-reload
+    SetupFileWatchers();
+  }
+
+  /// <summary>
+  /// Set up FileSystemWatchers on each skill directory for auto-reload.
+  /// </summary>
+  private void SetupFileWatchers()
+  {
+    // Clean up existing watchers
+    foreach (var watcher in _watchers)
+    {
+      watcher.EnableRaisingEvents = false;
+      watcher.Dispose();
+    }
+    _watchers.Clear();
+
+    foreach (var basePath in _skillPaths)
+    {
+      var expandedPath = Environment.ExpandEnvironmentVariables(basePath);
+      if (!Path.IsPathRooted(expandedPath))
+        expandedPath = Path.GetFullPath(expandedPath);
+
+      if (!Directory.Exists(expandedPath))
+        continue;
+
+      try
+      {
+        var watcher = new FileSystemWatcher(expandedPath)
+        {
+          Filter = "*.md",
+          IncludeSubdirectories = true,
+          NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.CreationTime
+        };
+
+        watcher.Changed += OnSkillFileChanged;
+        watcher.Created += OnSkillFileChanged;
+        watcher.Deleted += OnSkillFileChanged;
+        watcher.Renamed += OnSkillFileRenamed;
+
+        watcher.EnableRaisingEvents = true;
+        _watchers.Add(watcher);
+
+        _logger.LogInformation("Watching for skill changes: {Path}", expandedPath);
+      }
+      catch (Exception ex)
+      {
+        _logger.LogWarning(ex, "Failed to set up file watcher for: {Path}", expandedPath);
+      }
+    }
+  }
+
+  /// <summary>
+  /// Handle file change events with debouncing to avoid rapid reloads.
+  /// </summary>
+  private void OnSkillFileChanged(object sender, FileSystemEventArgs e)
+  {
+    // Only care about SKILL.md files
+    if (!e.Name?.EndsWith("SKILL.md", StringComparison.OrdinalIgnoreCase) ?? true)
+      return;
+
+    _logger.LogInformation("Skill file changed: {Path} ({ChangeType})", e.FullPath, e.ChangeType);
+    ScheduleDebouncedReload();
+  }
+
+  private void OnSkillFileRenamed(object sender, RenamedEventArgs e)
+  {
+    var isOldSkill = e.OldName?.EndsWith("SKILL.md", StringComparison.OrdinalIgnoreCase) ?? false;
+    var isNewSkill = e.Name?.EndsWith("SKILL.md", StringComparison.OrdinalIgnoreCase) ?? false;
+
+    if (!isOldSkill && !isNewSkill)
+      return;
+
+    _logger.LogInformation("Skill file renamed: {OldPath} -> {NewPath}", e.OldFullPath, e.FullPath);
+    ScheduleDebouncedReload();
+  }
+
+  /// <summary>
+  /// Schedule a debounced reload - waits 500ms after last change before reloading.
+  /// This prevents rapid reloads when editors save multiple times or do atomic writes.
+  /// </summary>
+  private void ScheduleDebouncedReload()
+  {
+    lock (_reloadLock)
+    {
+      // Cancel any pending reload
+      _debounceCts?.Cancel();
+      _debounceCts?.Dispose();
+      _debounceCts = new CancellationTokenSource();
+
+      var token = _debounceCts.Token;
+
+      // Schedule reload after 500ms debounce
+      _ = Task.Run(async () =>
+      {
+        try
+        {
+          await Task.Delay(500, token);
+
+          if (!token.IsCancellationRequested)
+          {
+            _logger.LogInformation("Auto-reloading skills due to file changes...");
+            await LoadSkillsInternalAsync(CancellationToken.None);
+            _logger.LogInformation("Skills auto-reloaded: {Count} skill(s)", _skills.Count);
+          }
+        }
+        catch (OperationCanceledException)
+        {
+          // Debounce cancelled by newer change - ignore
+        }
+        catch (Exception ex)
+        {
+          _logger.LogError(ex, "Failed to auto-reload skills");
+        }
+      }, token);
+    }
+  }
+
+  /// <summary>
+  /// Internal reload without setting up watchers (to avoid recursion).
+  /// </summary>
+  private async Task LoadSkillsInternalAsync(CancellationToken ct)
+  {
+    _skills.Clear();
+
+    foreach (var basePath in _skillPaths)
+    {
+      var expandedPath = Environment.ExpandEnvironmentVariables(basePath);
+      if (!Path.IsPathRooted(expandedPath))
+        expandedPath = Path.GetFullPath(expandedPath);
+
+      if (!Directory.Exists(expandedPath))
+        continue;
+
+      await LoadSkillsFromPathAsync(expandedPath, ct);
+    }
   }
 
   public Task ReloadSkillsAsync(CancellationToken ct = default) => LoadSkillsAsync(ct);
@@ -99,11 +242,17 @@ public partial class SkillDiscoveryService : ISkillDiscoveryService
 
     var scored = _skills.Values
         .Select(skill => new { Skill = skill, Score = ScoreSkill(skill, keywords, explicitTags) })
-        .Where(x => x.Score > 0)
-        .OrderByDescending(x => x.Score)
-        .Select(x => x.Skill);
+        .ToList();
 
-    return scored;
+    // Require minimum score of 5 to avoid matching on single weak keywords
+    // 5 = name match, or 2+ tag matches, or explicit tag
+    var matched = scored
+        .Where(x => x.Score >= 5)
+        .OrderByDescending(x => x.Score)
+        .Select(x => x.Skill)
+        .ToList();
+
+    return matched;
   }
 
   public string FormatSkillContext(IEnumerable<Skill> skills)
@@ -342,5 +491,23 @@ public partial class SkillDiscoveryService : ISkillDiscoveryService
       score += 8;
 
     return score;
+  }
+
+  public void Dispose()
+  {
+    if (_disposed) return;
+    _disposed = true;
+
+    _debounceCts?.Cancel();
+    _debounceCts?.Dispose();
+
+    foreach (var watcher in _watchers)
+    {
+      watcher.EnableRaisingEvents = false;
+      watcher.Dispose();
+    }
+    _watchers.Clear();
+
+    GC.SuppressFinalize(this);
   }
 }

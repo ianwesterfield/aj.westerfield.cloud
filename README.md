@@ -13,11 +13,11 @@ A privacy-first, locally-hosted **AJ**entic AI infrastructure assistant that com
 
 The AI tooling ecosystem is crowded. Here's where AJ sits — and why it exists.
 
-### The "FunnelCloud Remote Execute" Philosophy
+### The "Remote Execute" Philosophy
 
-At its core, AJ relies on LLM reasoning and four tools: `list_agents`, `execute`, `think`, and `complete`. The LLM generates commands from its training — PowerShell for Windows, Bash for Linux — and the orchestrator dispatches them to FunnelCloud agents via gRPC.
+At its core, AJ relies on LLM reasoning and four tools: `list_agents`, `execute`, `think`, and `complete`. The LLM generates commands from its training — PowerShell for Windows, Bash for Linux — and the orchestrator dispatches them to agents via gRPC.
 
-- **FunnelCloud agents** on Windows/Linux machines (full capability detection)
+- **agents** on Windows/Linux machines (full capability detection)
 - **LLM-generated commands**: The model knows how to construct commands from its training
 - **No local execution**: All commands run on remote agents, never in the orchestrator container
 - **R1 reasoning**: The model uses `<think>` blocks for chain-of-thought before producing tool calls
@@ -45,23 +45,6 @@ With MCP, the LLM is the decision-maker given a tool catalog. With AJ, the orche
 **AJ's agents don't think. They execute.** The thinking happens in the orchestrator, informed by session state, history, and the actual capabilities of discovered agents.
 
 **MCP = tool discovery + invocation protocol. AJ = reasoning engine that plans solutions and dispatches atomic operations. Complementary, not competing.**
-
-### Defined Sequence vs. Adaptive Reasoning
-
-Visual workflow builders like [n8n](https://github.com/n8n-io/n8n) are fantastic for deterministic automation: "When X happens, do Y, then Z." You define the sequence, and execution follows that path.
-
-AJ is more like giving directions to a driver. You say where you want to go; it figures out the route:
-
-| Paradigm       | Workflow Builder       | AJ                           |
-| -------------- | ---------------------- | ---------------------------- |
-| **You define** | The exact sequence     | The goal                     |
-| **Execution**  | Deterministic (A→B→C)  | Adaptive (LLM chooses steps) |
-| **State**      | Workflow variables     | Semantic memory (persistent) |
-| **Best for**   | Repeatable automations | Adaptive problem-solving     |
-
-Want "every hour, sync CRM to Sheets"? Use a workflow builder—it's the right tool. Want "help me deploy this to whichever server makes sense"? That requires reasoning, context, and the ability to discover available agents on the fly.
-
-They're complementary. AJ could _be called by_ a workflow builder as an automation step. Or AJ could _call_ external automation when the reasoning engine decides that's the right move.
 
 ---
 
@@ -103,16 +86,15 @@ sequenceDiagram
 
 ### System Components
 
-| Component            | Purpose                                            | Technology                                                                                   | Port  |
-| -------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------- | ----- |
-| **Filter**           | Intent routing, IRON GATE fabrication detection    | [Open-WebUI](https://github.com/open-webui/open-webui) Python filter                         | N/A   |
-| **Orchestrator API** | Reasoning engine + skill execution + tool dispatch | .NET 9 (C#) + [Ollama](https://github.com/ollama/ollama)                                     | 8004  |
-| **Pragmatics API**   | Intent classification + entity extraction          | DistilBERT 4-class + spaCy NER                                                               | 8001  |
-| **Memory API**       | Semantic knowledge storage & recall                | [Qdrant](https://github.com/qdrant/qdrant) vectors + embeddings                              | 8000  |
-| **Extractor API**    | Media processing (PDF, images, audio)              | [LLaVA](https://github.com/haotian-liu/LLaVA) + [Whisper](https://github.com/openai/whisper) | 8002  |
-| **Qdrant**           | Vector database for semantic search                | [Qdrant](https://github.com/qdrant/qdrant) (in-memory)                                       | 6333  |
-| **Ollama**           | Local LLM inference                                | r1-distill-aj:32b-8k (Q4_K_M, 8192 context)                                                  | 11434 |
-| **Ollama Facts**     | Fact extraction for memory                         | qwen2.5:1.5b                                                                                 | 11436 |
+| Component            | Purpose                                            | Technology                                                                                                       | Port |
+| -------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ---- |
+| **Filter**           | Intent routing, IRON GATE fabrication detection    | [Open-WebUI](https://github.com/open-webui/open-webui) Python filter                                             | N/A  |
+| **Orchestrator API** | Reasoning engine + skill execution + tool dispatch | .NET 9 (C#) + [llama.cpp](https://github.com/ggml-org/llama.cpp) (OpenAI-compatible)                             | 8004 |
+| **Pragmatics API**   | Intent classification + entity extraction          | DistilBERT 4-class + spaCy NER                                                                                   | 8001 |
+| **Memory API**       | Semantic knowledge storage & recall                | [Qdrant](https://github.com/qdrant/qdrant) vectors + embeddings                                                  | 8000 |
+| **Extractor API**    | Media processing (PDF, images, audio)              | [LLaVA](https://github.com/haotian-liu/LLaVA) + [Whisper](https://github.com/openai/whisper)                     | 8002 |
+| **Qdrant**           | Vector database for semantic search                | [Qdrant](https://github.com/qdrant/qdrant) (in-memory)                                                           | 6333 |
+| **llama-server**     | Local LLM inference (host-side, not containerized) | [AJ-DeepSeek-R1-Qwen-32B](https://huggingface.co/ianwesterfield/AJ-DeepSeekR1Qwen32B-v2.1.0-GGUF) Q4_K_M, 8k ctx | 8081 |
 
 ### Two-Tier Skill System
 
@@ -294,12 +276,13 @@ See [FunnelCloud/README.md](layers/agents/FunnelCloud/README.md) for full setup 
 
 ### VRAM Requirements
 
-| Model Configuration              | VRAM Usage | Notes                            |
-| -------------------------------- | ---------- | -------------------------------- |
-| `r1-distill-aj:32b-4k` (Q4_K_M)  | ~20 GB     | Safe headroom on 24GB GPU        |
-| `r1-distill-aj:32b-8k` (Q4_K_M)  | ~22 GB     | Tight fit, may spill ~9% to CPU  |
-| `aj-q8:latest` (Q8_0)            | ~34 GB     | Requires 48GB+ GPU               |
-| `qwen2.5:1.5b` (fact extraction) | ~1 GB      | Runs on separate Ollama instance |
+| Model Configuration                 | VRAM Usage | Notes                                 |
+| ----------------------------------- | ---------- | ------------------------------------- |
+| `ajr1-32b` Q4_K_M, 8k ctx (default) | ~22 GB     | Tight fit on 24GB GPU (RTX 3090/4090) |
+| `ajr1-32b` Q4_K_M, 4k ctx           | ~20 GB     | Safe headroom on 24GB GPU             |
+| `ajr1-32b` Q8_0                     | ~34 GB     | Requires 48GB+ GPU                    |
+
+Fact extraction currently reuses the same `llama-server` endpoint (no separate small-model instance in Plan A). A dedicated tiny-model server can be added later if recall latency becomes an issue.
 
 ### Quick Start
 
@@ -323,25 +306,46 @@ docker compose ps
 ./scripts/deploy-filter.ps1
 ```
 
-### Ollama Configuration
+### LLM Inference: llama.cpp + llama-server
 
-AJ uses two Ollama instances to avoid model unloading conflicts:
+AJ runs inference on a **host-side `llama-server`** (from [llama.cpp](https://github.com/ggml-org/llama.cpp)) exposing an OpenAI-compatible API on port `8081`. Containers talk to it via `LLM_BASE_URL` (which falls back to the legacy `OLLAMA_BASE_URL` for older compose overrides).
 
-| Instance       | Port  | Model                  | Purpose                             |
-| -------------- | ----- | ---------------------- | ----------------------------------- |
-| `ollama`       | 11434 | `r1-distill-aj:32b-8k` | Main reasoning (32B, 8k context)    |
-| `ollama-facts` | 11436 | `qwen2.5:1.5b`         | Fact extraction (1.5B, lightweight) |
+| Setting       | Value                                            |
+| ------------- | ------------------------------------------------ |
+| Binary        | `llama-server` (built locally with CUDA)         |
+| Endpoint      | `http://localhost:8081/v1/chat/completions`      |
+| Model alias   | `ajr1-32b`                                       |
+| Default flags | `--flash-attn --n-gpu-layers 99 --ctx-size 8192` |
 
-**Key environment variables:**
+#### Published Models (HuggingFace)
 
-```yaml
-environment:
-  - OLLAMA_KEEP_ALIVE=-1 # Keep models loaded forever (never unload)
-  - OLLAMA_NUM_PARALLEL=1 # Only 1 concurrent request to prevent double-loads
-  - OLLAMA_MAX_LOADED_MODELS=1 # Maximum 1 model loaded at a time
+| Repo                                                                                                                        | Contents                                                                                 | Visibility |
+| --------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | ---------- |
+| [`ianwesterfield/AJ-DeepSeekR1Qwen32B-v2.1.0-GGUF`](https://huggingface.co/ianwesterfield/AJ-DeepSeekR1Qwen32B-v2.1.0-GGUF) | Quantized GGUFs (Q4_K_M default, Q8_0) — load these directly with `llama-server`         | Public     |
+| [`ianwesterfield/AJ-DeepSeekR1Qwen32B-v2.1.0-lora`](https://huggingface.co/ianwesterfield/AJ-DeepSeekR1Qwen32B-v2.1.0-lora) | LoRA adapter over `deepseek-ai/DeepSeek-R1-Distill-Qwen-32B` — merge + quantize yourself | Private    |
+
+The v3 70B variant (Llama-3.3-70B-Instruct QLoRA) is archived on HuggingFace as adapter-only; it's no longer the primary runtime, but lives on for rent-a-GPU experiments.
+
+#### Build & Launch
+
+```bash
+# 1. Build llama.cpp with CUDA (one-time, ~15 min on RTX 4090)
+bash scripts/build_llamacpp.sh
+
+# 2. Start the server in a tmux session
+bash scripts/start-llama-server.sh
+
+# 3. Attach / detach
+wsl -- tmux attach -t llm    # attach
+# (Ctrl-B then D to detach)
+
+# 4. Smoke test
+curl http://localhost:8081/v1/models
 ```
 
-**Model quantization (GGUF format):**
+For boot-time auto-start, a systemd unit is provided at [`scripts/llama-server.service`](scripts/llama-server.service).
+
+#### Quantization Reference
 
 | Quantization | Bits | Quality        | 32B Model Size |
 | ------------ | ---- | -------------- | -------------- |
@@ -352,18 +356,9 @@ environment:
 | Q6_K         | ~6.5 | Excellent      | ~26 GB         |
 | Q8_0         | 8    | Near-lossless  | ~34 GB         |
 
-**Healthcheck:** The Ollama container runs a test prompt on startup to ensure the model is loaded before marking healthy. The `ollama/ollama:latest` image doesn't include `curl`, so healthchecks use the `ollama` CLI directly.
+#### Why not Ollama?
 
-**Switching models:**
-
-```bash
-# Available r1-distill-aj variants
-ollama list | grep r1-distill
-# r1-distill-aj:32b-2k   (2048 context)
-# r1-distill-aj:32b-4k   (4096 context)
-# r1-distill-aj:32b-8k   (8192 context)
-# r1-distill-aj:32b      (default)
-```
+Originally AJ ran on Ollama (a wrapper around llama.cpp) for DX convenience. Going direct to `llama-server` gave us: the stock OpenAI `/v1/chat/completions` endpoint (so Open-WebUI and every other OpenAI client connects unmodified), first-class `--flash-attn`, faster startup, and one fewer moving part. The docker-compose `ollama` service is left commented out for easy rollback.
 
 ### Auto-Start on Windows Boot
 
@@ -569,7 +564,7 @@ See [FunnelCloud/README.md](layers/agents/FunnelCloud/README.md) for detailed de
 - [x] [QLoRA](https://github.com/artidoro/qlora) training pipeline ([PEFT](https://github.com/huggingface/peft)/[TRL](https://github.com/huggingface/trl))
 - [x] Training capture system (live data collection)
 - [x] Agentic training infrastructure (trajectory format)
-- [ ] Model export to [Ollama](https://github.com/ollama/ollama)
+- [x] Model export to GGUF + publish to [HuggingFace](https://huggingface.co/ianwesterfield)
 - [ ] A/B testing framework
 - [ ] Distillation pipeline (72B → 7B/14B for deployment)
 

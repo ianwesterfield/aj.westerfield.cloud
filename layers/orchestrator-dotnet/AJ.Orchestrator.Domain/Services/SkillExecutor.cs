@@ -89,6 +89,7 @@ public class SkillExecutor : ISkillExecutor
       {
         Name = raw.Name,
         Version = raw.Version,
+        Description = raw.Description,
         Triggers = new SkillTriggers
         {
           Patterns = raw.Triggers?.Patterns ?? [],
@@ -106,7 +107,6 @@ public class SkillExecutor : ISkillExecutor
         Target = new SkillTarget
         {
           Agent = raw.Target?.Agent ?? "",
-          Platform = raw.Target?.Platform,
           Description = raw.Target?.Description
         },
         Workflow = new SkillWorkflow
@@ -114,7 +114,8 @@ public class SkillExecutor : ISkillExecutor
           Steps = raw.Workflow?.Steps?.Select(s => new WorkflowStep
           {
             Name = s.Name ?? "Step",
-            Command = s.Command ?? "",
+            Command = s.Command,
+            Commands = s.Commands,
             ContinueOnError = s.ContinueOnError,
             TimeoutSeconds = s.TimeoutSeconds > 0 ? s.TimeoutSeconds : 30
           }).ToList() ?? []
@@ -133,6 +134,16 @@ public class SkillExecutor : ISkillExecutor
       _logger.LogWarning(ex, "Failed to parse YAML skill from {Path}", sourcePath);
       return null;
     }
+  }
+
+  /// <summary>
+  /// Get a skill by its name (for LLM-initiated skill calls)
+  /// </summary>
+  public ExecutableSkill? GetSkillByName(string name)
+  {
+    return _skills.FirstOrDefault(s =>
+      s.Name.Equals(name, StringComparison.OrdinalIgnoreCase) ||
+      s.Name.Replace("-", "").Equals(name.Replace("-", ""), StringComparison.OrdinalIgnoreCase));
   }
 
   public SkillMatch? TryMatch(string userInput)
@@ -254,13 +265,55 @@ public class SkillExecutor : ISkillExecutor
     var allSuccess = true;
     string? lastError = null;
 
+    // Check if skill has no workflow but params include agent_id + command
+    // This handles context-injection skills like funnelcloud-agents where the LLM
+    // provides the execution params directly
+    var hasWorkflow = match.Skill.Workflow?.Steps?.Count > 0;
+    var paramAgentId = match.Parameters.GetValueOrDefault("agent_id");
+    var paramCommand = match.Parameters.GetValueOrDefault("command");
+
+    if (!hasWorkflow && !string.IsNullOrEmpty(paramAgentId) && !string.IsNullOrEmpty(paramCommand))
+    {
+      _logger.LogInformation("Skill {Name} has no workflow - executing directly on {Agent}: {Command}",
+          match.Skill.Name, paramAgentId, paramCommand);
+
+      var execResult = await _agentClient.ExecuteAsync(paramAgentId, paramCommand, 3600, ct);
+      sw.Stop();
+
+      return new SkillExecutionResult
+      {
+        Success = execResult.Success,
+        Message = execResult.Success
+            ? execResult.Stdout ?? "(no output)"
+            : execResult.ErrorMessage ?? execResult.Stderr ?? "Command failed",
+        StepResults =
+        [
+          new StepExecutionResult
+          {
+            StepName = "execute",
+            Success = execResult.Success,
+            Output = execResult.Stdout,
+            Error = execResult.Stderr ?? execResult.ErrorMessage,
+            DurationMs = execResult.DurationMs
+          }
+        ],
+        DurationMs = sw.ElapsedMilliseconds
+      };
+    }
+
     _logger.LogInformation("Executing skill {Name} on agent {Agent} with params: {@Params}",
         match.Skill.Name, match.Skill.Target.Agent, match.Parameters);
 
     // First, verify agent is online
     var agents = await _agentClient.DiscoverAgentsAsync(ct);
+
+    // Use target agent from skill, or fall back to agent_id param
+    var targetAgentId = !string.IsNullOrEmpty(match.Skill.Target?.Agent)
+        ? match.Skill.Target.Agent
+        : paramAgentId ?? "";
+
     var targetAgent = agents.FirstOrDefault(a =>
-        a.AgentId.Equals(match.Skill.Target.Agent, StringComparison.OrdinalIgnoreCase));
+        a.AgentId.Equals(targetAgentId, StringComparison.OrdinalIgnoreCase));
 
     if (targetAgent == null)
     {
@@ -268,20 +321,39 @@ public class SkillExecutor : ISkillExecutor
       {
         Success = false,
         Message = SubstituteParams(match.Skill.Responses.Failure, match.Parameters,
-            $"Agent '{match.Skill.Target.Agent}' is not online"),
+            $"Agent '{targetAgentId}' is not online"),
         StepResults = [],
         DurationMs = sw.ElapsedMilliseconds
       };
     }
 
     // Execute each workflow step
+    var agentPlatform = NormalizePlatform(targetAgent.Platform);
     foreach (var step in match.Skill.Workflow.Steps)
     {
       if (ct.IsCancellationRequested)
         break;
 
-      var command = SubstituteParams(step.Command, match.Parameters);
-      _logger.LogInformation("Step '{Step}': {Command}", step.Name, command);
+      var template = SelectCommandForPlatform(step, agentPlatform);
+      if (string.IsNullOrWhiteSpace(template))
+      {
+        allSuccess = false;
+        lastError = $"No command defined for platform '{agentPlatform}' in step '{step.Name}'";
+        _logger.LogWarning("{Error}", lastError);
+        stepResults.Add(new StepExecutionResult
+        {
+          StepName = step.Name,
+          Success = false,
+          Output = null,
+          Error = lastError,
+          DurationMs = 0
+        });
+        if (!step.ContinueOnError) break;
+        continue;
+      }
+
+      var command = SubstituteParams(template, match.Parameters);
+      _logger.LogInformation("Step '{Step}' ({Platform}): {Command}", step.Name, agentPlatform, command);
 
       var stepSw = Stopwatch.StartNew();
       var execResult = await _agentClient.ExecuteAsync(
@@ -321,19 +393,29 @@ public class SkillExecutor : ISkillExecutor
 
     sw.Stop();
 
+    // Aggregate stdout across successful steps for {{output}} substitution
+    var aggregatedOutput = string.Join("\n",
+      stepResults.Where(s => s.Success && !string.IsNullOrWhiteSpace(s.Output))
+                 .Select(s => s.Output!.Trim()));
+
+    var paramsWithOutput = new Dictionary<string, string>(match.Parameters)
+    {
+      ["output"] = aggregatedOutput
+    };
+
     // Build response message
     string message;
     if (allSuccess)
     {
-      message = SubstituteParams(match.Skill.Responses.Success, match.Parameters);
+      message = SubstituteParams(match.Skill.Responses.Success, paramsWithOutput);
     }
     else if (stepResults.Any(s => s.Success) && match.Skill.Responses.Partial != null)
     {
-      message = SubstituteParams(match.Skill.Responses.Partial, match.Parameters, lastError);
+      message = SubstituteParams(match.Skill.Responses.Partial, paramsWithOutput, lastError);
     }
     else
     {
-      message = SubstituteParams(match.Skill.Responses.Failure, match.Parameters, lastError);
+      message = SubstituteParams(match.Skill.Responses.Failure, paramsWithOutput, lastError);
     }
 
     return new SkillExecutionResult
@@ -343,6 +425,35 @@ public class SkillExecutor : ISkillExecutor
       StepResults = stepResults,
       DurationMs = sw.ElapsedMilliseconds
     };
+  }
+
+  private static string NormalizePlatform(string? platform)
+  {
+    if (string.IsNullOrWhiteSpace(platform)) return "unknown";
+    var p = platform.Trim().ToLowerInvariant();
+    if (p.Contains("win")) return "windows";
+    if (p.Contains("darwin") || p.Contains("mac")) return "macos";
+    if (p.Contains("linux") || p.Contains("ubuntu") || p.Contains("debian") ||
+        p.Contains("rhel") || p.Contains("centos") || p.Contains("fedora") ||
+        p.Contains("alpine")) return "linux";
+    return p;
+  }
+
+  private static string? SelectCommandForPlatform(WorkflowStep step, string platform)
+  {
+    if (step.Commands != null && step.Commands.Count > 0)
+    {
+      foreach (var kvp in step.Commands)
+      {
+        if (string.Equals(kvp.Key, platform, StringComparison.OrdinalIgnoreCase))
+          return kvp.Value;
+      }
+
+      if (step.Commands.TryGetValue("default", out var def))
+        return def;
+    }
+
+    return step.Command;
   }
 
   private static string SubstituteParams(string template, Dictionary<string, string> parameters, string? error = null)
@@ -369,6 +480,7 @@ public class SkillExecutor : ISkillExecutor
   {
     public string Name { get; set; } = "";
     public int Version { get; set; } = 1;
+    public string? Description { get; set; }
     public YamlTriggers? Triggers { get; set; }
     public Dictionary<string, YamlParameter>? Parameters { get; set; }
     public YamlTarget? Target { get; set; }
@@ -393,7 +505,6 @@ public class SkillExecutor : ISkillExecutor
   private class YamlTarget
   {
     public string Agent { get; set; } = "";
-    public string? Platform { get; set; }
     public string? Description { get; set; }
   }
 
@@ -406,6 +517,7 @@ public class SkillExecutor : ISkillExecutor
   {
     public string? Name { get; set; }
     public string? Command { get; set; }
+    public Dictionary<string, string>? Commands { get; set; }
     public bool ContinueOnError { get; set; }
     public int TimeoutSeconds { get; set; } = 30;
   }

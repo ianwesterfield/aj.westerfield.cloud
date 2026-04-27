@@ -1,0 +1,6 @@
+{
+    "workspace_root":  "C:\\Code\\aj",
+    "user_id":  "trace-test",
+    "max_steps":  6,
+    "task":  "Ping google.com from the ians-r16 agent (4 pings), then summarize latency."
+}

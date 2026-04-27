@@ -23,6 +23,11 @@ public interface ISkillExecutor
   /// Get all loaded executable skills (for debugging/listing)
   /// </summary>
   IEnumerable<ExecutableSkill> GetAllSkills();
+
+  /// <summary>
+  /// Get a skill by its name (for LLM-initiated skill calls)
+  /// </summary>
+  ExecutableSkill? GetSkillByName(string name);
 }
 
 /// <summary>

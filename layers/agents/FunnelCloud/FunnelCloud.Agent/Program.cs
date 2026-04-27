@@ -2,6 +2,7 @@
 using System.Runtime.InteropServices;
 using System.Security.Cryptography.X509Certificates;
 using FunnelCloud.Agent.Services;
+using FunnelCloud.Agent.Services.Events;
 using FunnelCloud.Shared.Contracts;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -77,20 +78,32 @@ public class Program
             sp.GetRequiredService<PeerDiscoveryService>(),
             sp.GetRequiredService<AgentCapabilities>()));
 
-    // Add HTTP API server (health checks, peer discovery proxy)
+    // Named-pipe event publisher (powers the tray UI on Windows and the
+    // `funnel` CLI on Linux/Windows). Registered as a singleton so the same
+    // instance is used by the hosted service, the gRPC host, TaskServiceImpl,
+    // and the HTTP API (for test-event endpoint).
+    builder.Services.AddSingleton<NamedPipeEventPublisher>();
+    builder.Services.AddSingleton<IAgentEventPublisher>(sp =>
+        sp.GetRequiredService<NamedPipeEventPublisher>());
+    builder.Services.AddHostedService(sp =>
+        sp.GetRequiredService<NamedPipeEventPublisher>());
+
+    // Add HTTP API server (health checks, peer discovery proxy, test events)
     builder.Services.AddHostedService<HttpApiHost>(sp =>
         new HttpApiHost(
             sp.GetRequiredService<ILogger<HttpApiHost>>(),
             sp.GetRequiredService<AgentCapabilities>(),
             sp.GetRequiredService<PeerDiscoveryService>(),
-            sp.GetRequiredService<PeerRegistry>()));
+            sp.GetRequiredService<PeerRegistry>(),
+            sp.GetRequiredService<IAgentEventPublisher>()));
 
     // Add gRPC server for task execution (mTLS secured)
     builder.Services.AddHostedService<GrpcServerHost>(sp =>
         new GrpcServerHost(
             sp.GetRequiredService<ILogger<GrpcServerHost>>(),
             sp.GetRequiredService<AgentCapabilities>(),
-            sp.GetRequiredService<TaskExecutor>()));
+            sp.GetRequiredService<TaskExecutor>(),
+            sp.GetRequiredService<IAgentEventPublisher>()));
 
     var host = builder.Build();
 

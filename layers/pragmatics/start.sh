@@ -1,6 +1,6 @@
 #!/bin/bash
 # Pragmatics API startup script
-# Waits for Ollama main model, then starts the API
+# Waits for the local LLM (llama.cpp llama-server), then starts the API
 
 set -e
 
@@ -8,15 +8,22 @@ echo "=========================================="
 echo "Pragmatics Container Startup"
 echo "=========================================="
 
-# ====== Wait for Ollama Main Model ======
-# Block until main Ollama instance is ready for memory summarization
-OLLAMA_HOST="${OLLAMA_HOST:-localhost}"
-OLLAMA_PORT="${OLLAMA_PORT:-11434}"
-OLLAMA_URL="http://${OLLAMA_HOST}:${OLLAMA_PORT}"
-OLLAMA_MODEL="${OLLAMA_MODEL:-r1-distill-aj:32b-8k}"
+# ====== Wait for LLM ======
+# Block until the OpenAI-compatible endpoint is serving the chat model.
+# Env precedence: LLM_BASE_URL > OLLAMA_BASE_URL > OLLAMA_HOST:OLLAMA_PORT.
+if [ -n "${LLM_BASE_URL:-}" ]; then
+  LLM_URL="${LLM_BASE_URL}"
+elif [ -n "${OLLAMA_BASE_URL:-}" ]; then
+  LLM_URL="${OLLAMA_BASE_URL}"
+else
+  LLM_HOST="${OLLAMA_HOST:-localhost}"
+  LLM_PORT="${OLLAMA_PORT:-8081}"
+  LLM_URL="http://${LLM_HOST}:${LLM_PORT}"
+fi
+LLM_MODEL="${LLM_MODEL:-${OLLAMA_MODEL:-ajr1-32b}}"
 
-echo "[1/2] Waiting for Ollama at $OLLAMA_URL with model $OLLAMA_MODEL..."
-/app/shared/wait-for-ollama.sh "$OLLAMA_URL" "$OLLAMA_MODEL" 300
+echo "[1/2] Waiting for LLM at $LLM_URL with model $LLM_MODEL..."
+/app/shared/wait-for-llm.sh "$LLM_URL" "$LLM_MODEL" 300
 
 # Start Pragmatics API
 echo "[2/2] Starting Pragmatics API..."

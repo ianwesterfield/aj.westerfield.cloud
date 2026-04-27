@@ -678,9 +678,40 @@ I should respond with the complete tool since this is basic math.
 
   #region Helper Methods
 
+  /// <summary>
+  /// Creates a mock HttpClient that returns the given content object as JSON,
+  /// wrapped in the OpenAI-compatible /v1/chat/completions response shape
+  /// that llama-server (llama.cpp) returns.
+  ///
+  /// Call-site conventions (to keep existing tests readable):
+  ///   - An anonymous object with a 'response' property: the value of 'response'
+  ///     is placed verbatim as the assistant message content (legacy Ollama
+  ///     /api/generate shape passed through).
+  ///   - An anonymous object with a 'message' property having a 'content' sub-
+  ///     property: the value of 'message.content' is placed as the assistant
+  ///     message content (legacy Ollama /api/chat shape passed through).
+  ///   - Any other shape: the whole object is JSON-serialized and used as the
+  ///     assistant message content (e.g. raw `{intent:"task"}` classifier JSON).
+  /// </summary>
   private static HttpClient CreateMockHttpClient<T>(HttpStatusCode statusCode, T? content)
   {
-    var json = content != null ? JsonSerializer.Serialize(content) : "";
+    string body;
+    if (content is null)
+    {
+      body = "";
+    }
+    else
+    {
+      var contentText = ExtractAssistantContent(content);
+      body = JsonSerializer.Serialize(new
+      {
+        choices = new object[]
+        {
+          new { message = new { role = "assistant", content = contentText } }
+        }
+      });
+    }
+
     var handlerMock = new Mock<HttpMessageHandler>();
     handlerMock.Protected()
         .Setup<Task<HttpResponseMessage>>("SendAsync",
@@ -689,12 +720,41 @@ I should respond with the complete tool since this is basic math.
         .ReturnsAsync(() => new HttpResponseMessage
         {
           StatusCode = statusCode,
-          Content = content != null
-                ? new StringContent(json)
-                : null
+          Content = content != null ? new StringContent(body) : null
         });
 
     return new HttpClient(handlerMock.Object);
+  }
+
+  private static string ExtractAssistantContent<T>(T content)
+  {
+    // Pull 'response' or 'message.content' if present on the anonymous object;
+    // otherwise serialize the whole object (used by intent-classification tests
+    // that mock the model returning a JSON classification string).
+    var type = typeof(T);
+    var responseProp = type.GetProperty("response");
+    if (responseProp != null)
+    {
+      var val = responseProp.GetValue(content);
+      return val?.ToString() ?? "";
+    }
+
+    var messageProp = type.GetProperty("message");
+    if (messageProp != null)
+    {
+      var messageVal = messageProp.GetValue(content);
+      if (messageVal != null)
+      {
+        var contentProp = messageVal.GetType().GetProperty("content");
+        if (contentProp != null)
+        {
+          var inner = contentProp.GetValue(messageVal);
+          return inner?.ToString() ?? "";
+        }
+      }
+    }
+
+    return JsonSerializer.Serialize(content);
   }
 
   #endregion

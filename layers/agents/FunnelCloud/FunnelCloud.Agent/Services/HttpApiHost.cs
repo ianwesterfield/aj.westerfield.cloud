@@ -1,6 +1,8 @@
 using System.Net;
 using System.Text.Json;
+using FunnelCloud.Agent.Services.Events;
 using FunnelCloud.Shared.Contracts;
+using FunnelCloud.Shared.Ipc;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -27,6 +29,7 @@ public class HttpApiHost : BackgroundService
   private readonly AgentCapabilities _capabilities;
   private readonly PeerDiscoveryService _peerDiscovery;
   private readonly PeerRegistry _peerRegistry;
+  private readonly IAgentEventPublisher? _eventPublisher;
   private readonly int _port;
   private IHost? _host;
 
@@ -35,12 +38,14 @@ public class HttpApiHost : BackgroundService
       AgentCapabilities capabilities,
       PeerDiscoveryService peerDiscovery,
       PeerRegistry peerRegistry,
+      IAgentEventPublisher? eventPublisher = null,
       int? port = null)
   {
     _logger = logger;
     _capabilities = capabilities;
     _peerDiscovery = peerDiscovery;
     _peerRegistry = peerRegistry;
+    _eventPublisher = eventPublisher;
     _port = port ?? TrustConfig.HttpApiPort;
   }
 
@@ -211,11 +216,36 @@ public class HttpApiHost : BackgroundService
         }
       });
 
+      // Test event endpoint for debugging event publishing
+      app.MapPost("/test-event", () =>
+      {
+        if (_eventPublisher == null)
+          return Results.Json(new { success = false, error = "Event publisher not available" });
+
+        var evt = new AgentEvent
+        {
+          EventId = Guid.NewGuid().ToString(),
+          Timestamp = DateTimeOffset.UtcNow,
+          Kind = AgentEventKind.TaskCompleted,
+          TaskId = "test-" + DateTime.UtcNow.Ticks,
+          TaskType = "test",
+          Command = "echo hello",
+          ExitCode = 0,
+          Stdout = "hello\n",
+          DurationSeconds = 0.1,
+          AgentId = _capabilities.AgentId
+        };
+        _eventPublisher.Publish(evt);
+        _logger.LogInformation("Published test event {EventId}", evt.EventId);
+        return Results.Json(new { success = true, eventId = evt.EventId });
+      });
+
       _logger.LogInformation("HTTP API server listening on port {Port}", _port);
       _logger.LogInformation("  GET /health - Health check");
       _logger.LogInformation("  GET /capabilities - This agent's capabilities");
       _logger.LogInformation("  GET /discover-peers - Discover all network agents via multicast");
       _logger.LogInformation("  POST /add-peer?ip=x.x.x.x - Add a peer manually (cross-subnet bootstrap)");
+      _logger.LogInformation("  POST /test-event - Publish a test event for debugging");
 
       _host = app;
       await app.RunAsync(stoppingToken);

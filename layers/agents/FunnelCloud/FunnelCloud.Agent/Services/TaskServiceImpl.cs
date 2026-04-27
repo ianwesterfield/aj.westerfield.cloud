@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using FunnelCloud.Agent.Grpc;
+using FunnelCloud.Agent.Services.Events;
 using FunnelCloud.Shared.Contracts;
+using FunnelCloud.Shared.Ipc;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.Extensions.Logging;
@@ -16,6 +18,7 @@ public class TaskServiceImpl : TaskService.TaskServiceBase
   private readonly ILogger<TaskServiceImpl> _logger;
   private readonly TaskExecutor _executor;
   private readonly AgentCapabilities _capabilities;
+  private readonly IAgentEventPublisher _events;
 
   // Track running tasks for status/cancel operations
   private readonly Dictionary<string, RunningTask> _runningTasks = new();
@@ -24,11 +27,13 @@ public class TaskServiceImpl : TaskService.TaskServiceBase
   public TaskServiceImpl(
       ILogger<TaskServiceImpl> logger,
       TaskExecutor executor,
-      AgentCapabilities capabilities)
+      AgentCapabilities capabilities,
+      IAgentEventPublisher events)
   {
     _logger = logger;
     _executor = executor;
     _capabilities = capabilities;
+    _events = events;
   }
 
   public override async Task<Grpc.TaskResult> Execute(Grpc.TaskRequest request, ServerCallContext context)
@@ -37,8 +42,7 @@ public class TaskServiceImpl : TaskService.TaskServiceBase
     _logger.LogInformation("Executing task {TaskId}: {Type} - {Command}",
         request.TaskId, request.Type, TruncateCommand(request.Command));
 
-    // Windows toast notification so we can visually confirm tasks are arriving
-    ToastNotifier.NotifyTaskReceived(request.TaskId, request.Type.ToString(), request.Command, _logger);
+    PublishReceived(request);
 
     try
     {
@@ -61,6 +65,7 @@ public class TaskServiceImpl : TaskService.TaskServiceBase
         _logger.LogInformation("Task {TaskId} completed in {Duration}ms: Success={Success}",
             request.TaskId, stopwatch.ElapsedMilliseconds, result.Success);
 
+        PublishCompleted(request, result, stopwatch.Elapsed);
         return ConvertToGrpcResult(result, request.TaskId, stopwatch.ElapsedMilliseconds);
       }
       finally
@@ -74,6 +79,7 @@ public class TaskServiceImpl : TaskService.TaskServiceBase
     catch (OperationCanceledException)
     {
       _logger.LogWarning("Task {TaskId} was cancelled", request.TaskId);
+      PublishFailed(request, stopwatch.Elapsed, "Task was cancelled", cancelled: true);
       return new Grpc.TaskResult
       {
         TaskId = request.TaskId,
@@ -86,6 +92,7 @@ public class TaskServiceImpl : TaskService.TaskServiceBase
     catch (Exception ex)
     {
       _logger.LogError(ex, "Task {TaskId} failed with exception", request.TaskId);
+      PublishFailed(request, stopwatch.Elapsed, ex.Message);
       return new Grpc.TaskResult
       {
         TaskId = request.TaskId,
@@ -105,8 +112,7 @@ public class TaskServiceImpl : TaskService.TaskServiceBase
     _logger.LogInformation("Streaming execution for task {TaskId}: {Type}",
         request.TaskId, request.Type);
 
-    // Windows toast notification so we can visually confirm tasks are arriving
-    ToastNotifier.NotifyTaskReceived(request.TaskId, request.Type.ToString(), request.Command, _logger);
+    PublishReceived(request);
 
     var stopwatch = Stopwatch.StartNew();
 
@@ -131,6 +137,8 @@ public class TaskServiceImpl : TaskService.TaskServiceBase
       // Convert and execute
       var taskRequest = ConvertToSharedRequest(request);
       var result = await _executor.ExecuteAsync(taskRequest, context.CancellationToken);
+      stopwatch.Stop();
+      PublishCompleted(request, result, stopwatch.Elapsed);
 
       // Stream stdout if present
       if (!string.IsNullOrEmpty(result.Stdout))
@@ -296,6 +304,50 @@ public class TaskServiceImpl : TaskService.TaskServiceBase
     return command.Length <= maxLength
         ? command
         : command[..maxLength] + "...";
+  }
+
+  private void PublishReceived(Grpc.TaskRequest request)
+  {
+    _events.Publish(new AgentEvent
+    {
+      Kind = AgentEventKind.TaskReceived,
+      TaskId = request.TaskId,
+      TaskType = request.Type.ToString(),
+      Command = request.Command,
+      AgentId = _capabilities.AgentId
+    });
+  }
+
+  private void PublishCompleted(Grpc.TaskRequest request, Shared.Contracts.TaskResult result, TimeSpan duration)
+  {
+    _events.Publish(new AgentEvent
+    {
+      Kind = result.Success ? AgentEventKind.TaskCompleted : AgentEventKind.TaskFailed,
+      TaskId = request.TaskId,
+      TaskType = request.Type.ToString(),
+      Command = request.Command,
+      ExitCode = result.ExitCode,
+      Stdout = result.Stdout,
+      Stderr = result.Stderr,
+      DurationSeconds = duration.TotalSeconds,
+      AgentId = _capabilities.AgentId,
+      ErrorMessage = result.Success ? null : result.ErrorCode.ToString()
+    });
+  }
+
+  private void PublishFailed(Grpc.TaskRequest request, TimeSpan duration, string errorMessage, bool cancelled = false)
+  {
+    _events.Publish(new AgentEvent
+    {
+      Kind = AgentEventKind.TaskFailed,
+      TaskId = request.TaskId,
+      TaskType = request.Type.ToString(),
+      Command = request.Command,
+      DurationSeconds = duration.TotalSeconds,
+      AgentId = _capabilities.AgentId,
+      ErrorMessage = cancelled ? "cancelled" : errorMessage,
+      Stderr = errorMessage
+    });
   }
 
   #endregion
