@@ -11,7 +11,6 @@ public partial class EventsWindow : FluentWindow
 
   public EventsWindow()
   {
-    InitializeComponent();
   }
 
   protected override void OnDeactivated(EventArgs e)

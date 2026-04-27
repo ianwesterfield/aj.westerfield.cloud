@@ -47,6 +47,7 @@ processed/
 publish-linux/
 publish-selfcontained/
 publish/
+publish-tray/
 raw/
 secrets/
 Thumbs.db
@@ -58,3 +59,21 @@ training/logs/
 training/models/
 unsloth_compiled_cache/
 venv/
+
+# .NET build artifacts
+**/bin/
+**/obj/
+**/publish/
+**/publish-*/
+**/*.exe
+**/*.dll
+**/*.pdb
+**/*.user
+**/*.suo
+*.nupkg
+*.snupkg
+
+# Visual Studio
+.vs/
+*.vsidx
+*.lock.json
